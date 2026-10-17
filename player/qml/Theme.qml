@@ -26,7 +26,6 @@ QtObject {
     readonly property real tickHalfBaseRatio: 0.00215
     readonly property real titleFontRatio: 0.0295
     readonly property real subtitleFontRatio: 0.0205
-    readonly property real titleTopRatio: 0.8110
     readonly property real titleLineGapRatio: 0.0097
     readonly property real iconRatio: 0.0345
     readonly property real thumbWidthRatio: 0.127

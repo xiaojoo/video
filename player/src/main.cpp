@@ -23,8 +23,11 @@
 
 #include <clocale>
 
-static QRect clientRect(HWND h)
-{
+// Above this, a mismatch between the window and the film is a real letterbox and
+// must stay; at or below it, it is a rounding hairline we can snap away.
+constexpr int kHairlineMaxPx = 2;
+
+static QRect clientRect(HWND h){
     RECT c{};
     GetClientRect(h, &c);
     POINT tl{ c.left, c.top }, br{ c.right, c.bottom };
@@ -311,6 +314,35 @@ int main(int argc, char *argv[])
         // which takes the keyboard away from the window that owns the shortcuts.
         if (GetForegroundWindow() == host.hwnd())
             chrome->requestActivate();
+    });
+
+    // A window whose height is not an exact multiple of the film's aspect leaves a
+    // 1 px hairline bar at the top and bottom. mpv cannot resize our host under
+    // --wid, so snap the height to the exact value - but only when the fix is a
+    // couple of pixels, so a real letterbox (2.39 in 16:9) is left alone.
+    auto snapHairline = [&player, &host] {
+        const double a = player.videoAspect();
+        if (a <= 0.0 || host.fullscreen() || host.mini() || host.fsAnimating())
+            return;
+        const QRect r = host.geometry();
+        const int want = qRound(r.width() / a);
+        if (want == r.height() || qAbs(want - r.height()) > kHairlineMaxPx)
+            return;
+        qInfo("HAIRLINE %dx%d -> %dx%d  aspect=%.6f  delta=%d",
+              r.width(), r.height(), r.width(), want, a, r.height() - want);
+        host.setRect(r.x(), r.y(), r.width(), want);
+    };
+    QObject::connect(&player, &PlayerCore::videoAspectChanged, &host, snapHairline);
+    // Leaving fullscreen and leaving mini restore the old rect, and the aspect has
+    // not changed by then, so nothing else would ever fire again.
+    QObject::connect(&host, &VideoHost::fsTransitionChanged, &host,
+                     [&host, snapHairline] {
+                         if (!host.fsAnimating())
+                             snapHairline();
+                     });
+    QObject::connect(&host, &VideoHost::miniChanged, &host, [&host, snapHairline] {
+        if (!host.mini())
+            snapHairline();
     });
 
     // Must come after the sync connections, or the chrome never hears about it.

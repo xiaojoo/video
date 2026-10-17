@@ -70,6 +70,7 @@ PlayerCore::PlayerCore(qintptr wid, bool startFullscreen, QObject *parent) : QOb
     mpv_observe_property(m_mpv, 0, "vo-driven", MPV_FORMAT_FLAG);
     mpv_observe_property(m_mpv, 0, "current-vo", MPV_FORMAT_STRING);
     mpv_observe_property(m_mpv, 0, "fullscreen", MPV_FORMAT_FLAG);
+    mpv_observe_property(m_mpv, 0, "video-params/aspect", MPV_FORMAT_DOUBLE);
 
     // The callback runs on an mpv thread, so it may only hand work to the GUI
     // thread. QPointer guards against a queued drain outliving the core.
@@ -181,6 +182,13 @@ void PlayerCore::onPropertyChange(void *propPtr)
     } else if (!std::strcmp(n, "speed") && p->format == MPV_FORMAT_DOUBLE) {
         m_speed = *static_cast<double *>(p->data);
         emit speedChanged();
+    } else if (!std::strcmp(n, "video-params/aspect") && p->format == MPV_FORMAT_DOUBLE) {
+        const double a = *static_cast<double *>(p->data);
+        if (qAbs(a - m_videoAspect) > 1e-6) {
+            m_videoAspect = a;
+            qInfo("ASPECT %.6f", a);
+            emit videoAspectChanged();
+        }
     } else if (!std::strcmp(n, "vo-driven") && p->format == MPV_FORMAT_FLAG) {
         m_voDriven = *static_cast<int *>(p->data) ? "yes" : "no";
         emit voDrivenChanged();

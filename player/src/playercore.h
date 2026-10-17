@@ -33,6 +33,9 @@ class PlayerCore final : public QObject
     Q_PROPERTY(QString voDriven READ voDriven NOTIFY voDrivenChanged)
     Q_PROPERTY(bool fullscreen READ fullscreen NOTIFY fullscreenChanged)
     Q_PROPERTY(bool fullscreenActive READ fullscreenActive NOTIFY fullscreenActiveChanged)
+    // The display aspect mpv settled on (after SAR and any override). Verified on
+    // this build: video-params/dar does not exist, video-params/aspect does.
+    Q_PROPERTY(double videoAspect READ videoAspect NOTIFY videoAspectChanged)
 
 public:
     explicit PlayerCore(qintptr wid, bool startFullscreen = false, QObject *parent = nullptr);
@@ -68,6 +71,7 @@ public:
     Q_INVOKABLE void setPropertyString(const QString &name, const QString &value);
     Q_INVOKABLE void setPropertyInt(const QString &name, qint64 value);
     Q_INVOKABLE bool fullscreen() const { return m_fullscreen; }
+    double videoAspect() const { return m_videoAspect; }
     bool fullscreenActive() const { return m_fsActive; }
 
 signals:
@@ -86,6 +90,7 @@ signals:
     void voDrivenChanged();
     void fullscreenChanged();
     void fullscreenActiveChanged();
+    void videoAspectChanged();
     void loadFailed(const QString &why);
 
 private:
@@ -101,6 +106,7 @@ private:
     double m_position = 0.0;
     double m_duration = 0.0;
     bool m_paused = false;
+    double m_videoAspect = 0.0;
     int m_chapter = -1;
     QStringList m_chapterTitles;
     QString m_chapterTitle;

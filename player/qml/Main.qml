@@ -22,6 +22,10 @@ Window {
     // knows about rows, not about what a row means.
     property var pickerApply: null
 
+    // The header line's type size. He asked for "a bit bigger" than the bump box
+    // without a number, so it is one stated factor off it: 1.25 x 11 = 13.75 px.
+    readonly property real headerFont: caption.artSize * 1.25
+
     // The fullscreen transition: one window resize plus GPU transforms. This is the
     // clock; VideoHost turns a progress value into the rect the picture and the UI
     // should appear at.
@@ -367,26 +371,31 @@ Window {
                 else if (what === "max") videoHost.startFsTransition();
                 else videoHost.minimize();   // the host owns the taskbar entry
             }
-            onTipFor: (item, text, keys) => tip.show(item, text, keys, "below")
-            onTipOff: (item) => tip.hideFor(item)
         }
 
         Column {
-            x: win.inset
-            y: Theme.titleTopRatio * win.vh
+            x: caption.gap
+            // Centred on the bump row he asked the title to match: the group sits
+            // gap px below the window edge, so the row's middle is gap + tileH/2.
+            // The 2.5 px is measured: at this size the ink band sits that far below
+            // the line box's centre, so centring the box leaves the words low.
+            y: Math.max(0, caption.gap + caption.tileH / 2 - mediaTitle.height / 2 - 2.5)
             spacing: Theme.titleLineGapRatio * win.vh
 
             Text {
+                id: mediaTitle
                 text: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Oppenheimer (2023)"
                 color: Theme.textPrimary
-                font.pixelSize: Theme.titleFontRatio * win.vh
+                font.pixelSize: win.headerFont
                 font.family: Theme.uiFont
                 font.weight: Font.Normal
             }
             Text {
                 text: playerCore.chapter >= 0 ? "Chapter " + (playerCore.chapter + 1) : "Chapter 2"
                 color: Theme.textSecondary
-                font.pixelSize: Theme.subtitleFontRatio * win.vh
+                // The house factor for secondary text (Tip and the dropdown use it
+                // too); otherwise this line ends up taller than the title above it.
+                font.pixelSize: win.headerFont * 0.85
                 font.family: Theme.uiFont
             }
         }

@@ -3,30 +3,28 @@ import QtQuick
 Item {
     id: root
     property color glyph: "#E6E6E6"
-    property real hitW: 46
-    property real hitH: 32
+    // Measured off his reference: three separate bumps, not one band. The hit area
+    // is the bump itself - no invisible halo around it.
+    readonly property real tileW: 40
+    readonly property real tileH: 28
+    readonly property real gap: 6
+    readonly property real artSize: 11
     property bool fullscreen: false
     signal picked(string what)
-    signal tipFor(var item, string text, string keys)
-    signal tipOff(var item)
 
-    readonly property var labels: ({
-        min: ["最小化", ""],
-        max: [fullscreen ? "还原" : "全屏", "F"],
-        close: ["关闭", ""]
-    })
-
-    // The window's top drag strip sizes itself from this item, so it has to
-    // report the Row's extent: a bare Item defaults to 0x0 and the strip was
-    // then an invisible, unhittable rectangle.
-    width: btnRow.width
-    height: btnRow.height
+    // The same 6 px that separates the bumps also separates the group from the
+    // window's top and right edges, so the extent carries that margin.
+    width: btnRow.width + gap
+    height: btnRow.height + gap
 
     Row {
         id: btnRow
         anchors.right: parent.right
+        anchors.rightMargin: root.gap
         anchors.top: parent.top
-        height: root.hitH
+        anchors.topMargin: root.gap
+        spacing: root.gap
+        height: root.tileH
 
         Repeater {
             model: ["min", "max", "close"]
@@ -34,22 +32,32 @@ Item {
                 id: cell
                 required property string modelData
                 readonly property string key: modelData
-                width: root.hitW
-                height: root.hitH
+                width: root.tileW
+                height: root.tileH
 
                 readonly property bool hot: area.containsMouse
                 readonly property bool isClose: key === "close"
 
+                // 72% of a near-black blue over whatever is behind it, which is how
+                // the reference reads: two bumps over different parts of the same
+                // photo measure (61,63,74) and (79,82,95).
                 Rectangle {
                     anchors.fill: parent
+                    radius: 4
+                    color: "#B8131821"
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 4
                     color: cell.hot ? (cell.isClose ? "#C42B1C" : Qt.rgba(1, 1, 1, 0.13)) : "transparent"
                 }
 
                 Canvas {
                     id: art
                     anchors.centerIn: parent
-                    width: 11
-                    height: 11
+                    width: root.artSize
+                    height: root.artSize
                     onPaint: {
                         const g = getContext("2d");
                         g.reset();
@@ -73,13 +81,6 @@ Item {
                     id: area
                     anchors.fill: parent
                     hoverEnabled: true
-                    onEntered: {
-                        const t = root.labels[cell.key];
-                        if (t)
-                            root.tipFor(cell, t[0], t[1]);
-                    }
-                    onExited: root.tipOff(cell)
-                    onPressed: root.tipOff(cell)
                     onClicked: root.picked(cell.key)
                 }
             }
