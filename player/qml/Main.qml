@@ -22,6 +22,36 @@ Window {
     // knows about rows, not about what a row means.
     property var pickerApply: null
 
+    // The fullscreen transition: one window resize plus GPU transforms. This is the
+    // clock; VideoHost turns a progress value into the rect the picture and the UI
+    // should appear at.
+    property real fsProg: 1.0
+    onFsProgChanged: videoHost.fsProgress(win.fsProg)
+
+    NumberAnimation {
+        id: fsAnim
+        target: win
+        property: "fsProg"
+        duration: 170
+        easing.type: Easing.OutCubic
+        onFinished: videoHost.fsFinished()
+    }
+
+    Connections {
+        target: videoHost
+        function onFsTransitionChanged()
+        {
+            if (!videoHost.fsAnimating)
+                return;
+            // Going in, the content starts at the old rect; coming out, it starts
+            // where it already is and shrinks to the old rect.
+            win.fsProg = 0.0;
+            fsAnim.from = 0.0;
+            fsAnim.to = 1.0;
+            fsAnim.start();
+        }
+    }
+
     function nearest(list, v) {
         for (let k = 0; k < list.length; ++k) {
             if (Math.abs(list[k] - v) < 0.01)
@@ -140,7 +170,7 @@ Window {
         else if (what === "fwd10") playerCore.seekTo(Math.min(d, playerCore.position + 10));
         else if (what === "prevChapter") playerCore.seekTo(win.edgeAt(playerCore.position, -1));
         else if (what === "nextChapter") playerCore.seekTo(win.edgeAt(playerCore.position, +1));
-        else if (what === "collapse") videoHost.toggleFullscreen();
+        else if (what === "collapse") videoHost.startFsTransition();
         else if (what === "pip") videoHost.toggleMini();
         else if (what === "menu") win.page = "library";
         else if (what === "cc") playerCore.cycleProperty("sid");
@@ -231,7 +261,7 @@ Window {
             console.log("uiVisible ->", win.uiVisible);
             win.touch();
         }
-        onDoubleClicked: videoHost.toggleFullscreen()
+        onDoubleClicked: videoHost.startFsTransition()
         onPositionChanged: win.touch()
         onWheel: (w) => win.setVol(playerCore.volume + (w.angleDelta.y > 0 ? 5 : -5))
     }
@@ -293,6 +323,23 @@ Window {
         anchors.fill: parent
         opacity: win.uiVisible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
+        // During the transition the window is already at its end size, so the whole
+        // UI is drawn scaled and offset to sit on the rect the picture is on. The
+        // offsets come back in physical pixels.
+        transform: [
+            Scale {
+                xScale: videoHost.fsScale
+                yScale: videoHost.fsScale
+                origin.x: 0
+                origin.y: 0
+            },
+            Translate {
+                // The host rect is physical, this window is logical: the ratio is the
+                // scale factor, without needing the Screen singleton.
+                x: videoHost.fsOffX * (win.width / Math.max(1, videoHost.rect.width))
+                y: videoHost.fsOffY * (win.height / Math.max(1, videoHost.rect.height))
+            }
+        ]
 
         // Bottom scrim: the reference darkens behind the controls rather than
         // painting an opaque panel. The ramp is steep so the title line still
@@ -317,7 +364,7 @@ Window {
             fullscreen: videoHost.fullscreen
             onPicked: (what) => {
                 if (what === "close") win.close();
-                else if (what === "max") videoHost.toggleFullscreen();
+                else if (what === "max") videoHost.startFsTransition();
                 else videoHost.minimize();   // the host owns the taskbar entry
             }
             onTipFor: (item, text, keys) => tip.show(item, text, keys, "below")
@@ -482,7 +529,7 @@ Window {
             else if (win.page === "library")
                 win.page = "player";
             else if (videoHost.fullscreen)
-                videoHost.toggleFullscreen();
+                videoHost.startFsTransition();
         }
     }
 

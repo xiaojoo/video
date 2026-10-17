@@ -453,6 +453,7 @@ void PlayerCore::setPropertyString(const QString &name, const QString &value)
         logBack(m_mpv, n);
 }
 
+
 void PlayerCore::setPropertyInt(const QString &name, qint64 value)
 {
     if (!m_mpv)

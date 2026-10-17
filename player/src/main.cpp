@@ -261,6 +261,7 @@ int main(int argc, char *argv[])
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     };
     pinAboveHost();
+    host.setChrome(reinterpret_cast<HWND>(chrome->winId()));
 
     auto *quitter = new CloseQuitter(&app);
     chrome->installEventFilter(quitter);
