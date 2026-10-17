@@ -1,0 +1,54 @@
+# 构建产物
+player/build/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.dll
+
+# libmpv：解压到 vendor/libmpv（含 121 MB 的 libmpv-2.dll，不进仓库）
+vendor/
+
+# 本机量具与它的输出
+__pycache__/
+.venv-build/
+*.pyc
+*.log
+*.png
+*.jpg
+*.raw
+*.db
+*.db-wal
+*.db-shm
+*.mp4
+*.mkv
+*.srt
+
+# 本机片单/目录清单，不是代码
+roots.txt
+root_g.txt
+find_media.txt
+opts.txt
+chap.txt
+rels.json
+mpvdev.json
+*_report.txt
+*_truth.txt
+*_tracks.txt
+
+# 量具目录
+library_fixture/
+probe/
+probe_*/
+mpv/
+mpv-app/
+bdgen/
+durfix/
+pickertest/
+tools/
+
+# 密钥
+.tmdb_key
+*.key
