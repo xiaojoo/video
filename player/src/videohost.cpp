@@ -116,30 +116,53 @@ void VideoHost::moveBoth(int x, int y, int w, int h, HWND after)
         SetWindowPos(m_hwnd, after, x, y, w, h, hostFlags);
 }
 
-void VideoHost::showCurtain(const QRect &r)
+void VideoHost::showCurtain(const QRect &outer, const QRect &inner)
 {
     static bool registered = false;
+    const QColor c = dipColor();
+    const COLORREF rgb = RGB(c.red(), c.green(), c.blue());
     if (!registered) {
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = &DefWindowProcW;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        wc.hbrBackground = CreateSolidBrush(rgb);
         wc.lpszClassName = L"PlayeruiCurtain";
         registered = RegisterClassExW(&wc) != 0;
     }
     if (!registered || !m_hwnd)
         return;
     if (!m_curtain) {
-        m_curtain = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        m_curtain = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                                     L"PlayeruiCurtain", L"", WS_POPUP,
-                                    r.x(), r.y(), r.width(), r.height(),
+                                    outer.x(), outer.y(), outer.width(), outer.height(),
                                     m_hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!m_curtain)
+            return;
+        // Same strength as the QML veil. Without this the curtain's arrival would
+        // step the screen from "dimmed" to fully opaque, which is the blackout
+        // the veil exists to avoid.
+        SetLayeredWindowAttributes(m_curtain, 0,
+                                   static_cast<BYTE>(qRound(dipAlpha() * 255.0)), LWA_ALPHA);
     }
-    if (!m_curtain)
-        return;
-    SetWindowPos(m_curtain, HWND_TOP, r.x(), r.y(), r.width(), r.height(),
+    SetWindowPos(m_curtain, HWND_TOP, outer.x(), outer.y(), outer.width(), outer.height(),
                  SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    // Cut out the part the chrome has already painted. Without the hole the
+    // curtain's veil would sit on top of the chrome's and the two would stack:
+    // measured, 0.72 over 0.72 leaves the picture at 15 % instead of 28 %.
+    // SetWindowRgn takes ownership of the region on success.
+    if (HRGN ring = CreateRectRgn(0, 0, outer.width(), outer.height())) {
+        if (HRGN hole = CreateRectRgn(inner.x() - outer.x(), inner.y() - outer.y(),
+                                      inner.x() - outer.x() + inner.width(),
+                                      inner.y() - outer.y() + inner.height())) {
+            CombineRgn(ring, ring, hole, RGN_DIFF);
+            DeleteObject(hole);
+            if (SetWindowRgn(m_curtain, ring, TRUE) == 0)
+                DeleteObject(ring);   // rejected: we still own it
+        } else {
+            DeleteObject(ring);
+        }
+    }
     // Synchronous: the fill has to be in this surface before the batch move, or the
     // curtain is one message-loop iteration behind the thing it is there to hide.
     UpdateWindow(m_curtain);
@@ -148,11 +171,10 @@ void VideoHost::showCurtain(const QRect &r)
     // the flash: the end-size picture shows for one frame. Costs up to one vsync,
     // which the 40 ms trough already absorbs.
     DwmFlush();
-    // Its whole lifetime is this one call: shown before the move, dropped 40 ms
-    // later, which is what the chrome's repaint measured (<=14 ms) plus margin.
-    // QML's pause before it fades in is the same 40 ms, so the lid lifts exactly as
-    // the curtain goes away.
-    QTimer::singleShot(40, this, &VideoHost::endCurtain);
+    // Its whole lifetime is this one call: shown before the move, dropped after the
+    // chrome's measured <=14 ms repaint plus margin. QML fades in on the same clock,
+    // so the curtain goes away exactly as the lid starts lifting.
+    QTimer::singleShot(24, this, &VideoHost::endCurtain);
 }
 
 void VideoHost::endCurtain()
@@ -172,9 +194,12 @@ void VideoHost::toggleFullscreen()
     // One step, no transition: animating this means resizing a 4K scene and mpv's
     // swapchain ~20 times in 170 ms, and the steps land 7-26 ms apart - it reads as
     // stutter, which is worse than arriving at once.
-    // The union, so the way out is covered too: the curtain has to hide the area the
-    // window is *leaving*, not only the one it is entering.
-    showCurtain(geometry().united(to));
+    // The curtain covers the union minus whichever rect is smaller: the smaller one
+    // is where the chrome's existing buffer still has valid pixels after the move,
+    // so it needs no covering and must not be veiled twice.
+    const QRect from = geometry();
+    const auto area = [](const QRect &v) { return v.width() * v.height(); };
+    showCurtain(from.united(to), area(from) <= area(to) ? from : to);
     moveBoth(to.x(), to.y(), to.width(), to.height());
     emit resized();
     emit fullscreenChanged();

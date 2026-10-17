@@ -483,7 +483,7 @@ Window {
         id: fsBlack
         anchors.fill: parent
         z: 100
-        color: "#000"
+        color: videoHost.dipColor
         opacity: 0.0
         visible: opacity > 0.0
     }
@@ -496,8 +496,8 @@ Window {
         target: fsBlack
         property: "opacity"
         from: 0.0
-        to: 1.0
-        duration: 90
+        to: videoHost.dipAlpha
+        duration: 60
         easing.type: Easing.InQuad
         onFinished: {
             videoHost.toggleFullscreen();
@@ -507,17 +507,16 @@ Window {
 
     SequentialAnimation {
         id: fsIn
-        // Measured: after the batch move the chrome's newly exposed ring takes up to
-        // ~14 ms (two frames at 144 Hz) to actually be painted black, and until then
-        // the end-size picture shows through it. VideoHost covers that with a GDI
-        // curtain for exactly this long; the fade must not start before it lifts.
-        PauseAnimation { duration: 40 }
+        // Measured: the chrome needs <=14 ms to paint the area it grew into, so this
+        // is that plus a 10 ms margin. The curtain covers the swap itself; all this
+        // has to outlast is the paint right after the curtain drops.
+        PauseAnimation { duration: 24 }
         NumberAnimation {
             target: fsBlack
             property: "opacity"
-            from: 1.0
+            from: videoHost.dipAlpha
             to: 0.0
-            duration: 90
+            duration: 60
             easing.type: Easing.OutQuad
         }
     }

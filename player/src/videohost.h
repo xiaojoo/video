@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QObject>
 #include <QRect>
 
@@ -44,6 +45,14 @@ public:
     Q_PROPERTY(QRect rect READ geometry NOTIFY resized)
     Q_INVOKABLE void setRect(int x, int y, int w, int h);
 
+    // The dissolve's colour and strength, owned here because the Win32 curtain has
+    // to be painted with exactly the same values as the QML layer - if they differ,
+    // the curtain's arrival is a visible step. QML binds to these.
+    Q_PROPERTY(QColor dipColor READ dipColor CONSTANT)
+    QColor dipColor() const { return QColor(11, 14, 19); }
+    Q_PROPERTY(double dipAlpha READ dipAlpha CONSTANT)
+    double dipAlpha() const { return 0.72; }
+
 signals:
     void resized();
     void fullscreenChanged();
@@ -59,9 +68,9 @@ private:
     // The dissolve's trough needs the curtain: after the batch move the chrome has
     // not painted the area it just grew into, and until it does (measured ~14 ms,
     // two frames at 144 Hz) the end-size picture shows through it. A plain Win32
-    // window with a black class brush is filled by GDI inside the same call, so the
-    // ring is never exposed to the screen.
-    void showCurtain(const QRect &rect);
+    // window is filled by GDI inside the same call, so the ring is never exposed.
+    // It covers outer minus inner so it never doubles up with the QML veil.
+    void showCurtain(const QRect &outer, const QRect &inner);
     void endCurtain();
 
     HWND m_hwnd = nullptr;
