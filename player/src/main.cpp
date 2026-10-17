@@ -322,7 +322,7 @@ int main(int argc, char *argv[])
     // couple of pixels, so a real letterbox (2.39 in 16:9) is left alone.
     auto snapHairline = [&player, &host] {
         const double a = player.videoAspect();
-        if (a <= 0.0 || host.fullscreen() || host.mini() || host.fsAnimating())
+        if (a <= 0.0 || host.fullscreen() || host.mini())
             return;
         const QRect r = host.geometry();
         const int want = qRound(r.width() / a);
@@ -334,12 +334,9 @@ int main(int argc, char *argv[])
     };
     QObject::connect(&player, &PlayerCore::videoAspectChanged, &host, snapHairline);
     // Leaving fullscreen and leaving mini restore the old rect, and the aspect has
-    // not changed by then, so nothing else would ever fire again.
-    QObject::connect(&host, &VideoHost::fsTransitionChanged, &host,
-                     [&host, snapHairline] {
-                         if (!host.fsAnimating())
-                             snapHairline();
-                     });
+    // not changed by then, so nothing else would ever fire again. Both signals go out
+    // after the rect has been committed.
+    QObject::connect(&host, &VideoHost::fullscreenChanged, &host, snapHairline);
     QObject::connect(&host, &VideoHost::miniChanged, &host, [&host, snapHairline] {
         if (!host.mini())
             snapHairline();

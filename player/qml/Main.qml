@@ -26,36 +26,6 @@ Window {
     // without a number, so it is one stated factor off it: 1.25 x 11 = 13.75 px.
     readonly property real headerFont: caption.artSize * 1.25
 
-    // The fullscreen transition: one window resize plus GPU transforms. This is the
-    // clock; VideoHost turns a progress value into the rect the picture and the UI
-    // should appear at.
-    property real fsProg: 1.0
-    onFsProgChanged: videoHost.fsProgress(win.fsProg)
-
-    NumberAnimation {
-        id: fsAnim
-        target: win
-        property: "fsProg"
-        duration: 170
-        easing.type: Easing.OutCubic
-        onFinished: videoHost.fsFinished()
-    }
-
-    Connections {
-        target: videoHost
-        function onFsTransitionChanged()
-        {
-            if (!videoHost.fsAnimating)
-                return;
-            // Going in, the content starts at the old rect; coming out, it starts
-            // where it already is and shrinks to the old rect.
-            win.fsProg = 0.0;
-            fsAnim.from = 0.0;
-            fsAnim.to = 1.0;
-            fsAnim.start();
-        }
-    }
-
     function nearest(list, v) {
         for (let k = 0; k < list.length; ++k) {
             if (Math.abs(list[k] - v) < 0.01)
@@ -174,7 +144,7 @@ Window {
         else if (what === "fwd10") playerCore.seekTo(Math.min(d, playerCore.position + 10));
         else if (what === "prevChapter") playerCore.seekTo(win.edgeAt(playerCore.position, -1));
         else if (what === "nextChapter") playerCore.seekTo(win.edgeAt(playerCore.position, +1));
-        else if (what === "collapse") videoHost.startFsTransition();
+        else if (what === "collapse") win.toggleFs();
         else if (what === "pip") videoHost.toggleMini();
         else if (what === "menu") win.page = "library";
         else if (what === "cc") playerCore.cycleProperty("sid");
@@ -182,6 +152,14 @@ Window {
         else if (what === "mute" || what === "volume") playerCore.cycleProperty("mute");
         else if (what === "chapters") chapters.open = !chapters.open;
         win.touch();
+    }
+
+    // Every fullscreen entry/exit goes through here so it gets the same dissolve.
+    function toggleFs() {
+        if (fsOut.running || fsIn.running)
+            return;
+        picker.hide();
+        fsOut.start();
     }
 
     readonly property var mockTicks: [
@@ -265,7 +243,7 @@ Window {
             console.log("uiVisible ->", win.uiVisible);
             win.touch();
         }
-        onDoubleClicked: videoHost.startFsTransition()
+        onDoubleClicked: win.toggleFs()
         onPositionChanged: win.touch()
         onWheel: (w) => win.setVol(playerCore.volume + (w.angleDelta.y > 0 ? 5 : -5))
     }
@@ -327,23 +305,6 @@ Window {
         anchors.fill: parent
         opacity: win.uiVisible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
-        // During the transition the window is already at its end size, so the whole
-        // UI is drawn scaled and offset to sit on the rect the picture is on. The
-        // offsets come back in physical pixels.
-        transform: [
-            Scale {
-                xScale: videoHost.fsScale
-                yScale: videoHost.fsScale
-                origin.x: 0
-                origin.y: 0
-            },
-            Translate {
-                // The host rect is physical, this window is logical: the ratio is the
-                // scale factor, without needing the Screen singleton.
-                x: videoHost.fsOffX * (win.width / Math.max(1, videoHost.rect.width))
-                y: videoHost.fsOffY * (win.height / Math.max(1, videoHost.rect.height))
-            }
-        ]
 
         // Bottom scrim: the reference darkens behind the controls rather than
         // painting an opaque panel. The ramp is steep so the title line still
@@ -368,7 +329,7 @@ Window {
             fullscreen: videoHost.fullscreen
             onPicked: (what) => {
                 if (what === "close") win.close();
-                else if (what === "max") videoHost.startFsTransition();
+                else if (what === "max") win.toggleFs();
                 else videoHost.minimize();   // the host owns the taskbar entry
             }
         }
@@ -514,6 +475,53 @@ Window {
         }
     }
 
+    // The fullscreen dissolve: fade to black, do the one window resize at the
+    // trough, fade back. Both surfaces take part - the picture because it is
+    // covered, the UI because this sits above it - and mpv is never asked to scale
+    // or repaint at a new size mid-transition.
+    Rectangle {
+        id: fsBlack
+        anchors.fill: parent
+        z: 100
+        color: "#000"
+        opacity: 0.0
+        visible: opacity > 0.0
+    }
+
+    // The trough is where the only window resize happens: fsOut finishes fully black,
+    // C++ moves both windows in one batch, then a beat of black lets Qt repaint the
+    // newly exposed ring before fsIn lifts the lid.
+    NumberAnimation {
+        id: fsOut
+        target: fsBlack
+        property: "opacity"
+        from: 0.0
+        to: 1.0
+        duration: 90
+        easing.type: Easing.InQuad
+        onFinished: {
+            videoHost.toggleFullscreen();
+            fsIn.restart();
+        }
+    }
+
+    SequentialAnimation {
+        id: fsIn
+        // Measured: after the batch move the chrome's newly exposed ring takes up to
+        // ~14 ms (two frames at 144 Hz) to actually be painted black, and until then
+        // the end-size picture shows through it. VideoHost covers that with a GDI
+        // curtain for exactly this long; the fade must not start before it lifts.
+        PauseAnimation { duration: 40 }
+        NumberAnimation {
+            target: fsBlack
+            property: "opacity"
+            from: 1.0
+            to: 0.0
+            duration: 90
+            easing.type: Easing.OutQuad
+        }
+    }
+
     // Keyboard. Shortcut is scoped to this window and fires without waiting for
     // an item to hold focus, which is what the frameless tool window needs.
     Shortcut { sequence: "Space"; enabled: win.page === "player"; onActivated: win.act("play") }
@@ -538,7 +546,7 @@ Window {
             else if (win.page === "library")
                 win.page = "player";
             else if (videoHost.fullscreen)
-                videoHost.startFsTransition();
+                win.toggleFs();
         }
     }
 

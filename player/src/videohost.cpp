@@ -1,8 +1,9 @@
 #include "videohost.h"
 
-#include <QCoreApplication>
+#include <dwmapi.h>
 
-#include <cmath>
+#include <QCoreApplication>
+#include <QTimer>
 
 VideoHost *VideoHost::s_self = nullptr;
 
@@ -81,6 +82,7 @@ void VideoHost::destroy()
         return;
     DestroyWindow(m_hwnd);
     m_hwnd = nullptr;
+    m_curtain = nullptr;   // owned by the host, so it went with it
     if (s_self == this)
         s_self = nullptr;
 }
@@ -114,6 +116,51 @@ void VideoHost::moveBoth(int x, int y, int w, int h, HWND after)
         SetWindowPos(m_hwnd, after, x, y, w, h, hostFlags);
 }
 
+void VideoHost::showCurtain(const QRect &r)
+{
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = &DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        wc.lpszClassName = L"PlayeruiCurtain";
+        registered = RegisterClassExW(&wc) != 0;
+    }
+    if (!registered || !m_hwnd)
+        return;
+    if (!m_curtain) {
+        m_curtain = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                    L"PlayeruiCurtain", L"", WS_POPUP,
+                                    r.x(), r.y(), r.width(), r.height(),
+                                    m_hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    }
+    if (!m_curtain)
+        return;
+    SetWindowPos(m_curtain, HWND_TOP, r.x(), r.y(), r.width(), r.height(),
+                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    // Synchronous: the fill has to be in this surface before the batch move, or the
+    // curtain is one message-loop iteration behind the thing it is there to hide.
+    UpdateWindow(m_curtain);
+    // And not just painted - composited. Without this the curtain's black lands
+    // either one frame before or one frame after the resize, and the late case is
+    // the flash: the end-size picture shows for one frame. Costs up to one vsync,
+    // which the 40 ms trough already absorbs.
+    DwmFlush();
+    // Its whole lifetime is this one call: shown before the move, dropped 40 ms
+    // later, which is what the chrome's repaint measured (<=14 ms) plus margin.
+    // QML's pause before it fades in is the same 40 ms, so the lid lifts exactly as
+    // the curtain goes away.
+    QTimer::singleShot(40, this, &VideoHost::endCurtain);
+}
+
+void VideoHost::endCurtain()
+{
+    if (m_curtain)
+        ShowWindow(m_curtain, SW_HIDE);
+}
+
 void VideoHost::toggleFullscreen()
 {
     if (!m_hwnd)
@@ -125,6 +172,9 @@ void VideoHost::toggleFullscreen()
     // One step, no transition: animating this means resizing a 4K scene and mpv's
     // swapchain ~20 times in 170 ms, and the steps land 7-26 ms apart - it reads as
     // stutter, which is worse than arriving at once.
+    // The union, so the way out is covered too: the curtain has to hide the area the
+    // window is *leaving*, not only the one it is entering.
+    showCurtain(geometry().united(to));
     moveBoth(to.x(), to.y(), to.width(), to.height());
     emit resized();
     emit fullscreenChanged();
@@ -136,67 +186,6 @@ void VideoHost::commitRect(int x, int y, int w, int h)
         return;
     moveBoth(x, y, w, h);
     emit resized();
-}
-
-void VideoHost::startFsTransition()
-{
-    if (!m_hwnd || m_fsAnimating)
-        return;
-    const QRect now = geometry();
-    const bool enter = !m_fs;
-    const QRect to = enter ? monitorRect() : m_restoreRect;
-    if (enter)
-        m_restoreRect = now;
-    m_fs = enter;
-    emit fullscreenChanged();
-    if (to.width() <= 0 || to.height() <= 0) {
-        moveBoth(to.x(), to.y(), to.width(), to.height());
-        emit resized();
-        return;
-    }
-    m_fsFrom = now;
-    m_fsTo = to;
-    m_fsAnimating = true;
-    m_fsCommitLate = !enter;
-    fsProgress(0.0);
-    if (enter)
-        moveBoth(to.x(), to.y(), to.width(), to.height());
-    emit fsTransitionChanged();
-}
-
-void VideoHost::fsProgress(double p)
-{
-    if (!m_fsAnimating)
-        return;
-    auto at = [&](int a, int b) { return int(std::lround(a + (b - a) * p)); };
-    const QRect shown{at(m_fsFrom.x(), m_fsTo.x()), at(m_fsFrom.y(), m_fsTo.y()),
-                      at(m_fsFrom.width(), m_fsTo.width()),
-                      at(m_fsFrom.height(), m_fsTo.height())};
-    // Relative to the window as it stands, not to the end rect: on the way out the
-    // window is still the big one, so the scene is laid out for that size and must
-    // start at identity.
-    const QRect win = geometry();
-    if (win.width() <= 0 || win.height() <= 0)
-        return;
-    m_fsScale = double(shown.width()) / win.width();
-    m_fsOffX = shown.x() - win.x();
-    m_fsOffY = shown.y() - win.y();
-    emit fsProgressed();
-}
-
-void VideoHost::fsFinished()
-{
-    if (!m_fsAnimating)
-        return;
-    m_fsAnimating = false;
-    m_fsScale = 1.0;
-    m_fsOffX = m_fsOffY = 0;
-    emit fsProgressed();
-    if (m_fsCommitLate)
-        moveBoth(m_fsTo.x(), m_fsTo.y(), m_fsTo.width(), m_fsTo.height());
-    m_fsCommitLate = false;
-    emit resized();
-    emit fsTransitionChanged();
 }
 
 QRect VideoHost::monitorRect() const
