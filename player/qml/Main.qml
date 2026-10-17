@@ -159,6 +159,12 @@ Window {
         if (fsOut.running || fsIn.running)
             return;
         picker.hide();
+        // The gesture area's onClicked fires before its onDoubleClicked, so a
+        // double-click has just started a 180 ms fade-in of the whole control band
+        // - two animations crossing is what reads as "flashing twice". Park the
+        // chrome instead: the veil covers it anyway and the first mouse move brings
+        // it back.
+        win.uiVisible = false;
         fsOut.start();
     }
 
