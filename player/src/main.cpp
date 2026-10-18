@@ -12,7 +12,30 @@
 #include <QImage>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickImageProvider>
 #include <QQuickWindow>
+
+// 把 grabPicture() 抓到的那帧交给 QML 的 Image（source: "image://snap/<帧号>"）。
+// 帧号一变就是强制重读；不变的话 QML 会把同一 URL 当缓存命中。
+class SnapProvider final : public QQuickImageProvider
+{
+public:
+    explicit SnapProvider(Snapshot *s)
+        : QQuickImageProvider(QQuickImageProvider::Pixmap), m_snap(s)
+    {
+    }
+    QPixmap requestPixmap(const QString &id, QSize *size, const QSize &) override
+    {
+        Q_UNUSED(id)
+        if (size)
+            *size = m_snap->pixmap().size();
+        return m_snap->pixmap();
+    }
+
+private:
+    Snapshot *m_snap;
+};
+
 #include <QTimer>
 #include <QStandardPaths>
 #include <QFile>
@@ -216,6 +239,7 @@ int main(int argc, char *argv[])
     QObject::connect(&host, &VideoHost::closeRequested, &app, &QCoreApplication::quit);
 
     QQmlApplicationEngine engine;
+    engine.addImageProvider("snap", new SnapProvider(static_cast<Snapshot *>(host.snapshotObj())));
     engine.rootContext()->setContextProperty(u"playerCore"_qs, &player);
     engine.rootContext()->setContextProperty(u"videoHost"_qs, &host);
     engine.rootContext()->setContextProperty(u"thumbs"_qs, &thumbs);
@@ -307,6 +331,13 @@ int main(int argc, char *argv[])
             chrome->setGeometry(clientRect(host.hwnd()));
             pinAboveHost();
         }
+        // 幕窗撤早了会双闪：界面窗还没把新尺寸画出来，那一圈透出来的是没压暗的
+        // 终态画面（亮），等它画完又落回压暗的那一档（暗），于是"暗-亮-暗-起"。
+        // 所以撤幕的时钟交给界面窗的第一帧，24 ms 那档只当兜底。
+        // 界面窗交出新尺寸的第一帧就落定；60 ms 是没有新帧可触发时的兜底。
+        QTimer::singleShot(60, &host, [&host] { host.noteSettled(); });
+        QObject::connect(chrome, &QQuickWindow::frameSwapped, chrome,
+                         [&host] { host.noteSettled(); }, Qt::SingleShotConnection);
     });
     QObject::connect(&host, &VideoHost::raised, chrome, [&host, chrome, pinAboveHost] {
         pinAboveHost();

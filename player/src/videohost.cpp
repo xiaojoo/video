@@ -3,6 +3,8 @@
 #include <dwmapi.h>
 
 #include <QCoreApplication>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QTimer>
 
 VideoHost *VideoHost::s_self = nullptr;
@@ -95,6 +97,31 @@ void VideoHost::activate()
     SetForegroundWindow(m_hwnd);
 }
 
+namespace {
+QRect clientOf(HWND h)
+{
+    RECT c{};
+    GetClientRect(h, &c);
+    POINT tl{ c.left, c.top };
+    ClientToScreen(h, &tl);
+    return { int(tl.x), int(tl.y), int(c.right - c.left), int(c.bottom - c.top) };
+}
+}
+
+void VideoHost::grabPicture()
+{
+    if (!m_hwnd)
+        return;
+    QScreen *sc = QGuiApplication::primaryScreen();
+    const QRect r = clientOf(m_hwnd);
+    m_snapObj.set(sc ? sc->grabWindow(0, r.x(), r.y(), r.width(), r.height()) : QPixmap());
+}
+
+void VideoHost::releasePicture()
+{
+    m_snapObj.set(QPixmap());      // 一张 4K 图 33 MB，溶解完就还掉
+}
+
 void VideoHost::moveBoth(int x, int y, int w, int h, HWND after)
 {
     const UINT hostFlags = SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW;
@@ -171,17 +198,20 @@ void VideoHost::showCurtain(const QRect &outer, const QRect &inner)
     // the flash: the end-size picture shows for one frame. Costs up to one vsync,
     // which the 40 ms trough already absorbs.
     DwmFlush();
-    // Its whole lifetime is this one call: shown before the move, dropped after the
-    // chrome's measured <=14 ms repaint plus margin. QML fades in on the same clock,
-    // so the curtain goes away exactly as the lid starts lifting.
-    QTimer::singleShot(24, this, &VideoHost::endCurtain);
+    // 撤它的时机不在这里：见 main.cpp 里那次 frameSwapped。以前是固定 24 ms，
+    // 界面窗偶尔画得比 24 ms 晚，那一圈就先透出终态画面（亮）再被压回去（暗）。
 }
 
-void VideoHost::endCurtain()
+void VideoHost::noteSettled()
 {
-    if (m_curtain)
+    if (!m_settledPending)
+        return;
+    m_settledPending = false;
+    if (m_curtain && IsWindow(m_curtain) && IsWindowVisible(m_curtain))
         ShowWindow(m_curtain, SW_HIDE);
+    emit settled();
 }
+
 
 void VideoHost::toggleFullscreen()
 {
@@ -199,7 +229,12 @@ void VideoHost::toggleFullscreen()
     // so it needs no covering and must not be veiled twice.
     const QRect from = geometry();
     const auto area = [](const QRect &v) { return v.width() * v.height(); };
-    showCurtain(from.united(to), area(from) <= area(to) ? from : to);
+    // 只有进全屏要幕窗：新铺到的那一圈在界面窗画出来之前透的是没压暗的终态画面。
+    // 退出时那一圈让给的是桌面，本身没有要盖的东西，盖上 72 % 反而把桌面压暗一块
+    // （实测右下角从 41 掉到 25、停 28 ms）。退出要盖的是画面自己，交给快照。
+    if (m_fs)
+        showCurtain(from.united(to), area(from) <= area(to) ? from : to);
+    m_settledPending = true;
     moveBoth(to.x(), to.y(), to.width(), to.height());
     emit resized();
     emit fullscreenChanged();

@@ -156,16 +156,27 @@ Window {
 
     // Every fullscreen entry/exit goes through here so it gets the same dissolve.
     function toggleFs() {
-        if (fsOut.running || fsIn.running)
+        if (win.snapping || win.snapPending)
             return;
         picker.hide();
-        // The gesture area's onClicked fires before its onDoubleClicked, so a
-        // double-click has just started a 180 ms fade-in of the whole control band
-        // - two animations crossing is what reads as "flashing twice". Park the
-        // chrome instead: the veil covers it anyway and the first mouse move brings
-        // it back.
+        // 手势区的 onClicked 先于 onDoubleClicked 触发，双击进全屏时它已经先启动了
+        // 控制条 180 ms 的淡入——两个动画交叉就是"闪两次"。先把控制条定住，
+        // 快照盖着画面，鼠标一动就回来。
         win.uiVisible = false;
-        fsOut.start();
+        win.snapPending = true;
+        videoHost.grabPicture();
+        win.snapSeq += 1;                 // 换 URL 才会真的重读 image://snap
+        snapWait.restart();               // 纹理迟迟不来也别把切换卡住
+    }
+
+    function startSwap() {
+        if (!win.snapPending)
+            return;
+        win.snapPending = false;
+        snapWait.stop();
+        win.snapOpacity = 1.0;
+        win.snapping = true;
+        videoHost.toggleFullscreen();       // 幕窗 + 一次批量移动
     }
 
     readonly property var mockTicks: [
@@ -481,50 +492,56 @@ Window {
         }
     }
 
-    // The fullscreen dissolve: fade to black, do the one window resize at the
-    // trough, fade back. Both surfaces take part - the picture because it is
-    // covered, the UI because this sits above it - and mpv is never asked to scale
-    // or repaint at a new size mid-transition.
-    Rectangle {
-        id: fsBlack
+    // ---- 切换时的那帧快照：盖住 mpv 在新尺寸上交出的第一帧黑画面 ----------------
+    // 实测（右下角 239x259 那块，逐帧）：移动那一拍整屏 92.8、角块 98.0，下一拍掉到
+    // 42.6 / 38.2，再下一拍回到 98.0 —— 黑只一帧（7 ms），但正好在刚铺满的画面上，
+    // 看着就是右下角闪过一块黑影。快照按终态矩形铺满、盖死这一帧，然后溶解掉。
+    // 溶解时长 90 ms = 量出来的"界面落定"窗口：移动后角块从 98 一路升回 247 用掉 90 ms。
+    property bool snapping: false
+    property bool snapPending: false
+    property int snapSeq: 0
+    property real snapOpacity: 0.0
+
+    Timer {
+        id: snapWait
+        interval: 200
+        onTriggered: win.startSwap()            // 纹理迟迟不来也别把切换卡住
+    }
+
+    Image {
+        id: snap
+        z: -1                                   // 画面之上、界面之下
         anchors.fill: parent
-        z: 100
-        color: videoHost.dipColor
-        opacity: 0.0
-        visible: opacity > 0.0
+        fillMode: Image.Stretch
+        visible: win.snapping || win.snapPending
+        opacity: win.snapOpacity
+        source: "image://snap/" + win.snapSeq
+        onStatusChanged: {
+            if (!win.snapPending)
+                return;                         // 启动时和 releasePicture 之后各报一次
+            if (status === Image.Ready || status === Image.Error)
+                win.startSwap();
+        }
     }
 
-    // The trough is where the only window resize happens: fsOut finishes fully black,
-    // C++ moves both windows in one batch, then a beat of black lets Qt repaint the
-    // newly exposed ring before fsIn lifts the lid.
     NumberAnimation {
-        id: fsOut
-        target: fsBlack
-        property: "opacity"
-        from: 0.0
-        to: videoHost.dipAlpha
-        duration: 60
-        easing.type: Easing.InQuad
+        id: snapFade
+        target: win
+        property: "snapOpacity"
+        from: 1.0
+        to: 0.0
+        duration: 90
+        easing.type: Easing.OutQuad
         onFinished: {
-            videoHost.toggleFullscreen();
-            fsIn.restart();
+            win.snapping = false;
+            videoHost.releasePicture();
         }
     }
 
-    SequentialAnimation {
-        id: fsIn
-        // Measured: the chrome needs <=14 ms to paint the area it grew into, so this
-        // is that plus a 10 ms margin. The curtain covers the swap itself; all this
-        // has to outlast is the paint right after the curtain drops.
-        PauseAnimation { duration: 24 }
-        NumberAnimation {
-            target: fsBlack
-            property: "opacity"
-            from: videoHost.dipAlpha
-            to: 0.0
-            duration: 60
-            easing.type: Easing.OutQuad
-        }
+    // 界面窗按新尺寸画出第一帧的那一拍，快照才开始溶解。
+    Connections {
+        target: videoHost
+        function onSettled() { if (win.snapping) snapFade.restart(); }
     }
 
     // Keyboard. Shortcut is scoped to this window and fires without waiting for
