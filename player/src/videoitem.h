@@ -63,7 +63,8 @@ signals:
     // the way into fullscreen the screen still showed the *old* surface parked in the
     // top-left corner of the enlarged window for one frame after the first present at
     // the new size (edge of the content at 1280x732 of a 3840x2160 window). Qt is
-    // vsync-locked, so the second present means the first one is on screen.
+    // vsync-locked, so the third present means the first one has been on screen for a
+    // frame - which is what the host waits for.
     void presented(int w, int h, int n);
 
 protected:

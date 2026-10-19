@@ -15,7 +15,7 @@ class QWindow;
 // frame off for fullscreen, the mini window's topmost band, and the cover that hides
 // the swap. The fullscreen change is one step, and the step is hidden by a layered
 // window holding a 1:1 copy of the monitor, handed to DWM in one UpdateLayeredWindow
-// and taken back off when the window has really put two frames at the new size on the
+// and taken back off when the window has really put three frames at the new size on the
 // panel - the route the two-window build measured its way to (docs/最大化过渡.md).
 class VideoHost final : public QObject
 {
@@ -51,7 +51,7 @@ public:
     // than in this call so the signal does not arrive inside the caller's stack.
     Q_INVOKABLE void beginSwap();
     // The picture just went on screen at device size w x h, and this is the n-th frame
-    // presented at that size. The second one ends the cover: the first only proves the
+    // presented at that size. The third one ends the cover: the first only proves the
     // frame reached DWM, not that the panel has it.
     Q_INVOKABLE void notePresented(int w, int h, int n);
     Q_INVOKABLE void toggleMini();
@@ -100,6 +100,9 @@ private:
     // GDI and composited (UpdateWindow + DwmFlush) before anything moves, and it is
     // faded out by settle(), the same signal that ends the transition.
     void showCover();
+    // Fills the cover's surface from the monitor as it is right now, without showing
+    // it. `grabPicture()` is this plus the signal QML waits on.
+    void fillCover();
     void bandStep();
     void raiseCurtain();
     void hideCurtain();
@@ -129,7 +132,7 @@ private:
     QTimer m_trayBeat;
     // The backstop: a resize that Qt never draws a frame for (the render loop can be
     // idle) must still hand the screen back. `transitioning` is cleared and the cover
-    // taken off by reveal(), which the second new-size present normally calls long
+    // taken off by reveal(), which the third new-size present normally calls long
     // before this fires.
     QTimer m_settled;
     bool m_trans = false;

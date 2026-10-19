@@ -130,12 +130,12 @@ void VideoItem::hookWindow()
             m_repH = m_texH;
             m_repN = 0;
         }
-        if (m_repN >= 2)
-            return;                       // past the second frame this says nothing new
+        if (m_repN >= 3)
+            return;                       // past the third frame this says nothing new
         ++m_repN;
-        if (m_repN == 1 && window())
-            // The host waits for the *second* frame at the new size, so make sure there
-            // is one: a paused film presents nothing on its own after the resize.
+        if (m_repN < 3 && window())
+            // The host waits for the third frame at the new size, so make sure there
+            // are two more: a paused film presents nothing on its own after the resize.
             QMetaObject::invokeMethod(window(), &QQuickWindow::update, Qt::QueuedConnection);
         emit presented(m_texW, m_texH, m_repN);
     }, Qt::DirectConnection);

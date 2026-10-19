@@ -15,7 +15,7 @@ namespace {
 // old 1314x801 surface sat in the top-left corner of the 3840x2160 window for 19 ms
 // (2 frames at 144 Hz), which is the "window jumps to the top-left" he saw.
 //
-// It is put up before the write and taken off by the second frame that goes over at a
+// It is put up before the write and taken off by the third frame that goes over at a
 // size other than the one the window had beforehand - the first only proves the frame
 // reached DWM, and measured, the panel still showed the old surface in the top-left
 // corner of the enlarged window for one frame after it. So the freeze lasts exactly as
@@ -462,6 +462,13 @@ QRect VideoHost::monitorRect() const
 
 void VideoHost::grabPicture()
 {
+    fillCover();
+    emit pictureReady();
+}
+
+// The cover's surface, filled from what the monitor shows right now.
+void VideoHost::fillCover()
+{
     if (!m_hwnd)
         return;
     // The whole monitor, not the client rect. A cover that reproduces every pixel
@@ -498,7 +505,6 @@ void VideoHost::grabPicture()
             g_coverBits = nullptr;
             g_coverW = g_coverH = 0;
             qWarning("COVER dib %dx%d failed", mon.width(), mon.height());
-            emit pictureReady();
             return;
         }
         g_coverBits = static_cast<uint8_t *>(bits);
@@ -532,7 +538,6 @@ void VideoHost::grabPicture()
     g_bandFade = 0;
     qInfo("SWAP grab %d ms, %d ms after the press", int(g.elapsed()),
           int(m_press.isValid() ? m_press.elapsed() : -1));
-    emit pictureReady();
 }
 
 void VideoHost::beginSwap()
@@ -569,11 +574,14 @@ void VideoHost::notePresented(int w, int h, int n)
     // the change was a resize Qt had already queued before the write.
     if (m_presented == m_swapFrom)
         return;
-    // The second frame at the new size, not the first: `Present()` only hands the frame
-    // to DWM, and measured, the screen still showed the old surface in the top-left
-    // corner of the enlarged window for one frame after the first present (content edge
-    // at 1280x732 of a 3840x2160 window). One vsync later that frame is on the panel.
-    if (n < 2)
+    // The third frame at the new size, not the first or the second: `Present()` only
+    // hands the frame to DWM. Measured on the way in, the first present at the new size
+    // came 6-11 ms after the write and the screen still showed the previous, smaller
+    // surface for a frame after that; with the frame now covering the whole window the
+    // gap is not even black, it is transparent, so what shows through is the desktop.
+    // One more vsync on top of the second frame is what puts the composed picture under
+    // the cover before it comes down.
+    if (n < 3)
         return;
     reveal();
 }
@@ -747,9 +755,36 @@ void VideoHost::toggleMaximized()
         toggleFullscreen();       // out of fullscreen goes back where it came from
         return;
     }
-    ShowWindow(m_hwnd, IsZoomed(m_hwnd) ? SW_RESTORE : SW_MAXIMIZE);
-    qInfo("MAX zoomed=%d rect=%d,%d %dx%d", IsZoomed(m_hwnd) ? 1 : 0,
-          geometry().x(), geometry().y(), geometry().width(), geometry().height());
+    // The cover goes up here too. The frame architecture widened this gap rather than
+    // narrowing it: the client now covers what used to be the frame, so the area the
+    // window grows into holds no painted pixels until Qt presents at the new size, and
+    // what shows through them is the desktop.
+    //
+    // This leg is *not* frame-driven. The frames go quiet long before the screen is: what
+    // carries the seam is the shell's own maximise/restore animation, and it runs behind
+    // the window, so no present of ours marks its end. Measured on a leg that revealed on
+    // the third frame at 6 ms after the write: 31 of 80 captured frames matched neither the
+    // before nor the after picture, from 1496 ms to 1704 ms of the recording - about
+    // 210 ms - peaking at 17.7 % of the screen, and the worst frame is the two film images
+    // cross-faded on top of each other with the desktop around them. Held to the timer
+    // instead, that whole span is behind the cover and what you get is one freeze and one
+    // step.
+    m_settledPending = true;
+    m_bandIn = false;
+    m_revealByFrame = false;
+    m_press.start();
+    fillCover();
+    showCover();
+    armReveal();
+    m_trans = true;
+    emit transitioningChanged();
+    const bool wasZoomed = IsZoomed(m_hwnd) != 0;
+    ShowWindow(m_hwnd, wasZoomed ? SW_RESTORE : SW_MAXIMIZE);
+    qInfo("MAX zoom=%d rect=%d,%d %dx%d", wasZoomed ? 0 : 1, geometry().x(),
+          geometry().y(), geometry().width(), geometry().height());
+    // 240 ms: the animation measured 210 ms from the press, of which the grab alone takes
+    // 33-42 ms, so the timer starts that much after the press.
+    m_settled.setInterval(240);
     emit resized();
 }
 
