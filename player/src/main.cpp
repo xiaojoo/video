@@ -15,8 +15,15 @@
 #include <QQuickImageProvider>
 #include <QQuickWindow>
 
-// 把 grabPicture() 抓到的那帧交给 QML 的 Image（source: "image://snap/<帧号>"）。
-// 帧号一变就是强制重读；不变的话 QML 会把同一 URL 当缓存命中。
+#include <QTimer>
+#include <QElapsedTimer>
+#include <QStandardPaths>
+#include <QFile>
+#include <QTextStream>
+#include <QUrl>
+
+// Hands the frame grabPicture() took to QML's Image (source: "image://snap/<n>").
+// The number is a forced reload: the same URL would be a cache hit.
 class SnapProvider final : public QQuickImageProvider
 {
 public:
@@ -35,46 +42,15 @@ public:
 private:
     Snapshot *m_snap;
 };
-
-#include <QTimer>
-#include <QStandardPaths>
-#include <QFile>
-#include <QTextStream>
-#include <QUrl>
 #include <QWindow>
 #include <QSurfaceFormat>
 
 #include <clocale>
+#include <cmath>
 
 // Above this, a mismatch between the window and the film is a real letterbox and
 // must stay; at or below it, it is a rounding hairline we can snap away.
 constexpr int kHairlineMaxPx = 2;
-
-static QRect clientRect(HWND h){
-    RECT c{};
-    GetClientRect(h, &c);
-    POINT tl{ c.left, c.top }, br{ c.right, c.bottom };
-    ClientToScreen(h, &tl);
-    ClientToScreen(h, &br);
-    return { int(tl.x), int(tl.y), int(br.x - tl.x), int(br.y - tl.y) };
-}
-
-// Qt::Tool windows are excluded from quitOnLastWindowClosed, so the chrome
-// closing must quit the app explicitly.
-class CloseQuitter final : public QObject
-{
-public:
-    using QObject::QObject;
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *ev) override
-    {
-        if (ev->type() == QEvent::Close) {
-            QMetaObject::invokeMethod(qApp, [] { QCoreApplication::quit(); }, Qt::QueuedConnection);
-        }
-        return QObject::eventFilter(watched, ev);
-    }
-};
 
 int main(int argc, char *argv[])
 {
@@ -86,12 +62,6 @@ int main(int argc, char *argv[])
     QGuiApplication::setApplicationName(u"Playerui"_qs);
     QGuiApplication::setOrganizationName(u"local"_qs);
 
-    // Without an 8-bit alpha buffer the chrome window composites as opaque black
-    // and hides the mpv host underneath it.
-    QSurfaceFormat surfaceFormat = QSurfaceFormat::defaultFormat();
-    surfaceFormat.setAlphaBufferSize(8);
-    QSurfaceFormat::setDefaultFormat(surfaceFormat);
-
     QCommandLineParser parser;
     parser.setApplicationDescription(u"player shell"_qs);
     parser.addHelpOption();
@@ -102,6 +72,7 @@ int main(int argc, char *argv[])
     QCommandLineOption open(u"open"_qs, u"media file to load on start"_qs, u"path"_qs);
     QCommandLineOption diag(u"diag"_qs, u"show the mpv diagnostic line"_qs);
     QCommandLineOption start(u"start"_qs, u"start playback at N seconds"_qs, u"sec"_qs);
+    QCommandLineOption paused(u"paused"_qs, u"hold the first frame: for measuring the chrome and the transitions"_qs);
     QCommandLineOption full(u"fullscreen"_qs, u"start the host window in fullscreen"_qs);
     QCommandLineOption root(u"root"_qs, u"media root to catalogue (repeatable)"_qs, u"path"_qs);
     QCommandLineOption db(u"db"_qs, u"catalogue database path"_qs, u"path"_qs);
@@ -117,6 +88,7 @@ int main(int argc, char *argv[])
     parser.addOption(open);
     parser.addOption(diag);
     parser.addOption(start);
+    parser.addOption(paused);
     parser.addOption(full);
     parser.addOption(root);
     parser.addOption(db);
@@ -221,11 +193,10 @@ int main(int argc, char *argv[])
     // window is on screen before the catalogue is walked again.
     QMetaObject::invokeMethod(&app, pumpDurations, Qt::QueuedConnection);
 
+    // One window for everything: the QML window carries the caption, the picture
+    // (VideoItem) and the chrome. VideoHost only adopts its HWND afterwards.
     VideoHost host;
-    if (!host.create({ atX, atY, w, h }))
-        return 2;
-
-    PlayerCore player(reinterpret_cast<qintptr>(host.hwnd()), parser.isSet(full));
+    PlayerCore player;
     ThumbStrip thumbs;
     // Cover stills share the hidden core with the scrub strip, one job at a time,
     // and are capped per scan so the strip always gets the core back first.
@@ -236,10 +207,13 @@ int main(int argc, char *argv[])
                          library.setPoster(path, file);
                      });
     QMetaObject::invokeMethod(&app, pumpCovers, Qt::QueuedConnection);
-    QObject::connect(&host, &VideoHost::closeRequested, &app, &QCoreApplication::quit);
+
+    // The film name goes into the system caption through Window.title in Main.qml -
+    // there is only one window now, so Qt is the only writer.
 
     QQmlApplicationEngine engine;
-    engine.addImageProvider("snap", new SnapProvider(static_cast<Snapshot *>(host.snapshotObj())));
+    engine.addImageProvider(u"snap"_qs,
+                            new SnapProvider(static_cast<Snapshot *>(host.snapshotObj())));
     engine.rootContext()->setContextProperty(u"playerCore"_qs, &player);
     engine.rootContext()->setContextProperty(u"videoHost"_qs, &host);
     engine.rootContext()->setContextProperty(u"thumbs"_qs, &thumbs);
@@ -254,6 +228,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"shellDiag"_qs, parser.isSet(diag));
     engine.rootContext()->setContextProperty(u"shellWidth"_qs, w);
     engine.rootContext()->setContextProperty(u"shellHeight"_qs, h);
+    engine.rootContext()->setContextProperty(u"shellX"_qs, atX);
+    engine.rootContext()->setContextProperty(u"shellY"_qs, atY);
     const QString bgPath = parser.value(bg);
     engine.rootContext()->setContextProperty(u"shellBg"_qs,
         bgPath.isEmpty() ? QUrl() : QUrl::fromLocalFile(QFileInfo(bgPath).absoluteFilePath()));
@@ -262,106 +238,30 @@ int main(int argc, char *argv[])
     if (engine.rootObjects().isEmpty())
         return -1;
 
-    // The chrome is a translucent tool window pinned above the mpv host window.
-    auto *chrome = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-    QWindow *hostSurface = QWindow::fromWinId(reinterpret_cast<WId>(host.hwnd()));
-    chrome->setFlags(Qt::FramelessWindowHint | Qt::Tool);
-    // The clear colour is set from Main.qml; doing it here too would silently
-    // override whatever the QML side asks for.
-    chrome->setTransientParent(hostSurface);
-    chrome->resize(w, h);
-    chrome->setGeometry(clientRect(host.hwnd()));
-    chrome->show();
-
-    // Qt will not owner-rank a window it did not create, and mpv raises its own
-    // host when the VO initialises, which undoes a one-shot z-order pin. Make the
-    // chrome an *owned* window of the host so Windows keeps it above.
-    auto pinAboveHost = [&host, chrome] {
-        HWND ch = reinterpret_cast<HWND>(chrome->winId());
-        SetWindowLongPtrW(ch, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(host.hwnd()));
-        // Inserting "after the host" would put the chrome *below* it; HWND_TOP
-        // plus the owner link is what keeps the chrome above its owner.
-        SetWindowPos(ch, HWND_TOP, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        if (qEnvironmentVariableIsSet("PLAYERUI_TOPMOST"))
-            SetWindowPos(ch, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    };
-    pinAboveHost();
-    host.setChrome(reinterpret_cast<HWND>(chrome->winId()));
-
-    auto *quitter = new CloseQuitter(&app);
-    chrome->installEventFilter(quitter);
-
-    // mpv replaces the host's window procedure, so neither our WM_SIZE nor our
-    // WM_CLOSE handler ever runs. Poll instead: it also catches mpv resizing the
-    // host on its own.
-    QTimer watchdog;
-    watchdog.setInterval(60);
-    QObject::connect(&watchdog, &QTimer::timeout, &app, [&host, chrome, pinAboveHost] {
-        if (!IsWindow(host.hwnd())) {
-            QCoreApplication::quit();
-            return;
-        }
-        // Windows leaves Qt::Tool windows out of the owner's minimisation
-        // cascade, so the chrome has to follow the host's iconic state by hand.
-        // QWindow::isVisible() is not usable as the check here - Qt had already
-        // cached the chrome as hidden while its HWND was still on screen - so
-        // both sides are read from Win32.
-        HWND ch = reinterpret_cast<HWND>(chrome->winId());
-        const bool iconic = IsIconic(host.hwnd()) != 0;
-        if ((IsIconic(ch) != 0) != iconic)
-            ShowWindow(ch, iconic ? SW_MINIMIZE : SW_RESTORE);
-        if (iconic)
-            return;
-        // mpv resizes the host itself (fullscreen, its own WM_SIZE), so the
-        // chrome has to follow the host's client rect rather than the CLI size.
-        const QRect c = clientRect(host.hwnd());
-        if (chrome->geometry() != c) {
-            chrome->setGeometry(c);
-            pinAboveHost();
-            if (GetForegroundWindow() == host.hwnd())
-                chrome->requestActivate();
-        }
-    });
-    watchdog.start();
-
-    QObject::connect(&host, &VideoHost::resized, chrome, [&host, chrome, pinAboveHost] {
-        if (!IsIconic(host.hwnd())) {
-            chrome->setGeometry(clientRect(host.hwnd()));
-            pinAboveHost();
-        }
-        // 幕窗撤早了会双闪：界面窗还没把新尺寸画出来，那一圈透出来的是没压暗的
-        // 终态画面（亮），等它画完又落回压暗的那一档（暗），于是"暗-亮-暗-起"。
-        // 所以撤幕的时钟交给界面窗的第一帧，24 ms 那档只当兜底。
-        // 界面窗交出新尺寸的第一帧就落定；60 ms 是没有新帧可触发时的兜底。
-        QTimer::singleShot(60, &host, [&host] { host.noteSettled(); });
-        QObject::connect(chrome, &QQuickWindow::frameSwapped, chrome,
-                         [&host] { host.noteSettled(); }, Qt::SingleShotConnection);
-    });
-    QObject::connect(&host, &VideoHost::raised, chrome, [&host, chrome, pinAboveHost] {
-        pinAboveHost();
-        // mpv brings its host to the foreground on its own (fullscreen does it),
-        // which takes the keyboard away from the window that owns the shortcuts.
-        if (GetForegroundWindow() == host.hwnd())
-            chrome->requestActivate();
-    });
+    // The QML window is the player: caption, picture and chrome in one surface.
+    // Its size and position come from shellWidth/shellHeight/shellX/shellY so it is
+    // created at the right rect rather than resized onto the screen.
+    auto *win = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!win)
+        return -1;
+    host.adopt(win);
 
     // A window whose height is not an exact multiple of the film's aspect leaves a
-    // 1 px hairline bar at the top and bottom. mpv cannot resize our host under
-    // --wid, so snap the height to the exact value - but only when the fix is a
-    // couple of pixels, so a real letterbox (2.39 in 16:9) is left alone.
+    // 1 px hairline bar at the top and bottom (1282x723 is not 16:9: 1282*9/16 =
+    // 721.125, so only 721 rows of picture exist and one row of black is left at
+    // each edge). Snap the client height to the exact value - but only when the fix
+    // is a couple of pixels, so a real letterbox (2.40 in 16:9, 281 px of it) stays.
     auto snapHairline = [&player, &host] {
         const double a = player.videoAspect();
         if (a <= 0.0 || host.fullscreen() || host.mini())
             return;
-        const QRect r = host.geometry();
-        const int want = qRound(r.width() / a);
-        if (want == r.height() || qAbs(want - r.height()) > kHairlineMaxPx)
+        const QRect c = host.clientGeometry();
+        const int want = qRound(c.width() / a);
+        if (want == c.height() || qAbs(want - c.height()) > kHairlineMaxPx)
             return;
         qInfo("HAIRLINE %dx%d -> %dx%d  aspect=%.6f  delta=%d",
-              r.width(), r.height(), r.width(), want, a, r.height() - want);
-        host.setRect(r.x(), r.y(), r.width(), want);
+              c.width(), c.height(), c.width(), want, a, c.height() - want);
+        host.setClientSize(c.width(), want);
     };
     QObject::connect(&player, &PlayerCore::videoAspectChanged, &host, snapHairline);
     // Leaving fullscreen and leaving mini restore the old rect, and the aspect has
@@ -373,32 +273,31 @@ int main(int argc, char *argv[])
             snapHairline();
     });
 
-    // Must come after the sync connections, or the chrome never hears about it.
     if (parser.isSet(full))
         host.toggleFullscreen();
 
-    const QRect r = clientRect(host.hwnd());
-    qInfo("HOSTRECT %d %d %d %d", r.x(), r.y(), r.width(), r.height());
-    qInfo("HOSTHWND %lld CHROMEHWND %lld", (qint64)(intptr_t)host.hwnd(),
-          (qint64)(intptr_t)chrome->winId());
-    host.activate();
-    pinAboveHost();
-    // The chrome, not the host, owns the keyboard: every Shortcut below lives in
-    // the QML window, and mpv's own input is switched off.
-    chrome->requestActivate();
-    // mpv raises its host while bringing the VO up, which can outrank the chrome.
-    QTimer::singleShot(1500, chrome, pinAboveHost);
+    const QRect c = host.clientGeometry();
+    qInfo("CLIENTRECT %d %d %d %d", c.x(), c.y(), c.width(), c.height());
+    qInfo("HWND %lld", (qint64)(intptr_t)win->winId());
+    win->requestActivate();
 
     if (!parser.value(open).isEmpty()) {
         if (parser.isSet(start))
             player.setStartAt(parser.value(start).toDouble());
+        // Queued inside PlayerCore until VideoItem reports its render context.
         player.load(QUrl::fromLocalFile(QFileInfo(parser.value(open)).absoluteFilePath()).toString());
+        // Set after the request: the core honours it as the file comes up, so the
+        // frame under the chrome is the same one every time it is measured.
+        if (parser.isSet(paused))
+            player.setPropertyString("pause", "yes");
     }
 
     if (parser.isSet(shot)) {
         const int hold = parser.isSet(open) ? 4000 : 1200;
-        QTimer::singleShot(hold, chrome, [chrome, out = parser.value(shot)] {
-            const QImage img = chrome->grabWindow();
+        QTimer::singleShot(hold, win, [win, out = parser.value(shot)] {
+            // One window, so this now captures the picture *and* the chrome - the
+            // old grab could only see the chrome floating over mpv's surface.
+            const QImage img = win->grabWindow();
             QDir().mkpath(QFileInfo(out).absolutePath());
             if (!img.save(out))
                 qWarning("shot save failed: %s", qPrintable(out));
@@ -408,8 +307,5 @@ int main(int argc, char *argv[])
         });
     }
 
-    const int rc = app.exec();
-    hostSurface->destroy();
-    delete hostSurface;
-    return rc;
+    return app.exec();
 }

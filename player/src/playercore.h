@@ -38,8 +38,15 @@ class PlayerCore final : public QObject
     Q_PROPERTY(double videoAspect READ videoAspect NOTIFY videoAspectChanged)
 
 public:
-    explicit PlayerCore(qintptr wid, bool startFullscreen = false, QObject *parent = nullptr);
+    explicit PlayerCore(QObject *parent = nullptr);
     ~PlayerCore() override;
+
+    // For VideoItem, which owns the render context built on this core.
+    struct mpv_handle *handle() const { return m_mpv; }
+    // Nothing may be loaded before the render context exists: the libmpv VO
+    // answers "No render context set" and the window stays black. Until the item
+    // says it is ready, load() remembers the request and replays it.
+    Q_INVOKABLE void markRenderReady();
 
     bool hasMedia() const { return m_hasMedia; }
     double position() const { return m_position; }
@@ -129,5 +136,7 @@ private:
     QString m_hwdecCurrent, m_videoCodec, m_voDriven;
     bool m_fullscreen = false;
     bool m_fsActive = false;
+    bool m_renderReady = false;
+    QString m_pendingUrl;
     void *m_guard = nullptr;
 };

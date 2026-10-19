@@ -18,20 +18,23 @@
 
 #include <cstring>
 
-PlayerCore::PlayerCore(qintptr wid, bool startFullscreen, QObject *parent) : QObject(parent)
+PlayerCore::PlayerCore(QObject *parent) : QObject(parent)
 {
-    Q_UNUSED(startFullscreen); // the shell owns fullscreen; see VideoHost
     m_mpv = mpv_create();
     if (!m_mpv)
         return;
 
     auto set = [this](const char *k, const char *v) { mpv_set_option_string(m_mpv, k, v); };
-    set("vo", "gpu-next");
+    // The shell no longer hands mpv a window to draw into: VideoItem asks libmpv's
+    // D3D11 render API to draw into a texture on the window's own device, and the
+    // scene graph composites that texture under the chrome. So no `wid`, no
+    // `force-window`, and the fullscreen state is purely the shell's.
+    set("vo", "libmpv");
     set("gpu-api", "d3d11");
     set("hwdec", "d3d11va-copy");
     set("terminal", getenv("PLAYERUI_MPV_LOG") ? "yes" : "no");
     set("keep-open", "yes");
-    // mpv paints subtitles into the host window, i.e. underneath our scrim, so
+    // mpv paints subtitles into the picture, i.e. underneath our scrim, so
     // they have to be lifted above it. The margin is in OSD units referenced to
     // a 720-high window and mpv scales it with the window height, so a constant
     // lands the subtitle box at 0.743*h at any size -- just clear of the scrim's
@@ -41,9 +44,6 @@ PlayerCore::PlayerCore(qintptr wid, bool startFullscreen, QObject *parent) : QOb
     // separates the glyphs from a bright picture; a 1 px shadow adds 1239 dark
     // pixels of separation around the same text.
     set("sub-shadow-offset", "1");
-    if (wid)
-        mpv_set_option(m_mpv, "wid", MPV_FORMAT_INT64, &wid);
-    set("force-window", "yes");
     set("input-default-bindings", "no");
     set("input-vo-keyboard", "no");
 
@@ -344,6 +344,13 @@ void PlayerCore::load(const QString &url)
 {
     if (!m_mpv)
         return;
+    // The libmpv VO cannot come up without a render context - it answers
+    // "No render context set" and leaves the window black - so a load issued
+    // before VideoItem is ready is remembered and replayed instead.
+    if (!m_renderReady) {
+        m_pendingUrl = url;
+        return;
+    }
     // The scrub preview keys its cache on this, so it has to be the exact url
     // mpv is being asked for.
     // The shell hands over a bare path from the catalogue or a file:// url from
@@ -400,6 +407,16 @@ void PlayerCore::loadBluray(const QString &discDir)
         if (m_blurayFallback.isEmpty())
             emit loadFailed(QString::fromUtf8(mpv_error_string(rc)));
     }
+}
+
+void PlayerCore::markRenderReady()
+{
+    m_renderReady = true;
+    if (m_pendingUrl.isEmpty())
+        return;
+    const QString u = m_pendingUrl;
+    m_pendingUrl.clear();
+    load(u);
 }
 
 void PlayerCore::setStartAt(double seconds)

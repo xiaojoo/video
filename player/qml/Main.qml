@@ -4,9 +4,22 @@ import Playerui
 Window {
     id: win
     visible: true
-    color: shellBg.toString().length > 0 ? "#000000" : "transparent"
-    flags: Qt.FramelessWindowHint
-    title: "Playerui"
+    // One window now: the picture is a layer in here, so the window carries the
+    // native caption itself and no longer needs to be frameless or transparent.
+    width: shellWidth
+    height: shellHeight
+    x: shellX
+    y: shellY
+    color: "#000000"
+    title: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Playerui"
+    // The host only releases the snapshot cover after a frame at the new size has
+    // actually gone to the compositor, not after a fixed delay. The same signal is
+    // what tells us the raised cover really reached the screen.
+    onFrameSwapped: {
+        videoHost.noteSettled()
+        if (win.snapArmed)
+            win.finishMove()
+    }
 
     readonly property real vw: width
     readonly property real vh: height
@@ -154,19 +167,16 @@ Window {
         win.touch();
     }
 
-    // Every fullscreen entry/exit goes through here so it gets the same dissolve.
+    // The "big view" for F: true fullscreen in one step, covered by a snapshot of the
+    // picture and dissolved when the window has presented a frame at the new size.
+    // Every entry and exit goes through here so both directions get the same cover.
     function toggleFs() {
         if (win.snapping || win.snapPending)
-            return;
+            return;                     // no second swap on top of a half-drawn one
         picker.hide();
-        // 手势区的 onClicked 先于 onDoubleClicked 触发，双击进全屏时它已经先启动了
-        // 控制条 180 ms 的淡入——两个动画交叉就是"闪两次"。先把控制条定住，
-        // 快照盖着画面，鼠标一动就回来。
-        win.uiVisible = false;
         win.snapPending = true;
-        videoHost.grabPicture();
-        win.snapSeq += 1;                 // 换 URL 才会真的重读 image://snap
-        snapWait.restart();               // 纹理迟迟不来也别把切换卡住
+        videoHost.beginSwap();          // grabs two frames later
+        snapWait.restart();             // a texture that never arrives must not stall F
     }
 
     function startSwap() {
@@ -176,7 +186,62 @@ Window {
         snapWait.stop();
         win.snapOpacity = 1.0;
         win.snapping = true;
-        videoHost.toggleFullscreen();       // 幕窗 + 一次批量移动
+        // The cover has to be *on screen* before the rect changes, not merely loaded:
+        // measured, moving in the same tick as the assignment left one presented frame
+        // at 8.35 where the window had been 25.19 - the black first frame at the new
+        // size, which is the only thing the cover exists for. Raising it is invisible
+        // (it is the same picture), so wait one present and move from there.
+        win.snapArmed = true;
+        snapArmWait.restart();
+    }
+
+    function finishMove() {
+        if (!win.snapArmed)
+            return;
+        win.snapArmed = false;
+        snapArmWait.stop();
+        videoHost.toggleFullscreen();
+    }
+
+    property bool snapping: false
+    property bool snapPending: false
+    property bool snapArmed: false
+    property real snapOpacity: 0.0
+    // The grab's cache buster: it only moves when a frame really landed in the host,
+    // so the Image never reloads onto an empty one.
+    readonly property int snapFrame: videoHost.snapshot.frame
+
+    Timer {
+        id: snapWait
+        interval: 200
+        onTriggered: win.startSwap()
+    }
+
+    Timer {
+        id: snapArmWait
+        interval: 60
+        onTriggered: if (win.snapArmed) win.finishMove()
+    }
+
+    NumberAnimation {
+        id: snapFade
+        target: win
+        property: "snapOpacity"
+        from: 1.0
+        to: 0.0
+        duration: 90                    // measured: the window's own re-layout takes 90 ms
+        easing.type: Easing.OutQuad
+        onFinished: {
+            win.snapping = false;
+            videoHost.releasePicture();
+        }
+    }
+
+    Connections {
+        target: videoHost
+        // One signal drives both halves of the end: the snapshot may only start
+        // dissolving once the new size is actually on screen.
+        function onSettled() { if (win.snapping) snapFade.restart(); }
     }
 
     readonly property var mockTicks: [
@@ -188,8 +253,41 @@ Window {
         ? playerCore.chapterStarts.slice(1).map(v => v / playerCore.duration)
         : mockTicks
 
+    // The picture. libmpv draws into a texture on this window's own device and the
+    // scene graph samples it here, so the scrim, the bar and the buttons are drawn
+    // over it in the same pass - which is why there is no second window any more.
+    VideoItem {
+        id: video
+        anchors.fill: parent
+        core: playerCore
+        // Nothing can be loaded before the render context exists; PlayerCore
+        // holds the request until this fires.
+        onReady: playerCore.markRenderReady()
+    }
+
+    // The swap's cover: the frame taken off the screen before the rect changed,
+    // stretched to the end size. It sits above the picture and below the chrome, and
+    // its job is only to hide the black first frame at the new size - it does not
+    // scale or move, so it costs no re-allocation.
+    Image {
+        id: snap
+        anchors.fill: parent
+        fillMode: Image.Stretch
+        cache: false
+        visible: win.snapping || win.snapPending
+        opacity: win.snapOpacity
+        source: win.snapFrame > 0 ? "image://snap/" + win.snapFrame : ""
+        onStatusChanged: {
+            if (!win.snapPending)
+                return;                 // once at boot and once after releasePicture
+            if (status === Image.Ready || status === Image.Error)
+                win.startSwap();
+        }
+    }
+
     Image {
         anchors.fill: parent
+        z: -3
         source: shellBg
         fillMode: Image.PreserveAspectCrop
         cache: false
@@ -260,7 +358,8 @@ Window {
             console.log("uiVisible ->", win.uiVisible);
             win.touch();
         }
-        onDoubleClicked: win.toggleFs()
+        // Double-click on the picture is play/pause now, not a window state.
+        onDoubleClicked: playerCore.togglePause()
         onPositionChanged: win.touch()
         onWheel: (w) => win.setVol(playerCore.volume + (w.angleDelta.y > 0 ? 5 : -5))
     }
@@ -284,7 +383,9 @@ Window {
     Timer {
         id: poke
         interval: 3000
-        onTriggered: if (!win.keepUi) win.uiVisible = false
+        // While the film is stopped there is nothing for the chrome to get out of
+        // the way of, so the bar and the menus stay up until it runs again.
+        onTriggered: if (!win.keepUi && !playerCore.paused) win.uiVisible = false
     }
 
     // The scrub preview is built once the length is known: the strip is spread
@@ -292,6 +393,14 @@ Window {
     Connections {
         target: playerCore
         function onMediaUrlChanged() { thumbs.clear(); }
+        // Pausing brings the chrome up - there is nothing to hide it for - and
+        // playing again re-arms the countdown, which nothing else would do.
+        function onPausedChanged() {
+            if (playerCore.paused)
+                win.uiVisible = true;
+            else
+                win.touch();
+        }
         function onDurationChanged() {
             if (playerCore.duration > 0 && playerCore.mediaUrl.length > 0) {
                 thumbs.build(playerCore.mediaUrl, playerCore.duration, 10);
@@ -318,7 +427,7 @@ Window {
 
     Item {
         id: ui
-        visible: page !== "library"
+        visible: page !== "library" && !videoHost.transitioning
         anchors.fill: parent
         opacity: win.uiVisible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
@@ -343,6 +452,9 @@ Window {
             id: caption
             anchors.top: parent.top
             anchors.right: parent.right
+            // Windowed and maximised, the system caption owns the top-right corner
+            // and these three would sit over its buttons and eat the clicks.
+            visible: videoHost.fullscreen
             fullscreen: videoHost.fullscreen
             onPicked: (what) => {
                 if (what === "close") win.close();
@@ -357,18 +469,27 @@ Window {
             // gap px below the window edge, so the row's middle is gap + tileH/2.
             // The 2.5 px is measured: at this size the ink band sits that far below
             // the line box's centre, so centring the box leaves the words low.
-            y: Math.max(0, caption.gap + caption.tileH / 2 - mediaTitle.height / 2 - 2.5)
+            readonly property real rowMid: caption.gap + caption.tileH / 2 - 2.5
+            // Out of fullscreen the film name has moved up into the system caption,
+            // and the chapter line takes the seat it vacated.
+            y: Math.max(0, rowMid - (videoHost.fullscreen ? mediaTitle.height
+                                                          : chapterLine.height) / 2)
             spacing: Theme.titleLineGapRatio * win.vh
 
             Text {
                 id: mediaTitle
                 text: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Oppenheimer (2023)"
+                visible: videoHost.fullscreen
+                // Column stacks by height and ignores visibility, so an invisible
+                // title would still push the chapter line down.
+                height: visible ? implicitHeight : 0
                 color: Theme.textPrimary
                 font.pixelSize: win.headerFont
                 font.family: Theme.uiFont
                 font.weight: Font.Normal
             }
             Text {
+                id: chapterLine
                 text: playerCore.chapter >= 0 ? "Chapter " + (playerCore.chapter + 1) : "Chapter 2"
                 color: Theme.textSecondary
                 // The house factor for secondary text (Tip and the dropdown use it
@@ -492,60 +613,8 @@ Window {
         }
     }
 
-    // ---- 切换时的那帧快照：盖住 mpv 在新尺寸上交出的第一帧黑画面 ----------------
-    // 实测（右下角 239x259 那块，逐帧）：移动那一拍整屏 92.8、角块 98.0，下一拍掉到
-    // 42.6 / 38.2，再下一拍回到 98.0 —— 黑只一帧（7 ms），但正好在刚铺满的画面上，
-    // 看着就是右下角闪过一块黑影。快照按终态矩形铺满、盖死这一帧，然后溶解掉。
-    // 溶解时长 90 ms = 量出来的"界面落定"窗口：移动后角块从 98 一路升回 247 用掉 90 ms。
-    property bool snapping: false
-    property bool snapPending: false
-    property int snapSeq: 0
-    property real snapOpacity: 0.0
-
-    Timer {
-        id: snapWait
-        interval: 200
-        onTriggered: win.startSwap()            // 纹理迟迟不来也别把切换卡住
-    }
-
-    Image {
-        id: snap
-        z: -1                                   // 画面之上、界面之下
-        anchors.fill: parent
-        fillMode: Image.Stretch
-        visible: win.snapping || win.snapPending
-        opacity: win.snapOpacity
-        source: "image://snap/" + win.snapSeq
-        onStatusChanged: {
-            if (!win.snapPending)
-                return;                         // 启动时和 releasePicture 之后各报一次
-            if (status === Image.Ready || status === Image.Error)
-                win.startSwap();
-        }
-    }
-
-    NumberAnimation {
-        id: snapFade
-        target: win
-        property: "snapOpacity"
-        from: 1.0
-        to: 0.0
-        duration: 90
-        easing.type: Easing.OutQuad
-        onFinished: {
-            win.snapping = false;
-            videoHost.releasePicture();
-        }
-    }
-
-    // 界面窗按新尺寸画出第一帧的那一拍，快照才开始溶解。
-    Connections {
-        target: videoHost
-        function onSettled() { if (win.snapping) snapFade.restart(); }
-    }
-
     // Keyboard. Shortcut is scoped to this window and fires without waiting for
-    // an item to hold focus, which is what the frameless tool window needs.
+    // an item to hold focus, which is what the caption-less fullscreen needs.
     Shortcut { sequence: "Space"; enabled: win.page === "player"; onActivated: win.act("play") }
     Shortcut { sequence: "Left"; enabled: win.page === "player"; onActivated: win.act("back10") }
     Shortcut { sequence: "Right"; enabled: win.page === "player"; onActivated: win.act("fwd10") }
@@ -557,7 +626,10 @@ Window {
     Shortcut { sequence: "A"; enabled: win.page === "player"; onActivated: win.act("audioTrack") }
     Shortcut { sequence: "T"; enabled: win.page === "player"; onActivated: win.act("chapters") }
     Shortcut { sequence: "M"; enabled: win.page === "player"; onActivated: win.act("mute") }
-    Shortcut { sequence: "F"; enabled: win.page === "player"; onActivated: win.act("collapse") }
+    // F is the only entry left that goes to true fullscreen (over the task bar);
+    // the double-click and the expand cell both hand the window to Windows' own
+    // maximise so all of them land on the same rect.
+    Shortcut { sequence: "F"; enabled: win.page === "player"; onActivated: win.toggleFs() }
     Shortcut {
         sequence: "Escape"
         onActivated: {
@@ -580,12 +652,14 @@ Window {
     }
 
     // --- frame gestures ---------------------------------------------------
-    // The host window is a frameless popup, so these invisible bands are the
-    // only border the user has: the top strip moves the window, the edges and
-    // corners resize it. They drive VideoHost directly and the chrome follows
-    // on the resized signal.
+    // These were the only border the user had while the host was a bare popup:
+    // the top strip moved the window, the edges and corners resized it. The
+    // windowed state now carries a real Windows caption and resize frame, which
+    // also does snapping, Win+arrows and the restore-on-double-click, so the
+    // bands are switched off rather than deleted - the one state left without a
+    // frame is fullscreen, where a resize grab is not wanted either.
     //
-    // Positions are rebuilt from the window's own screen origin, not from the
+    // Positions were rebuilt from the window's own screen origin, not from the
     // item-local delta: the window moves under the grab, so a local delta would
     // read zero on the very next event and the drag would stall.
     readonly property int edgeGrab: 8
@@ -639,9 +713,10 @@ Window {
         id: band
         required property int edges
         z: 20
-        // Not gated on the player page: the library is the same window, and on
-        // it there is no chrome to hide, so a dead border reads as "it won't drag".
-        enabled: !videoHost.fullscreen && !videoHost.mini
+        // Off, not deleted - see the note above the grab metrics. Left on, these
+        // bands would sit 8 px inside the picture (the chrome no longer covers the
+        // frame) and steal the edge clicks from the video.
+        enabled: false
         hoverEnabled: true
         onPressed: (m) => win.grabBegin(band, m)
         onPositionChanged: { if (pressed) win.grabResize(band, edges, mouse); }
@@ -667,7 +742,8 @@ Window {
         y: 0
         width: Math.max(0, win.width - 2 * win.cornerGrab - caption.width)
         height: Math.max(16, caption.height)
-        enabled: !videoHost.fullscreen && !videoHost.mini
+        // The native caption is the move handle now.
+        enabled: false
         hoverEnabled: true
         cursorShape: Qt.SizeAllCursor
         onPressed: (m) => win.grabBegin(topStrip, m)

@@ -233,7 +233,10 @@ Item {
         Cell { name: "speed"; x: row.pitchL * 4; width: row.speedW; hasMenu: true
                labelText: row.speedLabel; tipText: "倍速播放"; tipKeys: row.speedLabel }
         Cell { name: "pip";        x: row.pitchL * 4 + row.speedW; tipText: "小窗播放" }
-        Cell { name: "collapse";   x: row.pitchL * 5 + row.speedW; tipText: "全屏"; tipKeys: "F" }
+        // Same effect as F now: the true fullscreen with the snapshot cover. The
+        // system maximise stays reachable through the native caption button.
+        Cell { name: "collapse";   x: row.pitchL * 5 + row.speedW; tipText: "全屏"
+               tipKeys: "F" }
     }
 
 }

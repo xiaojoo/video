@@ -13,6 +13,8 @@ qt_add_executable(appPlayerui
     src/playercore.cpp
     src/videohost.h
     src/videohost.cpp
+    src/videoitem.h
+    src/videoitem.cpp
     src/library.h
     src/library.cpp
     src/bluray.h
@@ -27,6 +29,16 @@ qt_add_executable(appPlayerui
 
 set(LIBMPV_DIR "${CMAKE_SOURCE_DIR}/../vendor/libmpv")
 target_include_directories(appPlayerui PRIVATE "${LIBMPV_DIR}/include")
+# The RHI headers are not on the default include path: VideoItem needs
+# <rhi/qrhi.h> and <rhi/qrhi_platform.h> to reach the window's own D3D11 device.
+# <videoitem.h> also has to be findable by angle brackets, because that is how the
+# generated qmltyperegistrations.cpp includes it - without src/ on the path the
+# __has_include guard fails and VideoItem is registered but never declared.
+get_target_property(QT_GUI_INCLUDE_DIRS Qt6::Gui INTERFACE_INCLUDE_DIRECTORIES)
+list(GET QT_GUI_INCLUDE_DIRS 0 QT_GUI_INCLUDE_DIR)
+target_include_directories(appPlayerui PRIVATE
+    "${QT_GUI_INCLUDE_DIR}/${Qt6_VERSION}/QtGui"
+    "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(appPlayerui PRIVATE "${LIBMPV_DIR}/libmpv-2.lib")
 add_custom_command(TARGET appPlayerui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -51,7 +63,7 @@ qt_add_qml_module(appPlayerui
         qml/ChapterList.qml
 )
 
-target_link_libraries(appPlayerui PRIVATE Qt6::Quick Qt6::Svg Qt6::QuickControls2 Qt6::Sql Qt6::QuickDialogs2 user32 gdi32 dwmapi)
+target_link_libraries(appPlayerui PRIVATE Qt6::Quick Qt6::Svg Qt6::QuickControls2 Qt6::Sql Qt6::QuickDialogs2 user32 gdi32 dwmapi d3d11 comctl32)
 
 # Dev build: console subsystem so qml errors reach the terminal. Flip back to ON
 # before shipping so double-clicking does not open a console window.
