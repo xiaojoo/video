@@ -40,6 +40,10 @@ public:
     bool fullscreen() const { return m_fs; }
     Q_INVOKABLE QRect monitorRect() const;
     Q_INVOKABLE void toggleFullscreen();
+    // The middle button of the top row: the system's own maximise one way, and the way
+    // out of it the other. No rect is written by hand, which is what keeps the shell's
+    // animation on both legs.
+    Q_INVOKABLE void toggleMaximized();
     // Fills the cover's surface with what is on the monitor at this instant.
     Q_INVOKABLE void grabPicture();
     // Start of a swap: grabs the frame, and `pictureReady()` is what lets QML ask for
@@ -67,6 +71,10 @@ public:
     // client terms.
     QRect clientGeometry() const;
     void setClientSize(int w, int h);
+    // The window is in the zoomed state, which is what decides whether the top strip
+    // may drag it around: a maximised window that slides under the cursor instead of
+    // snapping back to a normal rect is a bug, not a feature.
+    Q_PROPERTY(bool zoomed READ zoomed NOTIFY resized)
     bool zoomed() const { return m_hwnd && IsZoomed(m_hwnd) != 0; }
 
 signals:
@@ -78,13 +86,12 @@ signals:
     void miniChanged();
 
 private:
-    // Put the native caption on or take it off. The frame change has to be
-    // committed (SWP_FRAMECHANGED) before the insets can be read back.
-    void setFramed(bool on);
+    // Read the invisible border back off the real client, for the code that sizes the
+    // picture in client terms (mini, the hairline snap).
     void measureInsets();
     // One Win32 step onto `to`: leave the zoomed state, land on the rect, and take or
     // give back the topmost band in the same call.
-    void landOn(const QRect &to, bool asMax = false);
+    void landOn(const QRect &to);
     // Take the task bar out of the way for the duration of a transition, so its
     // bright band is not left to appear or disappear on the shell's own clock.
     void stashTaskbar();
@@ -145,7 +152,6 @@ private:
     HWND m_hwnd = nullptr;
     bool m_fs = false;
     bool m_mini = false;
-    bool m_framed = false;
     QRect m_preMiniRect;
     // Where fullscreen goes back to.
     QRect m_restoreRect;

@@ -4,8 +4,12 @@ import Playerui
 Window {
     id: win
     visible: true
-    // One window now: the picture is a layer in here, so the window carries the
-    // native caption itself and no longer needs to be frameless or transparent.
+    // One window now: the picture is a layer in here. Qt is told it is frameless so it
+    // stops reserving a caption of its own - measured, with the frame left to Qt the
+    // client still started 31 px below the window top because Qt compensates for margins
+    // it cached at creation. The frame bits go back on the Win32 side in adopt(), and
+    // WM_NCCALCSIZE there puts the client over them.
+    flags: Qt.Window | Qt.FramelessWindowHint
     width: shellWidth
     height: shellHeight
     x: shellX
@@ -380,53 +384,53 @@ Window {
         }
     }
 
+    // The window's own top row. It used to live inside `ui` and only appear in
+    // fullscreen, because out of fullscreen the native caption carried the film name and
+    // the min/max/close glyphs. WM_NCCALCSIZE puts the client over that caption in every
+    // state now, so this row is the only caption there is - and it has to survive the
+    // library page, where `ui` is hidden, or the window would have no close button left.
     Item {
-        id: ui
-        visible: page !== "library" && !videoHost.transitioning
-        anchors.fill: parent
-        opacity: win.uiVisible ? 1.0 : 0.0
+        id: topRow
+        visible: !videoHost.transitioning
+        opacity: (page === "library" || win.uiVisible) ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: caption.height
 
         CaptionButtons {
             id: caption
             anchors.top: parent.top
             anchors.right: parent.right
-            // Windowed and maximised, the system caption owns the top-right corner
-            // and these three would sit over its buttons and eat the clicks.
-            visible: videoHost.fullscreen
             fullscreen: videoHost.fullscreen
             onPicked: (what) => {
                 if (what === "close") win.close();
-                else if (what === "max") win.toggleFs();
+                else if (what === "max") videoHost.toggleMaximized();
                 else videoHost.minimize();   // the host owns the taskbar entry
             }
         }
 
         Column {
             x: caption.gap
+            visible: page !== "library"
             // Centred on the bump row he asked the title to match: the group sits
             // gap px below the window edge, so the row's middle is gap + tileH/2.
             // The 2.5 px is measured: at this size the ink band sits that far below
             // the line box's centre, so centring the box leaves the words low.
             readonly property real rowMid: caption.gap + caption.tileH / 2 - 2.5
-            // Out of fullscreen the film name has moved up into the system caption,
-            // and the chapter line takes the seat it vacated.
-            y: Math.max(0, rowMid - (videoHost.fullscreen ? mediaTitle.height
-                                                          : chapterLine.height) / 2)
+            y: Math.max(0, rowMid - height / 2)
             spacing: Theme.titleLineGapRatio * win.vh
 
             Text {
                 id: mediaTitle
                 text: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Oppenheimer (2023)"
-                visible: videoHost.fullscreen
-                // Column stacks by height and ignores visibility, so an invisible
-                // title would still push the chapter line down.
-                height: visible ? implicitHeight : 0
                 color: Theme.textPrimary
                 font.pixelSize: win.headerFont
                 font.family: Theme.uiFont
                 font.weight: Font.Normal
             }
+
             Text {
                 id: chapterLine
                 text: playerCore.chapter >= 0 ? "Chapter " + (playerCore.chapter + 1) : "Chapter 2"
@@ -437,6 +441,14 @@ Window {
                 font.family: Theme.uiFont
             }
         }
+    }
+
+    Item {
+        id: ui
+        visible: page !== "library" && !videoHost.transitioning
+        anchors.fill: parent
+        opacity: win.uiVisible ? 1.0 : 0.0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
 
         // The timecode now sits at the two ends of the bar: where we are on the left,
         // how long the film is on the right. Same type as the old combined readout.
@@ -707,8 +719,11 @@ Window {
         y: 0
         width: Math.max(0, win.width - 2 * win.cornerGrab - caption.width)
         height: Math.max(16, caption.height)
-        // The native caption is the move handle now.
-        enabled: false
+        // With no native caption left to grab, this strip is the only move handle the
+        // window has. Dragging a zoomed window stays disabled: what the system does
+        // there is snap it back to a normal rect under the cursor, and sliding the
+        // maximised rect around instead would read as broken.
+        enabled: !videoHost.fullscreen && !videoHost.zoomed
         hoverEnabled: true
         cursorShape: Qt.SizeAllCursor
         onPressed: (m) => win.grabBegin(topStrip, m)

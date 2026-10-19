@@ -43,7 +43,9 @@ LRESULT CALLBACK curtainProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 // Puts the sub-rect (sx, sy, w, h) of the cover DIB on screen at (x, y, w, h), as the
-// whole content of the layered window, in one call.
+// whole content of the layered window, in one call. Opaque: the strip's fade is done by
+// rewriting its pixels, not by blending, because per-pixel alpha does not blend with
+// what is underneath it here (measured, see settle()).
 bool presentCover(HWND h, int x, int y, int sx, int sy, int w, int hh)
 {
     if (!g_coverBmp || !h)
@@ -55,8 +57,7 @@ bool presentCover(HWND h, int x, int y, int sx, int sy, int w, int hh)
     POINT dst{ x, y };
     SIZE size{ w, hh };
     POINT src{ sx, sy };
-    // Opaque: the alpha bytes of a screen grab are whatever the desktop left there.
-    BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, 0 };
+    BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, BYTE(0) };
     const bool ok = UpdateLayeredWindow(h, nullptr, &dst, &size, mem, &src, 0, &bf,
                                         ULW_OPAQUE) != FALSE;
     SelectObject(mem, old);
@@ -130,8 +131,13 @@ VideoHost::VideoHost(QObject *parent) : QObject(parent)
         }
         bandStep();
     });
-    m_curtainBeat.setInterval(30);
+    m_curtainBeat.setInterval(15);
     connect(&m_curtainBeat, &QTimer::timeout, this, [this] {
+        // Not stopped by settle(): the band's fade out runs after the cover comes down,
+        // and on the way out of fullscreen the task bar is being re-shown in that same
+        // window - Explorer puts the appbar at the head of the topmost band, i.e. over
+        // the strip, which is what made the band light up in one step while the fade
+        // ran underneath it.
         if (!m_settledPending && !m_band.isActive()) {
             m_curtainBeat.stop();
             return;
@@ -194,13 +200,11 @@ void VideoHost::bandStep()
     const int keep = 255 - g_bandFade;
     const size_t from = size_t(g_coverH - g_bandH) * g_coverStride;
     for (size_t i = 0; i < g_bandSrc.size(); i += 4) {
+        // Recomputed from the grab every step, so a missed step cannot accumulate.
         g_coverBits[from + i] = static_cast<uint8_t>(g_bandSrc[i] * keep / 255);
         g_coverBits[from + i + 1] = static_cast<uint8_t>(g_bandSrc[i + 1] * keep / 255);
         g_coverBits[from + i + 2] = static_cast<uint8_t>(g_bandSrc[i + 2] * keep / 255);
     }
-    // The window itself goes down to the strip at the same moment: for a layered
-    // window, UpdateLayeredWindow *is* the move, the resize and the repaint, in one
-    // atomic hand-off.
     presentCover(m_curtain, g_coverX, g_coverY + g_coverH - g_bandH,
                  0, g_coverH - g_bandH, g_coverW, g_bandH);
 }
@@ -261,7 +265,18 @@ void VideoHost::adopt(QWindow *win)
     m_hwnd = reinterpret_cast<HWND>(win->winId());
     if (!m_hwnd)
         return;
-    m_framed = true;
+
+    // Qt owns this window's procedure, so the only way to answer WM_NCCALCSIZE (and
+    // WM_GETMINMAXINFO) is a subclass chained on top of it. It has to be installed
+    // before the frame bits go on: the first WM_NCCALCSIZE is what decides the client
+    // size, and answered by the default it shrinks the client by a caption - Qt then
+    // takes that as the new truth and the window ends up 16x39 short of what QML asked
+    // for. Measured with the subclass installed afterwards: 1282x723 for 1298x762.
+    s_self = this;
+    if (qEnvironmentVariableIsSet("PLAYERUI_NOSUB"))
+        qInfo("VIDEOHOST subclass skipped (PLAYERUI_NOSUB)");
+    else if (!SetWindowSubclass(m_hwnd, &VideoHost::subProc, 1, 0))
+        qWarning("VIDEOHOST subclass failed (%lu)", GetLastError());
 
     // A light caption over a black player is the first thing on screen.
     const BOOL dark = TRUE;
@@ -283,20 +298,30 @@ void VideoHost::adopt(QWindow *win)
     DwmSetWindowAttribute(m_hwnd, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
     DwmSetWindowAttribute(m_hwnd, DWMWA_VISIBLE_BORDER_COLOR, &noBorder, sizeof(noBorder));
 
-    // WS_EX_DLGMODALFRAME is what takes the icon out of the caption: Qt gives the
-    // window none of its own, so without this Windows paints its generic
-    // application glyph to the left of the film name. It has to leave with the
-    // frame - left on a caption-less popup it insets the client by 3 px on all four
-    // edges (measured: client 3,3 3834x2154 inside a 0,0 3840x2160 window).
-    DWORD ex = DWORD(GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE));
-    SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, LONG_PTR(ex | WS_EX_DLGMODALFRAME));
+    // Qt was told the window is frameless, so it sizes the window as if the client were
+    // the whole rect. The frame goes back on the Win32 side: the caption, the thick
+    // border and the system menu are what make ShowWindow(SW_MAXIMIZE), the taskbar
+    // entry and the edge hit-testing work at all. WM_NCCALCSIZE then hands the caption's
+    // pixels back to the client, so nothing of it is ever drawn.
+    constexpr DWORD kFrame = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU
+                           | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    DWORD style = DWORD(GetWindowLongPtrW(m_hwnd, GWL_STYLE));
+    SetWindowLongPtrW(m_hwnd, GWL_STYLE, LONG_PTR((style & ~DWORD(WS_POPUP)) | kFrame));
+    // With the caption gone out of the way the corners are the last thing DWM still
+    // draws for a frame it no longer shows: rounded, it clips a wedge out of the
+    // picture's top corners. DWMWCP_DONOTROUND is 1, and the attribute is from 1903.
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWCP_DONOTROUND
+#define DWMWCP_DONOTROUND 1
+#endif
+    int square = DWMWCP_DONOTROUND;
+    DwmSetWindowAttribute(m_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square, sizeof(square));
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     measureInsets();
 
-    // Qt owns this window's procedure, so the only way to answer WM_GETMINMAXINFO
-    // is a subclass chained on top of it. That is what lets our fullscreen borrow
-    // Windows' own maximise animation and still land on the whole monitor.
     // A run that died with the tray stashed leaves it hidden, and nothing re-shows it:
     // stashTaskbar() will not adopt a tray it did not hide. With auto-hide off, a
     // hidden Shell_TrayWnd can only be that leftover.
@@ -308,16 +333,35 @@ void VideoHost::adopt(QWindow *win)
             qInfo("TRAY recovered from a previous run");
         }
     }
-    s_self = this;
-    if (qEnvironmentVariableIsSet("PLAYERUI_NOSUB"))
-        qInfo("VIDEOHOST subclass skipped (PLAYERUI_NOSUB)");
-    else if (!SetWindowSubclass(m_hwnd, &VideoHost::subProc, 1, 0))
-        qWarning("VIDEOHOST subclass failed (%lu)", GetLastError());
+    qInfo("ADOPT win=%d,%d %dx%d client=%d,%d %dx%d", geometry().x(), geometry().y(),
+          geometry().width(), geometry().height(), clientGeometry().x(), clientGeometry().y(),
+          clientGeometry().width(), clientGeometry().height());
 }
 
 LRESULT CALLBACK VideoHost::subProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR)
 {
     VideoHost *self = s_self;
+    // The frame is never taken off this window any more, so the non-client rect is
+    // answered here instead: the client is the whole window, which is also what Qt
+    // believes (the window is frameless to it), so neither side compensates for margins
+    // the other does not see. Only when zoomed the border is put back, because the
+    // maximised window rect sticks out past the monitor by exactly that much on all
+    // four sides - without it a maximised window loses a row to the screen edge and
+    // covers the task bar. The 8 px the invisible border used to occupy is what our own
+    // grab bands in QML are for.
+    if (msg == WM_NCCALCSIZE && wp == TRUE) {
+        if (IsZoomed(h)) {
+            auto *p = reinterpret_cast<NCCALCSIZE_PARAMS *>(lp);
+            const int fx = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            const int fy = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            RECT &r = p->rgrc[0];
+            r.left += fx;
+            r.top += fy;
+            r.right -= fx;
+            r.bottom -= fy;
+        }
+        return 0;
+    }
     // PLAYERUI_NOMMI turns the answer off but leaves the subclass installed, so the
     // two candidate causes of the 0xc0000005 can be told apart without a rebuild.
     static const bool off = qEnvironmentVariableIsSet("PLAYERUI_NOMMI");
@@ -402,30 +446,6 @@ void VideoHost::setRect(int x, int y, int w, int h)
     emit resized();
 }
 
-void VideoHost::setFramed(bool on)
-{
-    if (!m_hwnd || m_framed == on)
-        return;
-    constexpr DWORD kFrame = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU
-                           | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
-    DWORD style = DWORD(GetWindowLongPtrW(m_hwnd, GWL_STYLE));
-    style &= ~(kFrame | WS_POPUP);
-    style |= on ? kFrame : WS_POPUP;
-    SetWindowLongPtrW(m_hwnd, GWL_STYLE, LONG_PTR(style));
-    DWORD ex = DWORD(GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE));
-    ex &= ~DWORD(WS_EX_DLGMODALFRAME);
-    if (on)
-        ex |= WS_EX_DLGMODALFRAME;
-    SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, LONG_PTR(ex));
-    m_framed = on;
-    SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    if (on)
-        measureInsets();
-    else
-        SetRectEmpty(&m_insets);
-}
-
 QRect VideoHost::monitorRect() const
 {
     if (!m_hwnd)
@@ -462,6 +482,9 @@ void VideoHost::grabPicture()
             g_coverBmp = nullptr;
             g_coverBits = nullptr;
         }
+        // Plain BI_RGB 32 bpp. A BI_BITFIELDS header with bV5AlphaMask was tried for the
+        // band's dissolve and the compositor still ignored the alpha byte, so the extra
+        // declaration buys nothing here.
         BITMAPINFO bi{};
         bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bi.bmiHeader.biWidth = mon.width();
@@ -570,7 +593,6 @@ void VideoHost::settle()
     if (!m_settledPending)
         return;
     m_settledPending = false;
-    m_curtainBeat.stop();
     qInfo("SWAP settled %d ms after the write, %d ms after the press",
           m_swapClock.elapsed(), int(m_press.elapsed()));
     // Down to the task bar's strip in one step. For a layered window UpdateLayeredWindow
@@ -580,8 +602,10 @@ void VideoHost::settle()
     // that empty frame went on screen first (measured 7 ms of black), which is why this
     // used to be a SetWindowRgn.
     if (m_bandIn && g_bandH > 0 && g_coverBmp) {
-        presentCover(m_curtain, g_coverX, g_coverY + g_coverH - g_bandH,
-                     0, g_coverH - g_bandH, g_coverW, g_bandH);
+        // Down to the strip in one step, then the fade. bandStep() does both, so the
+        // strip's first present and its last one are the same call.
+        g_bandFade = 0;
+        bandStep();
         m_band.start();
     } else {
         hideCurtain();
@@ -617,23 +641,21 @@ void VideoHost::toggleFullscreen()
         // screen, putting it there is not something you can see. Everything from here
         // to the reveal happens behind it.
         // One step, no animation. Growing the window in beats costs a 4K surface
-        // re-allocation per step (measured 7-26 ms apart at 144 Hz - a stutter), and
-        // the system maximise cannot be answered past the work area, so it always
-        // left the task-bar band to be covered by a second move.
-        // Land first, then take the caption off. Measured the other way round, Qt
-        // recomputes its own geometry from the client area the moment the style
-        // changes and overwrites the rect two calls later: the window ended up
-        // frameless at 1282x721 in the middle of the screen instead of on the monitor.
-        // The chrome and the task bar are handled *after* the move, not before: each
-        // costs a round trip through the shell, and that time is precisely how long the
-        // picture stands still behind the cover.
+        // re-allocation per step (measured 7-26 ms apart at 144 Hz - a stutter).
+        // The style is not touched any more: WM_NCCALCSIZE keeps the client over the
+        // caption in every state, so fullscreen is one landing write onto the monitor
+        // rect, and the #A0A0A0 non-client repaint that used to follow a style flip
+        // cannot happen because there is no flip.
         showCover();
         armReveal();
         m_revealByFrame = true;
+        // The tray goes behind the cover, before the landing: hiding it makes Explorer
+        // recompute the work area, and doing that after the write costs a second
+        // re-layout of a 4K surface - measured the first frame at the new size arriving
+        // 60 ms after the write instead of 11.
+        stashTaskbar();
         landOn(monitorRect());
         raiseCurtain();
-        setFramed(false);
-        stashTaskbar();
         m_trans = true;
         emit transitioningChanged();
         // Only a backstop: reveal() is driven by the first new-size present. This
@@ -650,69 +672,110 @@ void VideoHost::toggleFullscreen()
     m_fs = false;
     m_settledPending = true;
     m_bandIn = false;
+    m_revealByFrame = false;
     qInfo("SWAP out to %d,%d %dx%d max=%d", m_restoreRect.x(), m_restoreRect.y(),
           m_restoreRect.width(), m_restoreRect.height(), m_restoreMax ? 1 : 0);
-    showCover();
-    armReveal();
-    m_revealByFrame = false;
     m_trans = true;
     emit transitioningChanged();
-    // Hide the tray for the way out too: left visible, its band lit up when beat one
-    // uncovered it and went under the shrinking window again - three events.
-    stashTaskbar();
     m_trayBeat.stop();
-    // The frame goes back first because the maximised rect is computed from the
-    // non-client area. That order makes the way out one rect step: the trace reads
-    // 0,0 3840x2160 framed, then -8,-8 3856x2128 31 ms later. Restoring to the normal
-    // rect and maximising afterwards put a small window over the desktop on screen
-    // for 120 ms.
-    setFramed(true);
-    landOn(m_restoreRect, m_restoreMax);
-    // Not render-driven on this leg, and the frame dump says why: Qt had a frame at
-    // the maximised client size on the wire 26 ms after the write and DWM's own frame
-    // bounds read 0,0 3840x2112 at 27 ms, yet the composited screen sat on the normal
-    // rect for 41 ms and then grew for another 250 ms - the shell's maximise
-    // transition, which no in-window signal can see. Revealing on the present exposed
-    // all of it (film band 122 -> 33 -> 112). The cover stays up over the part you can
-    // read as a jump.
+    if (m_restoreMax) {
+        // The cover stays, but only for the writes. What it has to hide on this leg is
+        // the task bar's band coming back; the caption no longer repaints because the
+        // style never changes. What follows is the shell's own maximise, left on screen
+        // on purpose: from a full-monitor client to the maximised one the visible change
+        // is the 48 px at the bottom, and watching it land reads as motion instead of a
+        // freeze.
+        // The band is not faded here, unlike the way in. Fading it needs the strip to
+        // dissolve into the task bar underneath it, and per-pixel alpha does not do that
+        // here: with the DIB declared ARGB (BI_BITFIELDS + bV5AlphaMask) and
+        // AC_SRC_ALPHA, the strip still composited over black - measured the row going
+        // 1.44, 1.15, 0.87, 0.58, 0.30, 0.01 and only then jumping to the task bar's
+        // 214. Darkening it is the wrong direction on this leg because the strip holds
+        // the film's own black and what has to come through is the bright band. So the
+        // cover comes down in one piece and the band appears with it. See
+        // presentCover().
+        showCover();
+        armReveal();
+        m_revealByFrame = true;
+        // The order is the one the two-window build wrote down: the tray goes back
+        // *before* the maximise, because the maximised rect is whatever the work area is
+        // at the moment of the call, and answering that twice is two geometry steps.
+        SetWindowPos(m_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        restoreTaskbar();
+        m_swapClock.start();        // the trace's zero point is the write below
+        ShowWindow(m_hwnd, SW_MAXIMIZE);
+        // Going in, the window was moved while it was not zoomed - and a moved,
+        // unzoomed window is exactly what Windows records as the normal position. So the
+        // restore button would have brought back a full-screen window (measured:
+        // SC_RESTORE gave 0,0 3840x2160). Write the rect saved before the swap back,
+        // with the zoomed state left as it is.
+        WINDOWPLACEMENT back{ uint32_t(sizeof(back)) };
+        if (GetWindowPlacement(m_hwnd, &back)) {
+            back.showCmd = SW_SHOWMAXIMIZED;
+            back.rcNormalPosition = { m_restoreRect.x(), m_restoreRect.y(),
+                                      m_restoreRect.x() + m_restoreRect.width(),
+                                      m_restoreRect.y() + m_restoreRect.height() };
+            SetWindowPlacement(m_hwnd, &back);
+        }
+        m_settled.setInterval(200);
+        emit resized();
+        emit fullscreenChanged();
+        return;
+    }
+    // A restore to a normal rect has no animation to borrow: the window would simply
+    // appear at its old size with the previous surface parked in its top-left corner for
+    // a frame or two (measured the content edge at 1280x732 of a 3840x2160 window), so
+    // this leg keeps the cover and the render-driven reveal.
+    showCover();
+    armReveal();
+    // Hide the tray for the way out too: left visible, its band lit up when the cover
+    // came down and went under the shrinking window again - three events.
+    stashTaskbar();
+    landOn(m_restoreRect);
     m_settled.setInterval(200);
     emit resized();
     emit fullscreenChanged();
     m_trayBeat.start();
 }
 
-void VideoHost::landOn(const QRect &to, bool asMax)
+void VideoHost::toggleMaximized()
 {
     if (!m_hwnd)
         return;
-    // Leave the zoomed state and land on the target in one write: stripping the
-    // frame while the window is still zoomed insets the client by 3 px on every edge
-    // (measured: client 3,3 3834x2154 inside a 0,0 3840x2160 popup).
-    // `asMax` carries the zoomed flag in the same write. Restoring to the normal rect
-    // and maximising afterwards left the compositor drawing the window at the small
-    // rect for 120 ms after its logical rect had already moved - a framed window
-    // caught mid-growth over the desktop.
-    WINDOWPLACEMENT np{ uint32_t(sizeof(np)) };
-    if (GetWindowPlacement(m_hwnd, &np)) {
-        np.showCmd = asMax ? SW_SHOWMAXIMIZED : SW_RESTORE;
-        np.rcNormalPosition = { to.x(), to.y(), to.x() + to.width(), to.y() + to.height() };
-        SetWindowPlacement(m_hwnd, &np);
-    }
-    if (asMax) {
-        // The rect belongs to the system now; only the band and the frame change.
-        SetWindowPos(m_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (m_fs) {
+        toggleFullscreen();       // out of fullscreen goes back where it came from
         return;
     }
-    // Above the shell while fullscreen so nothing slides over the film; the band
-    // comes back with the window. One SetWindowPos, so no half-committed rect can
-    // reach the screen between the placement write and the z-order.
-    // Going in, the window is placed *below* the curtain rather than at the head of
-    // the band: raising it to the top let DWM composite one frame of the re-allocated
-    // surface (film drawn at 56 % of its height, centred) before raiseCurtain ran.
+    ShowWindow(m_hwnd, IsZoomed(m_hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+    qInfo("MAX zoomed=%d rect=%d,%d %dx%d", IsZoomed(m_hwnd) ? 1 : 0,
+          geometry().x(), geometry().y(), geometry().width(), geometry().height());
+    emit resized();
+}
+
+void VideoHost::landOn(const QRect &to)
+{
+    if (!m_hwnd)
+        return;
+    // SetWindowPos, not SetWindowPlacement. The placement write also *stores*
+    // rcNormalPosition, so landing on the monitor through it left the window's normal
+    // rect at 0,0 3840x2160 - measured, the restore button then brought the window back
+    // at full screen. Dropping the zoom flag is part of this same write, and the frame
+    // commit re-asks WM_NCCALCSIZE, whose answer depends on the zoomed state.
+    // While the window is zoomed Windows ignores the rect of a SetWindowPos - measured,
+    // the write went through and the window stayed at -8,-8 3856x2128 with only the band
+    // changed. The zoom flag has to come off first, and it is taken off *without* moving
+    // the window: ShowWindow(SW_RESTORE) lands it on the normal rect first, Qt draws that
+    // frame too, and the reveal then waits for a second pass at the final size - measured
+    // 71 ms after the write instead of 12.
+    if (IsZoomed(m_hwnd)) {
+        DWORD st = DWORD(GetWindowLongPtrW(m_hwnd, GWL_STYLE));
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, LONG_PTR(st & ~DWORD(WS_MAXIMIZE)));
+    }
     HWND after = m_fs ? (m_curtain ? m_curtain : HWND_TOPMOST) : HWND_NOTOPMOST;
     SetWindowPos(m_hwnd, after, to.x(), to.y(), to.width(), to.height(),
                  SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    measureInsets();
 }
 
 void VideoHost::toggleMini()
