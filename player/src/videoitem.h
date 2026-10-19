@@ -57,6 +57,14 @@ public:
 signals:
     void coreChanged();
     void ready();
+    // The size, in device pixels, of the first frame presented after the texture was
+    // made at a new one, and how many frames have now gone over at that size. The
+    // count is the point: a `Present()` only hands the frame to DWM, and measured on
+    // the way into fullscreen the screen still showed the *old* surface parked in the
+    // top-left corner of the enlarged window for one frame after the first present at
+    // the new size (edge of the content at 1280x732 of a 3840x2160 window). Qt is
+    // vsync-locked, so the second present means the first one is on screen.
+    void presented(int w, int h, int n);
 
 protected:
     void componentComplete() override;
@@ -83,6 +91,9 @@ private:
     QSGTexture *m_qtex = nullptr;
     mpv_render_context *m_rc = nullptr;
     int m_texW = 0, m_texH = 0;
+    // The size last reported through presented(), and how many frames have gone over
+    // at it. Keeps the signal to two calls per size change instead of 144 per second.
+    int m_repW = 0, m_repH = 0, m_repN = 0;
     bool m_ctxTried = false;
     // Bisect switches, read once from the environment (see the constructor).
     bool mNoRender = false;

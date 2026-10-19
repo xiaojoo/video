@@ -12,15 +12,6 @@ Window {
     y: shellY
     color: "#000000"
     title: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Playerui"
-    // The host only releases the snapshot cover after a frame at the new size has
-    // actually gone to the compositor, not after a fixed delay. The same signal is
-    // what tells us the raised cover really reached the screen.
-    onFrameSwapped: {
-        videoHost.noteSettled()
-        if (win.snapArmed)
-            win.finishMove()
-    }
-
     readonly property real vw: width
     readonly property real vh: height
     readonly property real inset: Theme.sideInsetWRatio * vw
@@ -167,15 +158,15 @@ Window {
         win.touch();
     }
 
-    // The "big view" for F: true fullscreen in one step, covered by a snapshot of the
-    // picture and dissolved when the window has presented a frame at the new size.
+    // The "big view" for F: true fullscreen in one step, under a cover that is a copy
+    // of the screen taken before the move and comes off once the geometry has settled.
     // Every entry and exit goes through here so both directions get the same cover.
     function toggleFs() {
         if (win.snapping || win.snapPending)
             return;                     // no second swap on top of a half-drawn one
         picker.hide();
         win.snapPending = true;
-        videoHost.beginSwap();          // grabs two frames later
+        videoHost.beginSwap();          // answers with pictureReady()
         snapWait.restart();             // a texture that never arrives must not stall F
     }
 
@@ -184,64 +175,26 @@ Window {
             return;
         win.snapPending = false;
         snapWait.stop();
-        win.snapOpacity = 1.0;
         win.snapping = true;
-        // The cover has to be *on screen* before the rect changes, not merely loaded:
-        // measured, moving in the same tick as the assignment left one presented frame
-        // at 8.35 where the window had been 25.19 - the black first frame at the new
-        // size, which is the only thing the cover exists for. Raising it is invisible
-        // (it is the same picture), so wait one present and move from there.
-        win.snapArmed = true;
-        snapArmWait.restart();
-    }
-
-    function finishMove() {
-        if (!win.snapArmed)
-            return;
-        win.snapArmed = false;
-        snapArmWait.stop();
+        // Straight in: VideoHost puts the cover up and flushes it to the compositor
+        // before it touches the rect, so there is nothing left to wait a present for.
         videoHost.toggleFullscreen();
     }
 
     property bool snapping: false
     property bool snapPending: false
-    property bool snapArmed: false
-    property real snapOpacity: 0.0
-    // The grab's cache buster: it only moves when a frame really landed in the host,
-    // so the Image never reloads onto an empty one.
-    readonly property int snapFrame: videoHost.snapshot.frame
 
+    // The grab's own fallback: a capture that never answers must not stall F.
     Timer {
         id: snapWait
         interval: 200
         onTriggered: win.startSwap()
     }
 
-    Timer {
-        id: snapArmWait
-        interval: 60
-        onTriggered: if (win.snapArmed) win.finishMove()
-    }
-
-    NumberAnimation {
-        id: snapFade
-        target: win
-        property: "snapOpacity"
-        from: 1.0
-        to: 0.0
-        duration: 90                    // measured: the window's own re-layout takes 90 ms
-        easing.type: Easing.OutQuad
-        onFinished: {
-            win.snapping = false;
-            videoHost.releasePicture();
-        }
-    }
-
     Connections {
         target: videoHost
-        // One signal drives both halves of the end: the snapshot may only start
-        // dissolving once the new size is actually on screen.
-        function onSettled() { if (win.snapping) snapFade.restart(); }
+        function onPictureReady() { win.startSwap() }
+        function onSettled() { win.snapping = false }
     }
 
     readonly property var mockTicks: [
@@ -260,26 +213,10 @@ Window {
         // Nothing can be loaded before the render context exists; PlayerCore
         // holds the request until this fires.
         onReady: playerCore.markRenderReady()
-    }
-
-    // The swap's cover: the frame taken off the screen before the rect changed,
-    // stretched to the end size. It sits above the picture and below the chrome, and
-    // its job is only to hide the black first frame at the new size - it does not
-    // scale or move, so it costs no re-allocation.
-    Image {
-        id: snap
-        anchors.fill: parent
-        fillMode: Image.Stretch
-        cache: false
-        visible: win.snapping || win.snapPending
-        opacity: win.snapOpacity
-        source: win.snapFrame > 0 ? "image://snap/" + win.snapFrame : ""
-        onStatusChanged: {
-            if (!win.snapPending)
-                return;                 // once at boot and once after releasePicture
-            if (status === Image.Ready || status === Image.Error)
-                win.startSwap();
-        }
+        // The host holds the cover over the swap until two frames have gone over at a
+        // size other than the one before the geometry write, so the freeze is only as
+        // long as the surface re-allocation and the compositor catching up with it.
+        onPresented: (w, h, n) => videoHost.notePresented(w, h, n)
     }
 
     Image {
@@ -422,28 +359,33 @@ Window {
     // first mouse event and the hidden/shown state is not reproducible.
     Component.onCompleted: if (!win.keepUi) poke.start()
 
+    // The scrim belongs to the picture, not to the chrome. It used to live inside
+    // `ui`, so hiding the controls for a transition also lifted the gradient off the
+    // bottom of the film - measured +26/255 over those rows, +2.8 averaged across the
+    // film - and that brighten-and-return is the pulse he kept calling a flash. It
+    // stays up through the transition and only follows the chrome's own fade.
+    Rectangle {
+        visible: page !== "library"
+        x: 0
+        y: win.vh * (1 - Theme.scrimHeightRatio)
+        width: win.vw
+        height: win.vh * Theme.scrimHeightRatio
+        opacity: win.uiVisible ? 1.0 : 0.0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+        gradient: Gradient {
+            GradientStop { position: 0.00; color: "#00000000" }
+            GradientStop { position: 0.18; color: "#8C000000" }
+            GradientStop { position: 0.45; color: "#D8000000" }
+            GradientStop { position: 1.00; color: "#F7000000" }
+        }
+    }
+
     Item {
         id: ui
         visible: page !== "library" && !videoHost.transitioning
         anchors.fill: parent
         opacity: win.uiVisible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
-
-        // Bottom scrim: the reference darkens behind the controls rather than
-        // painting an opaque panel. The ramp is steep so the title line still
-        // gets backing inside the shortened band.
-        Rectangle {
-            x: 0
-            y: win.vh * (1 - Theme.scrimHeightRatio)
-            width: win.vw
-            height: win.vh * Theme.scrimHeightRatio
-            gradient: Gradient {
-                GradientStop { position: 0.00; color: "#00000000" }
-                GradientStop { position: 0.18; color: "#8C000000" }
-                GradientStop { position: 0.45; color: "#D8000000" }
-                GradientStop { position: 1.00; color: "#F7000000" }
-            }
-        }
 
         CaptionButtons {
             id: caption

@@ -116,6 +116,29 @@ void VideoItem::hookWindow()
         if (m_rc && !mNoSwap)
             mpv_render_context_report_swap(m_rc);
     }, Qt::DirectConnection);
+    // Reported once per size change, on the swap of the very pass that first drew
+    // into the new texture - so it names the frame that is now on screen, not one
+    // still queued behind it. Nothing is emitted on an ordinary frame, which keeps
+    // this off the hot path: 144 presents a second would otherwise mean 144 cross-
+    // thread calls. m_texW is only ever written here and in updatePaintNode, both on
+    // this thread.
+    connect(w, &QQuickWindow::frameSwapped, this, [this] {
+        if (m_texW <= 0)
+            return;
+        if (m_texW != m_repW || m_texH != m_repH) {
+            m_repW = m_texW;
+            m_repH = m_texH;
+            m_repN = 0;
+        }
+        if (m_repN >= 2)
+            return;                       // past the second frame this says nothing new
+        ++m_repN;
+        if (m_repN == 1 && window())
+            // The host waits for the *second* frame at the new size, so make sure there
+            // is one: a paused film presents nothing on its own after the resize.
+            QMetaObject::invokeMethod(window(), &QQuickWindow::update, Qt::QueuedConnection);
+        emit presented(m_texW, m_texH, m_repN);
+    }, Qt::DirectConnection);
 
 }
 

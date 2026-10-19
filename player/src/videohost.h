@@ -1,51 +1,22 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QObject>
-#include <QPixmap>
 #include <QRect>
+#include <QSize>
 #include <QTimer>
+
 
 #include <windows.h>
 
 class QWindow;
 
-// The frame `grabPicture()` takes, handed to QML's Image through the `image://snap`
-// provider. The frame number is the cache buster: the URL has to change or QML
-// treats a repeat grab as a cache hit and never re-reads it.
-class Snapshot final : public QObject
-{
-    Q_OBJECT
-    Q_PROPERTY(int frame READ frame NOTIFY frameChanged)
-public:
-    int frame() const { return m_frame; }
-    const QPixmap &pixmap() const { return m_px; }
-    void set(QPixmap px)
-    {
-        const bool filled = !px.isNull();
-        m_px = std::move(px);
-        // Only a real grab moves the frame number: the release at the end of the
-        // dissolve would otherwise make every Image reload onto an empty one and log
-        // a "failed to get image from provider" for each swap.
-        if (filled) {
-            ++m_frame;
-            emit frameChanged();
-        }
-    }
-
-signals:
-    void frameChanged();
-
-private:
-    QPixmap m_px;
-    int m_frame = 0;
-};
-
 // Window management for the one and only window: the caption attributes, taking the
-// frame off for fullscreen, the mini window's topmost band, and the frame that covers
-// the swap. The fullscreen change is one step (no system animation) and the step is
-// hidden by a snapshot of the picture laid at the end rect, dissolved away when the
-// window has really presented a frame at that size - the route the two-window build
-// measured its way to (docs/最大化过渡.md).
+// frame off for fullscreen, the mini window's topmost band, and the cover that hides
+// the swap. The fullscreen change is one step, and the step is hidden by a layered
+// window holding a 1:1 copy of the monitor, handed to DWM in one UpdateLayeredWindow
+// and taken back off when the window has really put two frames at the new size on the
+// panel - the route the two-window build measured its way to (docs/最大化过渡.md).
 class VideoHost final : public QObject
 {
     Q_OBJECT
@@ -69,19 +40,16 @@ public:
     bool fullscreen() const { return m_fs; }
     Q_INVOKABLE QRect monitorRect() const;
     Q_INVOKABLE void toggleFullscreen();
-    // The frame the transition covers the swap with. QML grabs, waits until the
-    // Image really has the texture, and only then calls toggleFullscreen - grabbing
-    // and moving in the same tick would put the old frame's black underneath.
-    Q_PROPERTY(QObject *snapshot READ snapshotObj CONSTANT)
-    QObject *snapshotObj() { return &m_snapObj; }
+    // Fills the cover's surface with what is on the monitor at this instant.
     Q_INVOKABLE void grabPicture();
-    // Start of a swap: puts the chrome out of the way and grabs two frames later.
-    // QML waits for the Image to report Ready and then calls toggleFullscreen().
+    // Start of a swap: grabs the frame, and `pictureReady()` is what lets QML ask for
+    // the geometry change. The grab goes on the next turn of the event loop rather
+    // than in this call so the signal does not arrive inside the caller's stack.
     Q_INVOKABLE void beginSwap();
-    Q_INVOKABLE void releasePicture();
-    // Called from the window's frameSwapped: the first frame at the new size is on
-    // screen, so the snapshot may start dissolving.
-    Q_INVOKABLE void noteSettled();
+    // The picture just went on screen at device size w x h, and this is the n-th frame
+    // presented at that size. The second one ends the cover: the first only proves the
+    // frame reached DWM, not that the panel has it.
+    Q_INVOKABLE void notePresented(int w, int h, int n);
     Q_INVOKABLE void toggleMini();
     Q_INVOKABLE void minimize();
     // A second launch hands its file to this window and has to be able to bring it
@@ -102,6 +70,7 @@ public:
     bool zoomed() const { return m_hwnd && IsZoomed(m_hwnd) != 0; }
 
 signals:
+    void pictureReady();
     void resized();
     void fullscreenChanged();
     void transitioningChanged();
@@ -115,37 +84,62 @@ private:
     void measureInsets();
     // One Win32 step onto `to`: leave the zoomed state, land on the rect, and take or
     // give back the topmost band in the same call.
-    void landOn(const QRect &to);
+    void landOn(const QRect &to, bool asMax = false);
     // Take the task bar out of the way for the duration of a transition, so its
     // bright band is not left to appear or disappear on the shell's own clock.
     void stashTaskbar();
     void restoreTaskbar();
-    // The frame that covers the surface re-allocation. A QML item cannot do this -
-    // it is drawn into the very surface being re-made - so it is a plain Win32 window
-    // filled by GDI, composited (UpdateWindow + DwmFlush) before the move and taken
-    // away by noteSettled, the same signal that starts the dissolve.
-    void showCurtain(const QRect &rect);
+    // The strip over the task bar's row. It has to be a plain Win32 window filled by
+    // GDI and composited (UpdateWindow + DwmFlush) before anything moves, and it is
+    // faded out by settle(), the same signal that ends the transition.
+    void showCover();
+    void bandStep();
+    void raiseCurtain();
     void hideCurtain();
+    void settle();
+    // Remembers the size a presented frame currently has, so the first present at any
+    // other size is the one that ends the cover. Call it right before the write.
+    void armReveal();
+    // Take the cover off: ends the transition and fades the band. Driven by the first
+    // presented frame at the new size, with the timer above as the backstop.
+    void reveal();
 
     // Only one window now, so the subclass is the only way to answer
     // WM_GETMINMAXINFO: Qt owns the window procedure.
     static VideoHost *s_self;
     static LRESULT CALLBACK subProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 
-    // Single-shot, and each one only *completes* a state m_fs already holds, so a
-    // missed timer leaves a usable window and the next F still works.
+    // The bottom band's 90 ms fade out on the way into fullscreen.
+    QTimer m_band;
+    bool m_bandIn = false;
+    // Re-asserts the cover while a transition is in flight: Explorer re-shows the
+    // task bar ~170 ms into one and puts it at the head of the topmost band, i.e.
+    // *over* the cover (measured the bottom 48 px going 4.7 -> 213.9 for 416 ms).
+    QTimer m_curtainBeat;
     // The tray goes back to "visible" a beat after the picture lands: the film is
     // topmost and covers the band, so it stays dark anyway, and nothing is left
     // hidden if the process dies later in the film.
     QTimer m_trayBeat;
-    // Fires the grab once the chrome-less frame is on screen.
-    QTimer m_snapArm;
-    // Clears `transitioning` a beat after the geometry has stopped changing, so the
-    // chrome comes back behind the snapshot dissolve instead of inside it.
+    // The backstop: a resize that Qt never draws a frame for (the render loop can be
+    // idle) must still hand the screen back. `transitioning` is cleared and the cover
+    // taken off by reveal(), which the second new-size present normally calls long
+    // before this fires.
     QTimer m_settled;
     bool m_trans = false;
-    Snapshot m_snapObj;
     bool m_settledPending = false;
+    // What size the last frame that reached the screen was drawn into, and what that
+    // size was at the moment the geometry was written. Two frames at any other size is
+    // the picture at its new rect on the panel, and that is when the cover comes down.
+    QSize m_presented;
+    QSize m_swapFrom;
+    // Whether a presented frame is allowed to end the cover. Only the way in: the way
+    // out lands on the maximised state, which the shell animates for ~290 ms, and a
+    // frame presented at the new client size says nothing about that.
+    bool m_revealByFrame = false;
+    // From the write to the reveal, for the trace.
+    QElapsedTimer m_swapClock;
+    // From the press that started the swap, so the grab and the cover are told apart.
+    QElapsedTimer m_press;
 
     QWindow *m_win = nullptr;
     HWND m_hwnd = nullptr;

@@ -4,46 +4,64 @@
 #include <commctrl.h>
 #include <shellapi.h>
 
-#include <QGuiApplication>
-#include <QImage>
-#include <QScreen>
 #include <QWindow>
 
 VideoHost *VideoHost::s_self = nullptr;
 
 namespace {
-// The curtain's bitmap, handed over by VideoHost::showCurtain. A QML item cannot
-// cover a surface re-allocation - it is drawn into that same surface - so the two
-// frames it takes Qt to bring up a new-size swap chain have to be hidden by a
-// window whose pixels GDI puts there synchronously.
-HBITMAP g_curtainBmp = nullptr;
-int g_curtainW = 0, g_curtainH = 0;
+// The cover for the geometry change, filled by GDI from a 1:1 copy of the screen
+// taken just before it. A QML item cannot do this - it is drawn into the very surface
+// being re-made - and Qt needs a few frames to redraw at the new size: measured, the
+// old 1314x801 surface sat in the top-left corner of the 3840x2160 window for 19 ms
+// (2 frames at 144 Hz), which is the "window jumps to the top-left" he saw.
+//
+// It is put up before the write and taken off by the second frame that goes over at a
+// size other than the one the window had beforehand - the first only proves the frame
+// reached DWM, and measured, the panel still showed the old surface in the top-left
+// corner of the enlarged window for one frame after it. So the freeze lasts exactly as
+// long as the surface re-allocation and the compositor catching up with it, not one
+// millisecond more. A timer backs it up for the case where no frame is drawn at all.
+// The last thing the cover does is fade out over the task bar's row alone: that strip
+// goes from near white to letterbox black, and it is the one change a copy of the
+// screen cannot hide.
+HBITMAP g_coverBmp = nullptr;
+uint8_t *g_coverBits = nullptr;
+std::vector<uint8_t> g_bandSrc;      // the strip as grabbed, so each step is recomputed
+int g_coverW = 0, g_coverH = 0, g_coverStride = 0;
+int g_coverX = 0, g_coverY = 0;      // where the grab starts on the desktop
+int g_bandH = 0, g_bandFade = 0;
 
 constexpr wchar_t kCurtainClass[] = L"PlayeruiCurtain";
 
+// The cover never paints. Its whole surface - and its rect - is handed to DWM in one
+// UpdateLayeredWindow call, so there is no half-blitted frame to be caught: measured
+// once in three entries, a 33 MB BitBlt from WM_PAINT was composited mid-copy and the
+// screen showed the picture down to y=1360 with everything below it black for 7 ms.
 LRESULT CALLBACK curtainProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
-    if (msg == WM_PAINT) {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(h, &ps);
-        RECT r{};
-        GetClientRect(h, &r);
-        if (g_curtainBmp) {
-            HDC mem = CreateCompatibleDC(dc);
-            HGDIOBJ old = SelectObject(mem, g_curtainBmp);
-            SetStretchBltMode(dc, HALFTONE);
-            SetBrushOrgEx(dc, 0, 0, nullptr);
-            StretchBlt(dc, 0, 0, r.right, r.bottom, mem, 0, 0, g_curtainW, g_curtainH,
-                       SRCCOPY);
-            SelectObject(mem, old);
-            DeleteDC(mem);
-        } else {
-            FillRect(dc, &r, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-        }
-        EndPaint(h, &ps);
-        return 0;
-    }
     return DefWindowProcW(h, msg, wp, lp);
+}
+
+// Puts the sub-rect (sx, sy, w, h) of the cover DIB on screen at (x, y, w, h), as the
+// whole content of the layered window, in one call.
+bool presentCover(HWND h, int x, int y, int sx, int sy, int w, int hh)
+{
+    if (!g_coverBmp || !h)
+        return false;
+    HDC mem = CreateCompatibleDC(nullptr);
+    if (!mem)
+        return false;
+    HGDIOBJ old = SelectObject(mem, g_coverBmp);
+    POINT dst{ x, y };
+    SIZE size{ w, hh };
+    POINT src{ sx, sy };
+    // Opaque: the alpha bytes of a screen grab are whatever the desktop left there.
+    BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, 0 };
+    const bool ok = UpdateLayeredWindow(h, nullptr, &dst, &size, mem, &src, 0, &bf,
+                                        ULW_OPAQUE) != FALSE;
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    return ok;
 }
 }
 
@@ -101,16 +119,34 @@ VideoHost::VideoHost(QObject *parent) : QObject(parent)
     m_trayBeat.setSingleShot(true);
     m_trayBeat.setInterval(400);
     connect(&m_trayBeat, &QTimer::timeout, this, &VideoHost::restoreTaskbar);
-    // Two frames at 144 Hz: enough for the chrome-less picture to be on screen
-    // before the grab reads it off the desktop.
-    m_snapArm.setSingleShot(true);
-    m_snapArm.setInterval(16);
-    connect(&m_snapArm, &QTimer::timeout, this, &VideoHost::grabPicture);
+    m_band.setInterval(15);
+    connect(&m_band, &QTimer::timeout, this, [this] {
+        g_bandFade += 255 * m_band.interval() / 90;
+        if (g_bandFade >= 255) {
+            m_band.stop();
+            g_bandFade = 0;
+            hideCurtain();
+            return;
+        }
+        bandStep();
+    });
+    m_curtainBeat.setInterval(30);
+    connect(&m_curtainBeat, &QTimer::timeout, this, [this] {
+        if (!m_settledPending && !m_band.isActive()) {
+            m_curtainBeat.stop();
+            return;
+        }
+        raiseCurtain();
+    });
     m_settled.setSingleShot(true);
     m_settled.setInterval(200);
     connect(&m_settled, &QTimer::timeout, this, [this] {
-        m_trans = false;
-        emit transitioningChanged();
+        // Only the backstop. The reveal is normally driven by notePresented() long
+        // before this: measured, a frame at the new size goes over 20-30 ms after the
+        // write. This fires when nothing renders at all - a resize the scene graph
+        // never took a pass for - and without it the cover would stay up and the
+        // snapping guard wedged.
+        reveal();
     });
     // Every geometry change re-arms the settle beat: the doubled chrome follows the
     // last size change, whichever beat produced it. Queued so it runs after the
@@ -137,6 +173,7 @@ void VideoHost::stashTaskbar()
     // for a window we do not own. Hiding the window is what moves those pixels.
     ShowWindow(tr, SW_HIDE);
     m_taskbarHwnd = tr;
+    qInfo("TRAY stash vis=%d", IsWindowVisible(tr) ? 1 : 0);
 }
 
 void VideoHost::restoreTaskbar()
@@ -146,12 +183,30 @@ void VideoHost::restoreTaskbar()
     // SW_SHOWNOACTIVATE: SW_SHOW was measured to take the foreground away from the
     // player, and the next F then went to Explorer instead of leaving fullscreen.
     ShowWindow(m_taskbarHwnd, SW_SHOWNOACTIVATE);
+    qInfo("TRAY restore vis=%d", IsWindowVisible(m_taskbarHwnd) ? 1 : 0);
     m_taskbarHwnd = nullptr;
 }
 
-void VideoHost::showCurtain(const QRect &rect)
+void VideoHost::bandStep()
 {
-    if (!m_hwnd)
+    if (!g_coverBmp || !g_coverBits || !m_curtain || !IsWindow(m_curtain))
+        return;
+    const int keep = 255 - g_bandFade;
+    const size_t from = size_t(g_coverH - g_bandH) * g_coverStride;
+    for (size_t i = 0; i < g_bandSrc.size(); i += 4) {
+        g_coverBits[from + i] = static_cast<uint8_t>(g_bandSrc[i] * keep / 255);
+        g_coverBits[from + i + 1] = static_cast<uint8_t>(g_bandSrc[i + 1] * keep / 255);
+        g_coverBits[from + i + 2] = static_cast<uint8_t>(g_bandSrc[i + 2] * keep / 255);
+    }
+    // The window itself goes down to the strip at the same moment: for a layered
+    // window, UpdateLayeredWindow *is* the move, the resize and the repaint, in one
+    // atomic hand-off.
+    presentCover(m_curtain, g_coverX, g_coverY + g_coverH - g_bandH,
+                 0, g_coverH - g_bandH, g_coverW, g_bandH);
+}
+void VideoHost::showCover()
+{
+    if (!m_hwnd || !g_coverBmp || g_coverW <= 0)
         return;
     static bool registered = false;
     if (!registered) {
@@ -159,47 +214,39 @@ void VideoHost::showCurtain(const QRect &rect)
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = &curtainProc;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
         wc.lpszClassName = kCurtainClass;
         registered = RegisterClassExW(&wc) != 0;
     }
     if (!registered)
         return;
-    // The grabbed frame as a top-down 32 bpp DIB; QImage's ARGB32 is already BGRA in
-    // memory, which is what a DIB wants on little endian.
-    const QImage img = m_snapObj.pixmap().toImage().convertToFormat(QImage::Format_ARGB32);
-    if (g_curtainBmp) {
-        DeleteObject(g_curtainBmp);
-        g_curtainBmp = nullptr;
-    }
-    if (!img.isNull()) {
-        BITMAPINFO bi{};
-        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = img.width();
-        bi.bmiHeader.biHeight = -img.height();
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        void *bits = nullptr;
-        g_curtainBmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (g_curtainBmp && bits) {
-            memcpy(bits, img.constBits(), size_t(img.height()) * img.bytesPerLine());
-            g_curtainW = img.width();
-            g_curtainH = img.height();
-        }
-    }
     if (!m_curtain)
-        m_curtain = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kCurtainClass, L"",
-                                    WS_POPUP, rect.x(), rect.y(), rect.width(), rect.height(),
-                                    m_hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+        // No owner: an owned window is demoted with its owner, and landOn takes our
+        // window out of the topmost band on the way out of fullscreen - measured the
+        // cover going down with it, so the desktop showed for 150 ms mid-transition.
+        m_curtain = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                    kCurtainClass, L"", WS_POPUP,
+                                    g_coverX, g_coverY, g_coverW, g_coverH,
+                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!m_curtain)
         return;
-    SetWindowPos(m_curtain, HWND_TOPMOST, rect.x(), rect.y(), rect.width(), rect.height(),
-                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
-    // Painted is not enough - it has to be composited before the move. Without the
-    // flush the curtain lands one frame late and the re-allocation shows through it.
-    UpdateWindow(m_curtain);
+    // The surface goes in while the window is still hidden, so the first thing it is
+    // ever composited with is a complete frame.
+    presentCover(m_curtain, g_coverX, g_coverY, 0, 0, g_coverW, g_coverH);
+    SetWindowPos(m_curtain, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    m_curtainBeat.start();
+    // Put up is not enough - it has to be composited before anything moves. Without
+    // the flush the cover lands one frame late and the re-allocation shows through it.
     DwmFlush();
+}
+
+void VideoHost::raiseCurtain()
+{
+    // landOn puts our own window at the top of the topmost band, i.e. back over the
+    // strip. Re-asserting the order is what keeps it up until the fade finishes.
+    if (m_curtain && IsWindow(m_curtain))
+        SetWindowPos(m_curtain, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 void VideoHost::hideCurtain()
@@ -250,6 +297,17 @@ void VideoHost::adopt(QWindow *win)
     // Qt owns this window's procedure, so the only way to answer WM_GETMINMAXINFO
     // is a subclass chained on top of it. That is what lets our fullscreen borrow
     // Windows' own maximise animation and still land on the whole monitor.
+    // A run that died with the tray stashed leaves it hidden, and nothing re-shows it:
+    // stashTaskbar() will not adopt a tray it did not hide. With auto-hide off, a
+    // hidden Shell_TrayWnd can only be that leftover.
+    if (HWND tr = FindWindowW(L"Shell_TrayWnd", nullptr);
+        tr && !IsWindowVisible(tr)) {
+        APPBARDATA st{ uint32_t(sizeof(st)), tr };
+        if (SHAppBarMessage(ABM_GETSTATE, &st) == 0) {   // 0 = no ABS_AUTOHIDE
+            ShowWindow(tr, SW_SHOWNOACTIVATE);
+            qInfo("TRAY recovered from a previous run");
+        }
+    }
     s_self = this;
     if (qEnvironmentVariableIsSet("PLAYERUI_NOSUB"))
         qInfo("VIDEOHOST subclass skipped (PLAYERUI_NOSUB)");
@@ -286,7 +344,15 @@ LRESULT CALLBACK VideoHost::subProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT
         }
         return 0;
     }
-    return DefSubclassProc(h, msg, wp, lp);
+    const LRESULT r = DefSubclassProc(h, msg, wp, lp);
+    // Qt answers our landing write with a deferred position change of its own, and
+    // that raise puts the window back over the curtain - measured two frames of the
+    // re-allocated surface (film at 56 % of its height, centred) leaking through the
+    // cover. Re-asserting the cover on every position change while a transition is in
+    // flight costs one SetWindowPos and closes that gap.
+    if (msg == WM_WINDOWPOSCHANGED && self && self->m_settledPending)
+        self->raiseCurtain();
+    return r;
 }
 
 void VideoHost::measureInsets()
@@ -378,34 +444,148 @@ void VideoHost::grabPicture()
 {
     if (!m_hwnd)
         return;
-    QScreen *sc = QGuiApplication::primaryScreen();
-    const QRect r = clientGeometry();
-    m_snapObj.set(sc ? sc->grabWindow(0, r.x(), r.y(), r.width(), r.height()) : QPixmap());
+    // The whole monitor, not the client rect. A cover that reproduces every pixel
+    // already on screen is the one that does not read as a change: grabbing only the
+    // client left the task bar band - 48 px of near-white in a light theme - to snap
+    // to black when it was hidden, measured 213.97 -> 5.00 in a single 7 ms frame.
+    const QRect mon = monitorRect();
+    if (mon.isEmpty())
+        return;
+    RECT wa{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    g_bandH = qMax(0, int(mon.bottom() - LONG(wa.bottom) + 1));
+    QElapsedTimer g;
+    g.start();
+    if (mon.width() != g_coverW || mon.height() != g_coverH) {
+        if (g_coverBmp) {
+            DeleteObject(g_coverBmp);
+            g_coverBmp = nullptr;
+            g_coverBits = nullptr;
+        }
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = mon.width();
+        bi.bmiHeader.biHeight = -mon.height();   // top-down: row 0 is the top of the screen
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        void *bits = nullptr;
+        g_coverBmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (!g_coverBmp || !bits) {
+            g_coverBits = nullptr;
+            g_coverW = g_coverH = 0;
+            qWarning("COVER dib %dx%d failed", mon.width(), mon.height());
+            emit pictureReady();
+            return;
+        }
+        g_coverBits = static_cast<uint8_t *>(bits);
+        g_coverW = mon.width();
+        g_coverH = mon.height();
+        g_coverStride = mon.width() * 4;
+    }
+    g_coverX = mon.x();
+    g_coverY = mon.y();
+    // One BitBlt from the desktop straight into the surface the cover is shown from.
+    // The Qt grab this replaces cost 47-70 ms at 4K - it copies the frame into a
+    // QPixmap, converts it to a QImage, converts that again, and then we copied it a
+    // third time into the DIB - and while it ran the GUI thread could not present, so
+    // the screen stood still for that long before the cover even appeared.
+    HDC sdc = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(sdc);
+    HGDIOBJ old = (sdc && mem) ? SelectObject(mem, g_coverBmp) : nullptr;
+    if (old)
+        BitBlt(mem, 0, 0, g_coverW, g_coverH, sdc, g_coverX, g_coverY, SRCCOPY);
+    if (old)
+        SelectObject(mem, old);
+    if (mem)
+        DeleteDC(mem);
+    if (sdc)
+        ReleaseDC(nullptr, sdc);
+    g_bandSrc.clear();
+    if (g_bandH > 0) {
+        const size_t from = size_t(g_coverH - g_bandH) * g_coverStride;
+        g_bandSrc.assign(g_coverBits + from, g_coverBits + size_t(g_coverH) * g_coverStride);
+    }
+    g_bandFade = 0;
+    qInfo("SWAP grab %d ms, %d ms after the press", int(g.elapsed()),
+          int(m_press.isValid() ? m_press.elapsed() : -1));
+    emit pictureReady();
 }
 
 void VideoHost::beginSwap()
 {
-    // The chrome is part of this window, so it has to be off the screen *before* the
-    // grab: measured with the controls still in the frame, the stretched copy of them
-    // landed 71 px off the real row for ~150 ms and read as a double image.
-    m_trans = true;
-    emit transitioningChanged();
-    m_snapArm.start();
+    // The chrome stays up until the cover is on screen - the cover is a picture of the
+    // screen as it is now, controls included, and it dissolves out over the new state.
+    // Hiding the controls *before* the grab was what an aspect-stretched cover needed,
+    // and it made the cover differ from the screen the instant it appeared.
+    m_press.start();
+    // Queued rather than called here, because pictureReady() is answered by QML writing
+    // the window's geometry, and that should not happen inside this call's stack.
+    QMetaObject::invokeMethod(this, &VideoHost::grabPicture, Qt::QueuedConnection);
 }
 
-void VideoHost::releasePicture()
+void VideoHost::armReveal()
 {
-    m_snapObj.set(QPixmap());      // one 4K frame is 33 MB; hand it back after the dissolve
+    // The size the frame on screen is drawn into right now, in device pixels: the one
+    // size that must *not* end the cover. Before the first swap of a run nothing has
+    // reported it, so fall back on what the window says it is.
+    m_swapFrom = m_presented.isEmpty()
+        ? m_win->size() * m_win->devicePixelRatio() : m_presented;
+    m_swapClock.start();
 }
 
-void VideoHost::noteSettled()
+void VideoHost::notePresented(int w, int h, int n)
+{
+    m_presented = QSize(w, h);
+    if (!m_settledPending || !m_revealByFrame)
+        return;
+    qInfo("SWAP present %dx%d frame %d, %d ms after the write", w, h, n,
+          m_swapClock.elapsed());
+    // The item only reports when the size its frame was drawn into changed, so this
+    // is the first frame at a new rect. If it is still the rect the swap started from,
+    // the change was a resize Qt had already queued before the write.
+    if (m_presented == m_swapFrom)
+        return;
+    // The second frame at the new size, not the first: `Present()` only hands the frame
+    // to DWM, and measured, the screen still showed the old surface in the top-left
+    // corner of the enlarged window for one frame after the first present (content edge
+    // at 1280x732 of a 3840x2160 window). One vsync later that frame is on the panel.
+    if (n < 2)
+        return;
+    reveal();
+}
+
+void VideoHost::reveal()
+{
+    if (!m_settledPending)
+        return;
+    m_settled.stop();
+    m_trans = false;
+    emit transitioningChanged();
+    settle();
+}
+
+void VideoHost::settle()
 {
     if (!m_settledPending)
         return;
     m_settledPending = false;
-    // One signal, both halves: the curtain comes off exactly when the snapshot may
-    // start dissolving, so the two cannot land a frame apart and flash a hard cut.
-    hideCurtain();
+    m_curtainBeat.stop();
+    qInfo("SWAP settled %d ms after the write, %d ms after the press",
+          m_swapClock.elapsed(), int(m_press.elapsed()));
+    // Down to the task bar's strip in one step. For a layered window UpdateLayeredWindow
+    // *is* the move, the resize and the repaint, all at once, so the film area goes back
+    // to the live window in the same frame that leaves the strip covering the band. A
+    // GDI cover could not do this: resizing it handed DWM a fresh empty surface, and
+    // that empty frame went on screen first (measured 7 ms of black), which is why this
+    // used to be a SetWindowRgn.
+    if (m_bandIn && g_bandH > 0 && g_coverBmp) {
+        presentCover(m_curtain, g_coverX, g_coverY + g_coverH - g_bandH,
+                     0, g_coverH - g_bandH, g_coverW, g_bandH);
+        m_band.start();
+    } else {
+        hideCurtain();
+    }
     emit settled();
 }
 
@@ -428,64 +608,110 @@ void VideoHost::toggleFullscreen()
         } else {
             m_restoreRect = geometry();
         }
-        m_trans = true;
-        emit transitioningChanged();
-        stashTaskbar();
+        qInfo("SWAP enter from %d,%d %dx%d max=%d", m_restoreRect.x(), m_restoreRect.y(),
+              m_restoreRect.width(), m_restoreRect.height(), m_restoreMax ? 1 : 0);
         m_fs = true;
         m_settledPending = true;
+        m_bandIn = true;
+        // The cover goes up first, and because it is a 1:1 copy of what is already on
+        // screen, putting it there is not something you can see. Everything from here
+        // to the reveal happens behind it.
         // One step, no animation. Growing the window in beats costs a 4K surface
         // re-allocation per step (measured 7-26 ms apart at 144 Hz - a stutter), and
         // the system maximise cannot be answered past the work area, so it always
-        // left the task-bar band to be covered by a second move. The snapshot laid at
-        // the end rect is what covers the black first frame instead.
+        // left the task-bar band to be covered by a second move.
         // Land first, then take the caption off. Measured the other way round, Qt
         // recomputes its own geometry from the client area the moment the style
         // changes and overwrites the rect two calls later: the window ended up
         // frameless at 1282x721 in the middle of the screen instead of on the monitor.
-        showCurtain(monitorRect());
+        // The chrome and the task bar are handled *after* the move, not before: each
+        // costs a round trip through the shell, and that time is precisely how long the
+        // picture stands still behind the cover.
+        showCover();
+        armReveal();
+        m_revealByFrame = true;
         landOn(monitorRect());
+        raiseCurtain();
         setFramed(false);
+        stashTaskbar();
+        m_trans = true;
+        emit transitioningChanged();
+        // Only a backstop: reveal() is driven by the first new-size present. This
+        // fires if the scene graph never takes a pass at the new size.
+        m_settled.setInterval(120);
         emit resized();
         emit fullscreenChanged();
-        m_trayBeat.start();
+        // The tray flag is *not* handed back here. Restoring it 400 ms in put the
+        // band over the bottom of the film while we were still fullscreen (measured
+        // Shell_TrayWnd visible=True at 0,0 3840x2160), which reads as the desktop
+        // showing through. It comes back with the way out, or with the destructor.
         return;
     }
+    m_fs = false;
+    m_settledPending = true;
+    m_bandIn = false;
+    qInfo("SWAP out to %d,%d %dx%d max=%d", m_restoreRect.x(), m_restoreRect.y(),
+          m_restoreRect.width(), m_restoreRect.height(), m_restoreMax ? 1 : 0);
+    showCover();
+    armReveal();
+    m_revealByFrame = false;
     m_trans = true;
     emit transitioningChanged();
     // Hide the tray for the way out too: left visible, its band lit up when beat one
     // uncovered it and went under the shrinking window again - three events.
     stashTaskbar();
     m_trayBeat.stop();
-    m_fs = false;
-    m_settledPending = true;
-    showCurtain(m_restoreRect);
-    landOn(m_restoreRect);
+    // The frame goes back first because the maximised rect is computed from the
+    // non-client area. That order makes the way out one rect step: the trace reads
+    // 0,0 3840x2160 framed, then -8,-8 3856x2128 31 ms later. Restoring to the normal
+    // rect and maximising afterwards put a small window over the desktop on screen
+    // for 120 ms.
     setFramed(true);
+    landOn(m_restoreRect, m_restoreMax);
+    // Not render-driven on this leg, and the frame dump says why: Qt had a frame at
+    // the maximised client size on the wire 26 ms after the write and DWM's own frame
+    // bounds read 0,0 3840x2112 at 27 ms, yet the composited screen sat on the normal
+    // rect for 41 ms and then grew for another 250 ms - the shell's maximise
+    // transition, which no in-window signal can see. Revealing on the present exposed
+    // all of it (film band 122 -> 33 -> 112). The cover stays up over the part you can
+    // read as a jump.
+    m_settled.setInterval(200);
     emit resized();
     emit fullscreenChanged();
-    if (m_restoreMax)
-        ShowWindow(m_hwnd, SW_SHOWMAXIMIZED);
     m_trayBeat.start();
 }
 
-void VideoHost::landOn(const QRect &to)
+void VideoHost::landOn(const QRect &to, bool asMax)
 {
     if (!m_hwnd)
         return;
     // Leave the zoomed state and land on the target in one write: stripping the
     // frame while the window is still zoomed insets the client by 3 px on every edge
     // (measured: client 3,3 3834x2154 inside a 0,0 3840x2160 popup).
+    // `asMax` carries the zoomed flag in the same write. Restoring to the normal rect
+    // and maximising afterwards left the compositor drawing the window at the small
+    // rect for 120 ms after its logical rect had already moved - a framed window
+    // caught mid-growth over the desktop.
     WINDOWPLACEMENT np{ uint32_t(sizeof(np)) };
     if (GetWindowPlacement(m_hwnd, &np)) {
-        np.showCmd = SW_RESTORE;
+        np.showCmd = asMax ? SW_SHOWMAXIMIZED : SW_RESTORE;
         np.rcNormalPosition = { to.x(), to.y(), to.x() + to.width(), to.y() + to.height() };
         SetWindowPlacement(m_hwnd, &np);
+    }
+    if (asMax) {
+        // The rect belongs to the system now; only the band and the frame change.
+        SetWindowPos(m_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        return;
     }
     // Above the shell while fullscreen so nothing slides over the film; the band
     // comes back with the window. One SetWindowPos, so no half-committed rect can
     // reach the screen between the placement write and the z-order.
-    SetWindowPos(m_hwnd, m_fs ? HWND_TOPMOST : HWND_NOTOPMOST, to.x(), to.y(),
-                 to.width(), to.height(),
+    // Going in, the window is placed *below* the curtain rather than at the head of
+    // the band: raising it to the top let DWM composite one frame of the re-allocated
+    // surface (film drawn at 56 % of its height, centred) before raiseCurtain ran.
+    HWND after = m_fs ? (m_curtain ? m_curtain : HWND_TOPMOST) : HWND_NOTOPMOST;
+    SetWindowPos(m_hwnd, after, to.x(), to.y(), to.width(), to.height(),
                  SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 

@@ -12,7 +12,6 @@
 #include <QImage>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include <QQuickImageProvider>
 #include <QQuickWindow>
 
 #include <QTimer>
@@ -22,26 +21,6 @@
 #include <QTextStream>
 #include <QUrl>
 
-// Hands the frame grabPicture() took to QML's Image (source: "image://snap/<n>").
-// The number is a forced reload: the same URL would be a cache hit.
-class SnapProvider final : public QQuickImageProvider
-{
-public:
-    explicit SnapProvider(Snapshot *s)
-        : QQuickImageProvider(QQuickImageProvider::Pixmap), m_snap(s)
-    {
-    }
-    QPixmap requestPixmap(const QString &id, QSize *size, const QSize &) override
-    {
-        Q_UNUSED(id)
-        if (size)
-            *size = m_snap->pixmap().size();
-        return m_snap->pixmap();
-    }
-
-private:
-    Snapshot *m_snap;
-};
 #include <QWindow>
 #include <QSurfaceFormat>
 
@@ -212,8 +191,6 @@ int main(int argc, char *argv[])
     // there is only one window now, so Qt is the only writer.
 
     QQmlApplicationEngine engine;
-    engine.addImageProvider(u"snap"_qs,
-                            new SnapProvider(static_cast<Snapshot *>(host.snapshotObj())));
     engine.rootContext()->setContextProperty(u"playerCore"_qs, &player);
     engine.rootContext()->setContextProperty(u"videoHost"_qs, &host);
     engine.rootContext()->setContextProperty(u"thumbs"_qs, &thumbs);
