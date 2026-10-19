@@ -7,10 +7,11 @@ Item {
     readonly property real winH: height / Theme.controlRowHeightRatio
     readonly property real winW: width
     readonly property real icon: Theme.iconRatio * winH
-    readonly property real pitchL: Theme.leftGroupPitchWRatio * winW
-    readonly property real pitchC: Theme.centerPitchWRatio * winW
+    // Fixed gaps between the icons, so maximising leaves them exactly as wide as at
+    // the small window. See Theme.leftGroupPitchHRatio for the arithmetic.
+    readonly property real pitchL: Theme.leftGroupPitchHRatio * winH
+    readonly property real pitchC: Theme.centerPitchHRatio * winH
     readonly property color glyph: Theme.glyph
-    property string timeText: "07:46 / 03:00:22"
     property bool playing: false
     property real volume: 100
     // What the rotate/aspect cells currently hold, so the bubble can read the
@@ -38,7 +39,7 @@ Item {
     property int hoverCells: 0
     readonly property bool pointerInside: hoverCells > 0
 
-    readonly property real lineH: Theme.lineThicknessRatio * winH
+    readonly property real lineH: Math.max(2, Theme.barLineRatio * winH)
 
     component Cell: Item {
         id: cell
@@ -102,12 +103,15 @@ Item {
         }
     }
 
-    // ---- left group: menu / cast / CC / volume + slider / timecode ----
+    // ---- left group: menu / cast / CC / volume + slider ----
+    // The timecode moved to the two ends of the scrub bar, so this group stops
+    // where the slider does.
     Item {
         x: Theme.sideInsetWRatio * row.winW
         anchors.verticalCenter: parent.verticalCenter
         height: row.icon
-        width: row.pitchL * 4 + 0.066 * row.winW + 0.13 * row.winW
+        width: row.pitchL * 3 + row.icon + Theme.volGapHRatio * row.winH
+                                        + Theme.volWidthHRatio * row.winH
 
         Cell { name: "menu";   x: 0; tipText: "打开媒体库" }
         Cell { name: "cast";   x: row.pitchL; live: false
@@ -118,8 +122,8 @@ Item {
 
         Item {
             id: vol
-            x: row.pitchL * 3 + row.icon + 0.012 * row.winW
-            width: 0.066 * row.winW
+            x: row.pitchL * 3 + row.icon + Theme.volGapHRatio * row.winH
+            width: Theme.volWidthHRatio * row.winH
             height: row.icon
             anchors.verticalCenter: parent.verticalCenter
 
@@ -159,14 +163,6 @@ Item {
             }
         }
 
-        Text {
-            x: vol.x + vol.width + 0.012 * row.winW
-            anchors.verticalCenter: parent.verticalCenter
-            text: row.timeText
-            color: row.glyph
-            font.pixelSize: Theme.subtitleFontRatio * row.winH
-            font.family: Theme.uiFont
-        }
     }
 
     // ---- centre transport ----

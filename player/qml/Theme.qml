@@ -6,6 +6,9 @@ QtObject {
     // track read at y=649 over the scrim.
     readonly property color accent: "#FF8B00"
     readonly property color track: "#463D2E"
+    // The unplayed part of the scrub bar, sampled off the reference strip he sent
+    // (124,124,127 at the middle of the grey run).
+    readonly property color trackFlat: "#7C7C7F"
     readonly property color textPrimary: "#FFFFFF"
     readonly property color textSecondary: "#B8B8B8"
     readonly property color glyph: "#E6E6E6"
@@ -16,14 +19,13 @@ QtObject {
     readonly property string uiFont: "Segoe UI Variable Display"
 
     // Ratios of window height, measured on the 1282x723 reference.
-    readonly property real barCenterRatio: 0.898
-    readonly property real controlCenterRatio: 0.957
     readonly property real controlRowHeightRatio: 0.084
-    readonly property real tickInnerRatio: 0.0055
-    readonly property real tickOuterRatio: 0.0104
-    readonly property real lineThicknessRatio: 0.0058
+    readonly property real controlCenterRatio: 0.957
+    readonly property real barCenterRatio: 0.898
+    // 6 px on the reference strip, which is 0.0079 of the 762 px window it was
+    // measured against. The old 0.0058 gave 4.4 px.
+    readonly property real barLineRatio: 0.0079
     readonly property real knobDiameterRatio: 0.0194
-    readonly property real tickHalfBaseRatio: 0.00215
     readonly property real titleFontRatio: 0.0295
     readonly property real subtitleFontRatio: 0.0205
     readonly property real titleLineGapRatio: 0.0097
@@ -36,8 +38,19 @@ QtObject {
     // mpv's sub-margin-y=185, set once in PlayerCore.
     readonly property real scrimHeightRatio: 0.24
 
-    // Ratios of window width.
-    readonly property real sideInsetWRatio: 0.0203
-    readonly property real leftGroupPitchWRatio: 0.0352
-    readonly property real centerPitchWRatio: 0.0507
+    // Ratios of window width. Halved from 0.0203 at his ask ("左右间隙调小一点");
+    // no number given, so the coefficient is 0.5.
+    readonly property real sideInsetWRatio: 0.0102
+    // The gaps *between* the icons used to be ratios of the window width, so on a
+    // 3840 monitor they came out 2.96x wider than at 1298. Written against the window
+    // height instead - which the chrome no longer scales - each one keeps the pixel
+    // value it had at the launch size: 0.0352 x 1298 = 45.7 px = 0.0599 x 762, and
+    // 0.0507 x 1298 = 65.8 px = 0.0863 x 762.
+    readonly property real leftGroupPitchHRatio: 0.0599
+    readonly property real centerPitchHRatio: 0.0863
+    readonly property real volWidthHRatio: 0.1124
+    readonly property real volGapHRatio: 0.0205
+    // The gap between the time at the end of the bar and the bar itself: 28 px on the
+    // reference strip = 0.0368 of its height.
+    readonly property real timeGapHRatio: 0.0368
 }

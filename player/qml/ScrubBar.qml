@@ -10,24 +10,13 @@ Item {
     property bool scrubbing: false
     signal scrubbed(real frac)
 
-    // Chapter starts as fractions of the timeline, read off the reference ticks.
-    property var chapterTicks: [
-        0.0951, 0.1537, 0.2016, 0.2390, 0.2919, 0.3325, 0.3927, 0.4309,
-        0.4659, 0.5309, 0.5691, 0.6138, 0.6634, 0.7114, 0.7553, 0.8374,
-        0.9228, 0.9585
-    ]
-
-    // A Canvas repaints only when it is dirtied, and the tick list lives on this
-    // item rather than on the Canvas, so the real chapters arriving from mpv
-    // would otherwise never replace the mock ones.
-    onChapterTicksChanged: ticks.requestPaint()
-
     readonly property real lineY: height / 2
-    readonly property real lineH: Theme.lineThicknessRatio * parent.height
-    readonly property real knobD: Theme.knobDiameterRatio * parent.height
-    readonly property real halfBase: Theme.tickHalfBaseRatio * parent.width
-    readonly property real tickIn: Theme.tickInnerRatio * parent.height
-    readonly property real tickOut: Theme.tickOuterRatio * parent.height
+    // The bar's own height is fixed at the launch size by Main.qml, so everything
+    // here is sized off it and stays the same pixels at any window size. 0.030 is the
+    // ratio Main.qml sizes the bar with, so the division gives back that height.
+    readonly property real winH: height / 0.030
+    readonly property real lineH: Math.max(2, Theme.barLineRatio * winH)
+    readonly property real knobD: Theme.knobDiameterRatio * winH
 
     readonly property real shownFrac: scrubbing ? hoverPos : progress
 
@@ -72,50 +61,19 @@ Item {
         x: 0
         y: bar.lineY - bar.lineH / 2
         width: parent.width
-        height: Math.max(2, bar.lineH)
+        height: bar.lineH
         radius: height / 2
-        color: Theme.track
+        color: Theme.trackFlat
     }
 
-    // Played portion.
+    // Played portion: the same colour as the icons, per his ask.
     Rectangle {
         x: 0
         y: bar.lineY - bar.lineH / 2
         width: bar.width * bar.shownFrac
-        height: Math.max(2, bar.lineH)
+        height: bar.lineH
         radius: height / 2
-        color: Theme.accent
-    }
-
-    Canvas {
-        id: ticks
-        anchors.fill: parent
-        onPaint: {
-            const g = getContext("2d");
-            g.reset();
-            g.fillStyle = Theme.accent;
-            const hw = bar.halfBase, cy = bar.lineY;
-            const tIn = bar.tickIn, tOut = bar.tickOut;
-            for (const t of bar.chapterTicks) {
-                const cx = t * width;
-                // Base sits on the outer edge, tip points at the line, and the
-                // pair never touches the track itself.
-                g.beginPath();
-                g.moveTo(cx - hw, cy - tOut);
-                g.lineTo(cx + hw, cy - tOut);
-                g.lineTo(cx, cy - tIn);
-                g.closePath();
-                g.fill();
-                g.beginPath();
-                g.moveTo(cx - hw, cy + tOut);
-                g.lineTo(cx + hw, cy + tOut);
-                g.lineTo(cx, cy + tIn);
-                g.closePath();
-                g.fill();
-            }
-        }
-        onWidthChanged: requestPaint()
-        onHeightChanged: requestPaint()
+        color: Theme.glyph
     }
 
     // Play head.
@@ -125,7 +83,7 @@ Item {
         width: bar.knobD
         height: bar.knobD
         radius: bar.knobD / 2
-        color: Theme.accent
+        color: Theme.glyph
     }
 
     // Hover marker on the track.
@@ -136,6 +94,6 @@ Item {
         width: bar.knobD
         height: bar.knobD
         radius: bar.knobD / 2
-        color: Theme.accent
+        color: Theme.textPrimary
     }
 }

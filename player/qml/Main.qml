@@ -249,9 +249,6 @@ Window {
         0.4659, 0.5309, 0.5691, 0.6138, 0.6634, 0.7114, 0.7553, 0.8374,
         0.9228, 0.9585
     ]
-    readonly property var ticks: playerCore.duration > 0 && playerCore.chapterStarts.length > 1
-        ? playerCore.chapterStarts.slice(1).map(v => v / playerCore.duration)
-        : mockTicks
 
     // The picture. libmpv draws into a texture on this window's own device and the
     // scene graph samples it here, so the scrim, the bar and the buttons are drawn
@@ -499,14 +496,38 @@ Window {
             }
         }
 
+        // The timecode now sits at the two ends of the bar: where we are on the left,
+        // how long the film is on the right. Same type as the old combined readout.
+        Text {
+            id: posText
+            x: win.inset
+            anchors.verticalCenter: bar.verticalCenter
+            text: win.fmt(playerCore.position)
+            color: Theme.glyph
+            font.pixelSize: Theme.subtitleFontRatio * shellHeight
+            font.family: Theme.uiFont
+        }
+
+        Text {
+            id: durText
+            x: win.vw - win.inset - width
+            anchors.verticalCenter: bar.verticalCenter
+            text: win.fmt(playerCore.duration)
+            color: Theme.glyph
+            font.pixelSize: Theme.subtitleFontRatio * shellHeight
+            font.family: Theme.uiFont
+        }
+
         ScrubBar {
             id: bar
-            x: win.inset
-            width: win.vw - 2 * win.inset
-            height: win.vh * 0.030
-            y: Theme.barCenterRatio * win.vh - height / 2
+            x: posText.x + posText.width + Theme.timeGapHRatio * shellHeight
+            width: durText.x - Theme.timeGapHRatio * shellHeight - x
+            // Fixed at the launch size, then shifted with the bottom edge, so the bar
+            // keeps exactly the height it has where the window started and the same
+            // gap to the buttons under it at any window size.
+            height: shellHeight * 0.030
+            y: Theme.barCenterRatio * shellHeight - height / 2 + (win.vh - shellHeight)
             progress: playerCore.duration > 0 ? playerCore.position / playerCore.duration : 0.0431
-            chapterTicks: win.ticks
             onScrubbed: (frac) => {
                 if (playerCore.duration > 0)
                     playerCore.seekTo(frac * playerCore.duration);
@@ -551,11 +572,13 @@ Window {
             id: controls
             x: 0
             width: win.vw
-            height: win.vh * Theme.controlRowHeightRatio
-            y: Theme.controlCenterRatio * win.vh - height / 2
-            timeText: playerCore.duration > 0
-                ? win.fmt(playerCore.position) + " / " + win.fmt(playerCore.duration)
-                : "07:46 / 03:00:22"
+            // Fixed at the height the row has where the window was launched, so
+            // maximising or going fullscreen no longer scales the bar, the glyphs and
+            // the time text with it. Everything derived from it inside ControlRow
+            // (icon, scrub line, knob) is fixed by the same move; the horizontal pitch
+            // still follows the width, so the row keeps spanning the window.
+            height: shellHeight * Theme.controlRowHeightRatio
+            y: Theme.controlCenterRatio * shellHeight - height / 2 + (win.vh - shellHeight)
             playing: !playerCore.paused
             volume: playerCore.volume
             rotateDeg: win.rotateSteps[win.rotateIdx]
