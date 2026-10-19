@@ -41,6 +41,113 @@ Item {
 
     readonly property real lineH: Math.max(2, Theme.barLineRatio * winH)
 
+    // Three tiers of the same row, because a 480 px window cannot carry 15 controls and
+    // a 620 px one should not have to. The tier is a ratio of the window's own height,
+    // so it does not move when the window is maximised: measured at 480x270 the three
+    // groups end at x=100, 293 and 473 of 480 - nothing overlaps, but the right group
+    // finishes 7 px from the edge and the rate readout sits against its neighbour.
+    // Mini is pinned to the narrow tier by definition; a window dragged narrower than
+    // 1.15 x its height gets it too. 1.45 is where the wide set stops having a pitch of
+    // slack between its groups.
+    // 8 px of slack on each edge, so a pointer parked on the boundary cannot make a
+    // whole group of icons blink. It is exactly the width of the grab band: the drag
+    // moves the edge by one band per step, and without the slack the last step of a
+    // drag that ends on the threshold decides the layout.
+    readonly property real tierHyst: 8
+    property int miniTier: -1
+    property int tier: 2
+
+    // Which side the boundary is crossed from is the whole point of a hysteresis, so
+    // this cannot be a binding: it has to see the tier it is leaving.
+    //
+    // It reads width and height directly, never winW/winH/narrowEdge/wideEdge. Those are
+    // bindings off the same signals, and the declared handler is connected before they
+    // are installed, so on the event that fires this function they still hold the
+    // previous size. Measured on the stale reading: one jump from 1032 to 1282 left the
+    // row on the 4-cell group and the jump back left it on the 7-cell one - the tier was
+    // decided by the width the window had *before* the drag step, so a single big resize
+    // never caught up until the next one.
+    function retier() {
+        if (miniTier >= 0) {
+            tier = miniTier;
+            return;
+        }
+        const w = width;
+        const h = height / Theme.controlRowHeightRatio;
+        const narrow = 1.15 * h;
+        const wide = 1.45 * h;
+        if (tier === 2)
+            tier = w < wide - tierHyst ? (w < narrow - tierHyst ? 0 : 1) : 2;
+        else if (tier === 0)
+            tier = w > narrow + tierHyst ? (w > wide + tierHyst ? 2 : 1) : 0;
+        else
+            tier = w > wide + tierHyst ? 2 : (w < narrow - tierHyst ? 0 : 1);
+    }
+    onWidthChanged: retier()
+    onHeightChanged: retier()
+    onMiniTierChanged: retier()
+    Component.onCompleted: retier()
+
+    readonly property var leftOrder:  [["menu", "volume"], ["menu", "volume"],
+                                       ["menu", "cast", "cc", "volume"]]
+    readonly property var rightOrder: [["pip", "collapse"],
+                                       ["chapters", "speed", "pip", "collapse"],
+                                       ["audioTrack", "chapters", "rotate", "aspect",
+                                        "speed", "pip", "collapse"]]
+    // Narrow tier is play plus the two chapter jumps: in a window that small, skipping to
+    // the next chapter is the thing that has no other handle, while a ten-second nudge
+    // still has the scrub bar under the pointer.
+    readonly property var centerOrder: [["prevChapter", "play", "nextChapter"],
+                                        ["prevChapter", "back10", "play", "fwd10", "nextChapter"],
+                                        ["prevChapter", "back10", "play", "fwd10", "nextChapter"]]
+
+    // Left edges, walking the tier's own list: a step is one pitch, except after the
+    // rate cell, which is wider than a glyph and whose neighbour starts where it ends.
+    // At the top tier this reproduces the fixed positions the row has always had.
+    // How wide a cell is drawn: most are one glyph, the rate cell carries its own
+    // readout beside it, and the transport glyphs are stepped up.
+    function cellW(name) {
+        if (name === "speed")
+            return row.speedW;
+        if (name === "play" || name === "pause")
+            return row.icon * 1.35;
+        if (name === "back10" || name === "fwd10")
+            return row.icon * 1.15;
+        return row.icon;
+    }
+    // Left edges, walking the tier's own list. A step is one pitch plus whatever the
+    // cell being left behind is wider than a glyph, so the gap between two neighbours'
+    // ink is pitch - icon for every pair. Stepping by a fixed pitch instead - or by the
+    // wide cell's own width, which is what this used to do - makes the transport group
+    // uneven around the play button: measured 47 / 52 / 26 / 43 px.
+    function xOf(list, name, pitch) {
+        let x = 0;
+        for (let i = 0; i < list.length; ++i) {
+            if (list[i] === name)
+                return x;
+            // The rate cell is the one exception: its box is sized for the longest label
+            // and holds the short ones left-aligned, so its neighbour already starts
+            // where the box ends. Adding the box's surplus on top of that opens a 40 px
+            // hole after it (measured) where the row had 22 before.
+            x += list[i] === "speed" ? row.speedW
+                                     : pitch + cellW(list[i]) - row.icon;
+        }
+        return 0;
+    }
+    function shown(list, name) {
+        return list.indexOf(name) >= 0;
+    }
+    function groupW(list, pitch) {
+        if (list.length === 0)
+            return 0;
+        return xOf(list, list[list.length - 1], pitch) + cellW(list[list.length - 1]);
+    }
+
+    readonly property real leftW: groupW(leftOrder[tier], pitchL)
+            + (tier === 2 ? Theme.volGapHRatio * winH + Theme.volWidthHRatio * winH : 0)
+    readonly property real rightW: groupW(rightOrder[tier], pitchL)
+    readonly property real centerW: groupW(centerOrder[tier], pitchC)
+
     component Cell: Item {
         id: cell
         required property string name
@@ -105,24 +212,30 @@ Item {
 
     // ---- left group: menu / cast / CC / volume + slider ----
     // The timecode moved to the two ends of the scrub bar, so this group stops
-    // where the slider does.
+    // where the slider does. Below the top tier the slider and the two track cells
+    // are the first to go: the rate and the chapter list stay.
     Item {
         x: Theme.sideInsetWRatio * row.winW
         anchors.verticalCenter: parent.verticalCenter
         height: row.icon
-        width: row.pitchL * 3 + row.icon + Theme.volGapHRatio * row.winH
-                                        + Theme.volWidthHRatio * row.winH
+        width: row.leftW
 
-        Cell { name: "menu";   x: 0; tipText: "打开媒体库" }
-        Cell { name: "cast";   x: row.pitchL; live: false
+        Cell { name: "menu";   x: row.xOf(row.leftOrder[row.tier], "menu", row.pitchL); tipText: "打开媒体库" }
+        Cell { name: "cast";   visible: row.shown(row.leftOrder[row.tier], "cast")
+               x: row.xOf(row.leftOrder[row.tier], "cast", row.pitchL); live: false
                tipText: "投屏"; tipKeys: "暂未接入" }
-        Cell { name: "cc";     x: row.pitchL * 2; hasMenu: true; live: row.subCount > 0
+        Cell { name: "cc";     visible: row.shown(row.leftOrder[row.tier], "cc")
+               x: row.xOf(row.leftOrder[row.tier], "cc", row.pitchL); hasMenu: true
+               live: row.subCount > 0
                tipText: "字幕"; tipKeys: row.subCount > 0 ? "S" : "本片无字幕" }
-        Cell { name: "volume"; x: row.pitchL * 3; tipText: "静音"; tipKeys: "M" }
+        Cell { name: "volume"; x: row.xOf(row.leftOrder[row.tier], "volume", row.pitchL)
+               tipText: "静音"; tipKeys: "M" }
 
         Item {
             id: vol
-            x: row.pitchL * 3 + row.icon + Theme.volGapHRatio * row.winH
+            visible: row.tier === 2
+            x: row.xOf(row.leftOrder[row.tier], "volume", row.pitchL) + row.icon
+               + Theme.volGapHRatio * row.winH
             width: Theme.volWidthHRatio * row.winH
             height: row.icon
             anchors.verticalCenter: parent.verticalCenter
@@ -166,34 +279,58 @@ Item {
     }
 
     // ---- centre transport ----
+    // The group is centred on its own laid-out width, so adding or dropping a cell moves
+    // the play button not at all.
     Item {
         id: center
-        x: row.width / 2 - row.pitchC * 2
+        x: row.width / 2 - row.centerW / 2
         anchors.verticalCenter: parent.verticalCenter
         height: row.icon * 1.35
-        width: row.pitchC * 4 + row.icon * 1.35
+        width: row.centerW
 
-        Cell { name: "prevChapter"; x: 0; anchors.verticalCenter: parent.verticalCenter
+        Cell { name: "prevChapter"; visible: row.shown(row.centerOrder[row.tier], "prevChapter")
+               x: row.xOf(row.centerOrder[row.tier], "prevChapter", row.pitchC)
+               anchors.verticalCenter: parent.verticalCenter
                tipText: "上一个章节"; tipKeys: "J" }
-        Cell { name: "back10"; x: row.pitchC; width: row.icon * 1.15; height: row.icon * 1.15
+        Cell { name: "back10"; visible: row.shown(row.centerOrder[row.tier], "back10")
+               x: row.xOf(row.centerOrder[row.tier], "back10", row.pitchC)
+               width: row.icon * 1.15; height: row.icon * 1.15
                anchors.verticalCenter: parent.verticalCenter
                tipText: "后退 10 秒"; tipKeys: "←" }
+        // The play and pause glyphs' ink boxes sit 2 and 1 units right of the centre of
+        // the 24-unit box they are drawn in (their path data: M8 5l12 7-12 7z spans x
+        // 8..20, the two bars span 8.5..17.5). The cell goes back by exactly that, which
+        // puts the glyph on the group's centre line *and* makes the two gaps beside it
+        // equal - measured with the old +0.18 push, 56 px left of play against 41 right.
+        readonly property real playInkOff: (row.playing ? 1.0 : 2.0) / 24 * row.icon * 1.35
         Cell { name: row.playing ? "pause" : "play"
-               x: row.pitchC * 2 + row.icon * 0.18; width: row.icon * 1.35; height: row.icon * 1.35
+               x: row.xOf(row.centerOrder[row.tier], "play", row.pitchC) - center.playInkOff
+               width: row.icon * 1.35; height: row.icon * 1.35
                anchors.verticalCenter: parent.verticalCenter
                tipText: row.playing ? "暂停" : "播放"; tipKeys: "空格" }
-        Cell { name: "fwd10"; x: row.pitchC * 3; width: row.icon * 1.15; height: row.icon * 1.15
+        Cell { name: "fwd10"; visible: row.shown(row.centerOrder[row.tier], "fwd10")
+               x: row.xOf(row.centerOrder[row.tier], "fwd10", row.pitchC)
+               width: row.icon * 1.15; height: row.icon * 1.15
                anchors.verticalCenter: parent.verticalCenter
                tipText: "前进 10 秒"; tipKeys: "→" }
-        Cell { name: "nextChapter"; x: row.pitchC * 4; anchors.verticalCenter: parent.verticalCenter
+        Cell { name: "nextChapter"; visible: row.shown(row.centerOrder[row.tier], "nextChapter")
+               x: row.xOf(row.centerOrder[row.tier], "nextChapter", row.pitchC)
+               anchors.verticalCenter: parent.verticalCenter
                tipText: "下一个章节"; tipKeys: "L" }
 
-        // The skip glyphs carry a numeral inside the arc. The two offsets are the
+        // The skip glyphs carry a numeral inside the ring. The two offsets are the
         // measured gap between the ink of "10" and the ring's centre (the ink is
         // not at the centre of its own layout box), expressed as a fraction of the
-        // font size so it holds at every window size.
+        // font size so it holds at every window size. The narrow tier has no skips,
+        // and xOf answers 0 for a name its list does not hold, so the pair has to be
+        // switched off with them - otherwise both numerals land on the first cell.
         Repeater {
-            model: [row.pitchC, row.pitchC * 3]
+            // A Repeater is not an Item, so it has no visible: the empty list is what
+            // keeps the two numerals off the narrow tier's first cell.
+            model: row.shown(row.centerOrder[row.tier], "back10")
+                   ? [row.xOf(row.centerOrder[row.tier], "back10", row.pitchC),
+                      row.xOf(row.centerOrder[row.tier], "fwd10", row.pitchC)]
+                   : []
             delegate: Text {
                 required property var modelData
                 readonly property real fs: row.icon * 0.42
@@ -214,25 +351,34 @@ Item {
     readonly property real speedW: icon * 2.05 + 4
     Item {
         id: right
-        x: row.width - Theme.sideInsetWRatio * row.winW - (row.pitchL * 5 + row.speedW + row.icon)
+        x: row.width - Theme.sideInsetWRatio * row.winW - row.rightW
         anchors.verticalCenter: parent.verticalCenter
         height: row.icon
-        width: row.pitchL * 5 + row.speedW + row.icon
+        width: row.rightW
 
-        Cell { name: "audioTrack"; x: 0; hasMenu: true; live: row.audioCount > 0
+        Cell { name: "audioTrack"; visible: row.shown(row.rightOrder[row.tier], "audioTrack")
+               x: row.xOf(row.rightOrder[row.tier], "audioTrack", row.pitchL)
+               hasMenu: true; live: row.audioCount > 0
                tipText: "音轨"; tipKeys: row.audioCount > 0 ? "A" : "无音轨" }
-        Cell { name: "chapters";   x: row.pitchL; tipText: "章节列表"; tipKeys: "T" }
-        Cell { name: "rotate";     x: row.pitchL * 2; hasMenu: true; tipText: "画面旋转"
-               tipKeys: row.rotateDeg + "°" }
-        Cell { name: "aspect";     x: row.pitchL * 3; hasMenu: true; tipText: "画面比例"
-               tipKeys: row.aspectLabel }
-        Cell { name: "speed"; x: row.pitchL * 4; width: row.speedW; hasMenu: true
+        Cell { name: "chapters";   visible: row.shown(row.rightOrder[row.tier], "chapters")
+               x: row.xOf(row.rightOrder[row.tier], "chapters", row.pitchL)
+               tipText: "章节列表"; tipKeys: "T" }
+        Cell { name: "rotate";     visible: row.shown(row.rightOrder[row.tier], "rotate")
+               x: row.xOf(row.rightOrder[row.tier], "rotate", row.pitchL)
+               hasMenu: true; tipText: "画面旋转"; tipKeys: row.rotateDeg + "°" }
+        Cell { name: "aspect";     visible: row.shown(row.rightOrder[row.tier], "aspect")
+               x: row.xOf(row.rightOrder[row.tier], "aspect", row.pitchL)
+               hasMenu: true; tipText: "画面比例"; tipKeys: row.aspectLabel }
+        Cell { name: "speed"; visible: row.shown(row.rightOrder[row.tier], "speed")
+               x: row.xOf(row.rightOrder[row.tier], "speed", row.pitchL)
+               width: row.speedW; hasMenu: true
                labelText: row.speedLabel; tipText: "倍速播放"; tipKeys: row.speedLabel }
-        Cell { name: "pip";        x: row.pitchL * 4 + row.speedW; tipText: "小窗播放" }
+        Cell { name: "pip";   x: row.xOf(row.rightOrder[row.tier], "pip", row.pitchL)
+               tipText: "小窗播放" }
         // Same effect as F now: the true fullscreen with the snapshot cover. The
-        // system maximise stays reachable through the native caption button.
-        Cell { name: "collapse";   x: row.pitchL * 5 + row.speedW; tipText: "全屏"
-               tipKeys: "F" }
+        // system maximise stays reachable through the caption button at the top.
+        Cell { name: "collapse"; x: row.xOf(row.rightOrder[row.tier], "collapse", row.pitchL)
+               tipText: "全屏"; tipKeys: "F" }
     }
 
 }

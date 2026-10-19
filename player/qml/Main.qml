@@ -412,18 +412,29 @@ Window {
         }
 
         Column {
+            id: titleCol
             x: caption.gap
             visible: page !== "library"
-            // Centred on the bump row he asked the title to match: the group sits
-            // gap px below the window edge, so the row's middle is gap + tileH/2.
-            // The 2.5 px is measured: at this size the ink band sits that far below
-            // the line box's centre, so centring the box leaves the words low.
-            readonly property real rowMid: caption.gap + caption.tileH / 2 - 2.5
-            y: Math.max(0, rowMid - height / 2)
+            // Stops where the three glyphs start, with the same gap on its right as on
+            // its left, so a long film name runs out of room against the buttons instead
+            // of under them.
+            readonly property real room: Math.max(0, topRow.width - 2 * caption.gap - caption.width)
+            width: room
+            // Centred on the *name line*, not on the two-line block. Measured off the
+            // screen: the three glyphs' ink lies on row 18.5 of this row (the tiles run
+            // 6..34, so the ink sits 1.5 px above the tile centre), and the name's ink band
+            // sits 2 px below the middle of its own line box - so the box goes in at
+            // tile centre -3.5 and the two ink bands meet. Centring the block instead left
+            // the name 8.5 px above the glyphs, and because the line gap is a ratio of the
+            // window height it also slid the name up and down as the window changed shape.
+            readonly property real rowMid: caption.gap + caption.tileH / 2 - 3.5
+            y: Math.max(0, rowMid - mediaTitle.height / 2)
             spacing: Theme.titleLineGapRatio * win.vh
 
             Text {
                 id: mediaTitle
+                width: titleCol.room
+                elide: Text.ElideRight
                 text: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Oppenheimer (2023)"
                 color: Theme.textPrimary
                 font.pixelSize: win.headerFont
@@ -433,6 +444,8 @@ Window {
 
             Text {
                 id: chapterLine
+                width: titleCol.room
+                elide: Text.ElideRight
                 text: playerCore.chapter >= 0 ? "Chapter " + (playerCore.chapter + 1) : "Chapter 2"
                 color: Theme.textSecondary
                 // The house factor for secondary text (Tip and the dropdown use it
@@ -533,6 +546,9 @@ Window {
             // still follows the width, so the row keeps spanning the window.
             height: shellHeight * Theme.controlRowHeightRatio
             y: Theme.controlCenterRatio * shellHeight - height / 2 + (win.vh - shellHeight)
+            // Mini is the narrowest layout there is, so it pins the tier rather than
+            // competing with the width thresholds.
+            miniTier: videoHost.mini ? 0 : -1
             playing: !playerCore.paused
             volume: playerCore.volume
             rotateDeg: win.rotateSteps[win.rotateIdx]
@@ -629,16 +645,20 @@ Window {
     }
 
     // --- frame gestures ---------------------------------------------------
-    // These were the only border the user had while the host was a bare popup:
-    // the top strip moved the window, the edges and corners resized it. The
-    // windowed state now carries a real Windows caption and resize frame, which
-    // also does snapping, Win+arrows and the restore-on-double-click, so the
-    // bands are switched off rather than deleted - the one state left without a
-    // frame is fullscreen, where a resize grab is not wanted either.
+    // The window carries no system resize border: WM_NCCALCSIZE in videohost.cpp hands
+    // the client the whole window, so the system hit-test reports HTCLIENT everywhere and
+    // these bands are the only thing that resizes it. Measured on the build where they
+    // were all off: a drag 60 px outward at all eight edges and corners moved nothing at
+    // all except the top strip, which slid the window 60 px up.
     //
-    // Positions were rebuilt from the window's own screen origin, not from the
-    // item-local delta: the window moves under the grab, so a local delta would
-    // read zero on the very next event and the drag would stall.
+    // Only the three edges whose grab leaves the window's own origin alone are live. The
+    // left, top and the three corners that touch them are gone, not disabled: a grab
+    // there moves win.x/win.y under the cursor, and the cursor position is read back from
+    // that origin, so the delta feeds itself - that is the violent flicker they showed.
+    //
+    // Positions are rebuilt from the window's own screen origin, not from the item-local
+    // delta: the window moves under the grab, so a local delta would read zero on the very
+    // next event and the drag would stall.
     readonly property int edgeGrab: 8
     readonly property int cornerGrab: 20
     property point pressGlobal
@@ -690,10 +710,9 @@ Window {
         id: band
         required property int edges
         z: 20
-        // Off, not deleted - see the note above the grab metrics. Left on, these
-        // bands would sit 8 px inside the picture (the chrome no longer covers the
-        // frame) and steal the edge clicks from the video.
-        enabled: false
+        // Fullscreen and the maximised state have no edge to grab: the first is the whole
+        // screen and the second is the shell's own size.
+        enabled: !videoHost.fullscreen && !videoHost.zoomed
         hoverEnabled: true
         onPressed: (m) => win.grabBegin(band, m)
         onPositionChanged: { if (pressed) win.grabResize(band, edges, mouse); }
@@ -703,14 +722,9 @@ Window {
     // restores it on leave by itself. Routing it through a property needs a
     // Qt.CursorShape-typed property, and QML rejects that type outright
     // ("Unable to assign int to [unknown property type]").
-    Band { edges: 1;  cursorShape: Qt.SizeHorCursor;  x: 0; y: 0; width: win.edgeGrab; height: win.height }
     Band { edges: 2;  cursorShape: Qt.SizeHorCursor;  x: win.width - win.edgeGrab; y: 0; width: win.edgeGrab; height: win.height }
-    Band { edges: 4;  cursorShape: Qt.SizeVerCursor;  x: 0; y: 0; width: win.width; height: win.edgeGrab }
     Band { edges: 8;  cursorShape: Qt.SizeVerCursor;  x: 0; y: win.height - win.edgeGrab; width: win.width; height: win.edgeGrab }
-    Band { edges: 5;  cursorShape: Qt.SizeFDiagCursor; x: 0; y: 0; width: win.cornerGrab; height: win.cornerGrab }
     Band { edges: 10; cursorShape: Qt.SizeFDiagCursor; x: win.width - win.cornerGrab; y: win.height - win.cornerGrab; width: win.cornerGrab; height: win.cornerGrab }
-    Band { edges: 6;  cursorShape: Qt.SizeBDiagCursor; x: win.width - win.cornerGrab; y: 0; width: win.cornerGrab; height: win.cornerGrab }
-    Band { edges: 9;  cursorShape: Qt.SizeBDiagCursor; x: 0; y: win.height - win.cornerGrab; width: win.cornerGrab; height: win.cornerGrab }
 
     MouseArea {
         id: topStrip
