@@ -349,12 +349,23 @@ Item {
                anchors.verticalCenter: parent.verticalCenter
                tipText: "下一个章节"; tipKeys: "L"; live: row.hasChapters }
 
-        // The skip glyphs carry a numeral inside the ring. The two offsets are the
-        // measured gap between the ink of "10" and the ring's centre (the ink is
-        // not at the centre of its own layout box), expressed as a fraction of the
-        // font size so it holds at every window size. The narrow tier has no skips,
-        // and xOf answers 0 for a name its list does not hold, so the pair has to be
-        // switched off with them - otherwise both numerals land on the first cell.
+        // The skip glyphs carry a numeral inside the ring. The ring is a circle drawn in
+        // the middle of the glyph's 24-unit box and the cell is square, so the cell's
+        // centre is the ring's centre and the numeral is placed from there on both axes.
+        // The ink box (not the layout box) is what has to land on that centre, and the
+        // only way to reach it from QML is TextMetrics: a Text's `font` group carries no
+        // metrics at all - `font.ascent` reads undefined, the binding goes NaN and Qt
+        // leaves y at 0, which is what had put the pair on top of the ring.
+        // 0.42 -> 0.34 of the glyph: asked for smaller digits, no number given, so the
+        // coefficient is 0.81 x what it was. One number for the metrics and the drawing
+        // so the two cannot disagree about the size they were measured at.
+        readonly property real digitFs: row.icon * 0.34
+        TextMetrics {
+            id: dig
+            text: "10"
+            font.family: Theme.uiFont
+            font.pixelSize: center.digitFs
+        }
         Repeater {
             // A Repeater is not an Item, so it has no visible: the empty list is what
             // keeps the two numerals off the narrow tier's first cell.
@@ -364,12 +375,16 @@ Item {
                    : []
             delegate: Text {
                 required property var modelData
-                readonly property real fs: row.icon * 0.42
-                x: modelData + row.icon * 0.575 - width / 2 + fs * 0.033
-                y: center.height / 2 - height / 2 - fs * 0.037
-                text: "10"
+                // Both boxes are relative to the baseline: `ink.y` is how far the ink
+                // stands above it (negative y = up), and -`dig.boundingRect.y` is the
+                // ascent, i.e. where that baseline sits below the item's top edge.
+                readonly property rect ink: dig.tightBoundingRect
+                readonly property real ascent: -dig.boundingRect.y
+                x: modelData + row.icon * 0.575 - ink.x - ink.width / 2
+                y: center.height / 2 - ascent - ink.y - ink.height / 2
+                text: dig.text
                 color: row.glyph
-                font.pixelSize: fs
+                font.pixelSize: center.digitFs
                 font.family: Theme.uiFont
             }
         }

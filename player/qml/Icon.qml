@@ -32,7 +32,13 @@ Item {
     readonly property var table: ({
         "menu":         { d: "M3 6h18M3 12h18M3 18h18", filled: false },
         "cast":         { d: "M2 16.1a5.9 5.9 0 0 1 5.9 5.9M2 12.1a9.9 9.9 0 0 1 9.9 9.9M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6", filled: false },
-        "cc":           { d: "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9.2 10.1a2.6 2.6 0 1 0 0 3.8M16.2 10.1a2.6 2.6 0 1 0 0 3.8", filled: false },
+        // Asked for smaller letters inside the same box. The two C's are arcs, so the
+        // pair is rebuilt rather than scaled in place: radius 2.6 -> 2.1 with the same
+        // opening ratio (the chord stays at 0.73 of the radius), the separation scaled
+        // by the same factor, and the chords' midpoint put on the box's own centre line -
+        // the box is drawn from y 5 to y 19, so that midpoint is 12, and the first pass
+        // here left it at 12.5, which measured 0.5 px low.
+        "cc":           { d: "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM10.6 10.47a2.1 2.1 0 1 0 0 3.06M16.25 10.47a2.1 2.1 0 1 0 0 3.06", filled: false },
         "volume":       { d: "M4 9.5h3L11.5 6v12L7 14.5H4zM15 9a4.5 4.5 0 0 1 0 6M17.8 6.6a8 8 0 0 1 0 10.8", filled: false },
         // Asked for "a slash on the icon it has now", so the speaker and its waves stay
         // and one stroke goes across them. The slash is inset by its own width so the two

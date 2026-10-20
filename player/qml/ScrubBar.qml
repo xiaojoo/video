@@ -18,7 +18,22 @@ Item {
     readonly property real lineH: Math.max(2, Theme.barLineRatio * winH)
     readonly property real knobD: Theme.knobDiameterRatio * winH
 
-    readonly property real shownFrac: scrubbing ? hoverPos : progress
+    readonly property real shownFrac: scrubbing ? hoverPos
+                                  : (pending >= 0 && Math.abs(progress - preSeek) < 0.0005)
+                                  ? pending : progress
+
+    // Where a released seek asked to go, and where the player stood when it asked.
+    // Without this the bar paints the OLD position for the time the seek takes to come
+    // back: releasing clears `scrubbing` at once, so `progress` - still the pre-seek
+    // number for ~14 ms - is what shows. Measured through a click from 45.4 s to 5.3 s:
+    // 45.4 -> 5.3 -> 45.4 (14 ms, two frames at 144 Hz) -> 5.3. The held value is
+    // dropped as soon as the player reports anything other than where it was, so a seek
+    // that lands somewhere else, or a file that starts playing, cannot leave it stuck.
+    property real pending: -1.0
+    property real preSeek: -1.0
+
+    onProgressChanged: if (pending >= 0 && Math.abs(progress - preSeek) >= 0.0005)
+        pending = -1
 
     // Widened hit area: the visible bar is only a few pixels tall.
     MouseArea {
@@ -49,13 +64,16 @@ Item {
         }
         onExited: if (!bar.scrubbing) bar.hovering = false
         onPressed: (m) => {
+            bar.pending = -1.0;           // a new press takes the readout over
             bar.scrubbing = true;
             bar.hoverPos = frac(m.x);
             bar.hovering = true;
         }
         onReleased: (m) => {
+            bar.preSeek = bar.progress;
+            bar.pending = frac(m.x);
             bar.scrubbing = false;
-            bar.scrubbed(frac(m.x));
+            bar.scrubbed(bar.pending);
         }
     }
 
