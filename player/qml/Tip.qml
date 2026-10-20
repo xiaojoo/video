@@ -12,8 +12,9 @@ Item {
     // The item the x/y below are expressed in. Defaults to our own parent, which
     // is the layer we are placed on.
     property Item space: parent
-    property real winH: 720
-    property real winW: 1280
+    // The size the chrome was designed at (the window's launch rect), so the bubble
+    // keeps the type size it has where the window started instead of scaling with it.
+    property real refH: 720
     property string side: "above"      // "above" | "below"
 
     property Item target: null
@@ -22,7 +23,7 @@ Item {
     property real caretX: 0
     property int delayMs: 420
 
-    readonly property real fs: Theme.subtitleFontRatio * winH * 0.85
+    readonly property real fs: Theme.subtitleFontRatio * refH * 0.85
     readonly property real pad: fs * 0.62
     readonly property real caret: Math.max(4, fs * 0.40)
     readonly property real standOff: caret + fs * 0.30

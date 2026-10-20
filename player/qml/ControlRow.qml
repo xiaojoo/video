@@ -5,7 +5,9 @@ Item {
     id: row
 
     readonly property real winH: height / Theme.controlRowHeightRatio
-    readonly property real winW: width
+    // The window's launch width. `row.width` is the live one, and the side margin read
+    // off it came out 13 px at 1282 and 39 px at 3840 - the gap he asked to hold still.
+    readonly property real refW: shellWidth
     readonly property real icon: Theme.iconRatio * winH
     // Fixed gaps between the icons, so maximising leaves them exactly as wide as at
     // the small window. See Theme.leftGroupPitchHRatio for the arithmetic.
@@ -60,7 +62,7 @@ Item {
     // Which side the boundary is crossed from is the whole point of a hysteresis, so
     // this cannot be a binding: it has to see the tier it is leaving.
     //
-    // It reads width and height directly, never winW/winH/narrowEdge/wideEdge. Those are
+    // It reads width and height directly, never refW/winH/narrowEdge/wideEdge. Those are
     // bindings off the same signals, and the declared handler is connected before they
     // are installed, so on the event that fires this function they still hold the
     // previous size. Measured on the stale reading: one jump from 1032 to 1282 left the
@@ -215,7 +217,7 @@ Item {
     // where the slider does. Below the top tier the slider and the two track cells
     // are the first to go: the rate and the chapter list stay.
     Item {
-        x: Theme.sideInsetWRatio * row.winW
+        x: Theme.sideInsetWRatio * row.refW
         anchors.verticalCenter: parent.verticalCenter
         height: row.icon
         width: row.leftW
@@ -351,7 +353,7 @@ Item {
     readonly property real speedW: icon * 2.05 + 4
     Item {
         id: right
-        x: row.width - Theme.sideInsetWRatio * row.winW - row.rightW
+        x: row.width - Theme.sideInsetWRatio * row.refW - row.rightW
         anchors.verticalCenter: parent.verticalCenter
         height: row.icon
         width: row.rightW

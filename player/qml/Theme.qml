@@ -36,10 +36,18 @@ QtObject {
     // can sit above it: under --wid the subs are painted into the host window
     // and our scrim would otherwise flatten them to 38/255. The matching lift is
     // mpv's sub-margin-y=185, set once in PlayerCore.
-    readonly property real scrimHeightRatio: 0.24
+    //
+    // 0.24 of the *launch* height (723 px) is 173 px; asked to make it smaller
+    // without a number, so the coefficient is stated: 0.19, which is 0.79x of what
+    // it was = 137 px. A ratio of shellHeight rather than the live height is the
+    // point - the chrome under it is pinned, so scaling this with the window only
+    // made the black band grow on the way to fullscreen.
+    readonly property real scrimHeightRatio: 0.19
 
     // Ratios of window width. Halved from 0.0203 at his ask ("左右间隙调小一点");
-    // no number given, so the coefficient is 0.5.
+    // no number given, so the coefficient is 0.5. Kept as a ratio of the *launch*
+    // width (see `inset` in Main.qml): at 0.0102 of the live width it was 13 px on a
+    // 1282 window and 39 px on a 3840 one, which is the gap he asked to hold still.
     readonly property real sideInsetWRatio: 0.0102
     // The gaps *between* the icons used to be ratios of the window width, so on a
     // 3840 monitor they came out 2.96x wider than at 1298. Written against the window

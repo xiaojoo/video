@@ -18,7 +18,11 @@ Window {
     title: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Playerui"
     readonly property real vw: width
     readonly property real vh: height
-    readonly property real inset: Theme.sideInsetWRatio * vw
+    // The margin in from the window's left and right edges. Measured against the width
+    // the window *started* at, not the one it has now: the chrome under it (the bar, the
+    // glyphs, the time) is pinned to the launch size too, and a 13 px margin that became
+    // 39 px on the way to fullscreen was the only part of that row still scaling.
+    readonly property real inset: Theme.sideInsetWRatio * shellWidth
     property bool uiVisible: true
     property string page: shellMode
     property int rotateIdx: 0
@@ -233,8 +237,11 @@ Window {
     }
 
     // Where the control band starts: the same edge the scrim is drawn from, so
-    // "the area with the bar and the buttons in it" is one number, not two.
-    readonly property real bandTop: win.vh * (1 - Theme.scrimHeightRatio)
+    // "the area with the bar and the buttons in it" is one number, not two. The band
+    // keeps the height it has at the launch size and rides the bottom edge, exactly
+    // like the bar and the row inside it.
+    readonly property real scrimH: shellHeight * Theme.scrimHeightRatio
+    readonly property real bandTop: win.vh - win.scrimH
 
     // The chrome stays up as long as the pointer is anywhere in that band - the
     // bar, a button, or the gap between two buttons - and the countdown only
@@ -371,9 +378,9 @@ Window {
     Rectangle {
         visible: page !== "library"
         x: 0
-        y: win.vh * (1 - Theme.scrimHeightRatio)
+        y: win.vh - win.scrimH
         width: win.vw
-        height: win.vh * Theme.scrimHeightRatio
+        height: win.scrimH
         opacity: win.uiVisible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
         gradient: Gradient {
@@ -503,11 +510,11 @@ Window {
 
         HoverCard {
             id: card
-            winW: win.vw
-            winH: win.vh
+            refW: shellWidth
+            refH: shellHeight
             x: Math.max(win.inset, Math.min(win.vw - win.inset - width,
                                             bar.x + bar.width * bar.hoverPos - width / 2))
-            y: bar.y - height - win.vh * 0.020
+            y: bar.y - height - shellHeight * 0.020
             visible: bar.hovering && bar.hoverPos >= 0
             chapterLabel: "Chapter " + (win.chapterAt(bar.hoverPos) + 1)
             timeLabel: win.fmt(bar.hoverPos * playerCore.duration)
@@ -569,8 +576,7 @@ Window {
         Tip {
             id: tip
             z: 30
-            winW: win.vw
-            winH: win.vh
+            refH: shellHeight
         }
 
         // Click outside an open dropdown closes it. This sits *under* the chrome
@@ -588,7 +594,7 @@ Window {
             id: picker
             z: 31
             space: ui
-            winH: win.vh
+            refH: shellHeight
             onPicked: (i) => {
                 if (win.pickerApply)
                     win.pickerApply(i);

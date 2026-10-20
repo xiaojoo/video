@@ -3,16 +3,19 @@ import Playerui
 
 Item {
     id: card
-    required property real winW
-    required property real winH
+    // The size the chrome was designed at (the window's launch rect), not the size it
+    // has now. Named for what it is: a bubble that tripled in width on the way to
+    // fullscreen was the thing being asked to hold still.
+    required property real refW
+    required property real refH
 
     property string chapterLabel: "Chapter 16"
     property string timeLabel: "02:15:29"
     property url thumb: ""
 
-    readonly property real boxW: Theme.thumbWidthRatio * winW
-    readonly property real boxH: Theme.thumbHeightRatio * winH
-    readonly property real smallFont: Theme.subtitleFontRatio * winH
+    readonly property real boxW: Theme.thumbWidthRatio * refW
+    readonly property real boxH: Theme.thumbHeightRatio * refH
+    readonly property real smallFont: Theme.subtitleFontRatio * refH
     readonly property real gap: smallFont * 0.45
 
     implicitWidth: boxW

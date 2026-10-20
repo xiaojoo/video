@@ -10,14 +10,16 @@ Item {
     id: picker
 
     property Item space: parent
-    property real winH: 720
+    // The size the chrome was designed at (the window's launch rect), so the dropdown's
+    // rows keep the type size they have where the window started.
+    property real refH: 720
     property var options: []
     property int current: -1
     property Item target: null
 
     signal picked(int index)
 
-    readonly property real fs: Theme.subtitleFontRatio * winH * 0.85
+    readonly property real fs: Theme.subtitleFontRatio * refH * 0.85
     readonly property real pad: fs * 0.62
     readonly property real rowH: fs * 2.0
     readonly property real tick: fs * 1.35
