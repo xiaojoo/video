@@ -56,6 +56,7 @@ PlayerCore::PlayerCore(QObject *parent) : QObject(parent)
     mpv_observe_property(m_mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(m_mpv, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(m_mpv, 0, "pause", MPV_FORMAT_FLAG);
+    mpv_observe_property(m_mpv, 0, "mute", MPV_FORMAT_FLAG);
     mpv_observe_property(m_mpv, 0, "volume", MPV_FORMAT_DOUBLE);
     mpv_observe_property(m_mpv, 0, "speed", MPV_FORMAT_DOUBLE);
     // NONE = "tell me it changed, I'll read it myself". Requesting NODE_ARRAY
@@ -186,6 +187,13 @@ void PlayerCore::onPropertyChange(void *propPtr)
         m_paused = *static_cast<int *>(p->data) != 0;
         qInfo("pause = %d", m_paused ? 1 : 0);
         emit pausedChanged();
+    } else if (!std::strcmp(n, "mute") && p->format == MPV_FORMAT_FLAG) {
+        const bool m = *static_cast<int *>(p->data) != 0;
+        if (m != m_muted) {
+            m_muted = m;
+            qInfo("mute = %d", m ? 1 : 0);
+            emit mutedChanged();
+        }
     } else if (!std::strcmp(n, "volume") && p->format == MPV_FORMAT_DOUBLE) {
         m_volume = *static_cast<double *>(p->data);
         emit volumeChanged();

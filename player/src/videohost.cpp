@@ -5,10 +5,52 @@
 #include <shellapi.h>
 
 #include <QWindow>
+#include <QCursor>
+#include <QQuickWindow>
+#include <QQuickItem>
 
 VideoHost *VideoHost::s_self = nullptr;
 
 namespace {
+// The shapes the chrome actually asks for, mapped to the system cursors. Anything else
+// answers nullptr so Qt gets the message and can do its own thing with it.
+HCURSOR systemCursor(Qt::CursorShape shape)
+{
+    switch (shape) {
+    case Qt::ArrowCursor:         return LoadCursorW(nullptr, IDC_ARROW);
+    case Qt::PointingHandCursor:  return LoadCursorW(nullptr, IDC_HAND);
+    case Qt::SizeHorCursor:       return LoadCursorW(nullptr, IDC_SIZEWE);
+    case Qt::SizeVerCursor:       return LoadCursorW(nullptr, IDC_SIZENS);
+    case Qt::SizeFDiagCursor:     return LoadCursorW(nullptr, IDC_SIZENWSE);
+    case Qt::SizeBDiagCursor:     return LoadCursorW(nullptr, IDC_SIZENESW);
+    case Qt::SizeAllCursor:       return LoadCursorW(nullptr, IDC_SIZEALL);
+    case Qt::IBeamCursor:         return LoadCursorW(nullptr, IDC_IBEAM);
+    case Qt::WaitCursor:          return LoadCursorW(nullptr, IDC_WAIT);
+    case Qt::CrossCursor:         return LoadCursorW(nullptr, IDC_CROSS);
+    default:                      return nullptr;
+    }
+}
+
+// The item under `p` (in `parent`'s coordinates) that has something to say about the
+// cursor: the search goes topmost-first through the paint order, and an item that only
+// carries the default arrow does not count, because every MouseArea reports that.
+QQuickItem *cursorBearing(QQuickItem *parent, const QPointF &p)
+{
+    const auto kids = parent->childItems();       // paint order, bottom first
+    for (int i = kids.size() - 1; i >= 0; --i) {
+        QQuickItem *c = kids.at(i);
+        if (!c->isVisible() || c->opacity() <= 0.0)
+            continue;
+        if (!c->contains(c->mapFromScene(p)))
+            continue;
+        if (QQuickItem *deeper = cursorBearing(c, p))
+            return deeper;
+        if (c->cursor().shape() != Qt::ArrowCursor)
+            return c;
+    }
+    return nullptr;
+}
+
 // The cover for the geometry change, filled by GDI from a 1:1 copy of the screen
 // taken just before it. A QML item cannot do this - it is drawn into the very surface
 // being re-made - and Qt needs a few frames to redraw at the new size: measured, the
@@ -387,6 +429,34 @@ LRESULT CALLBACK VideoHost::subProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT
             mmi->ptMaxTrackSize = mmi->ptMaxSize;
         }
         return 0;
+    }
+    // Windows asks the window under the pointer which cursor to show, and Qt only answers
+    // that question while it believes the pointer is inside *its* idea of the window - the
+    // client rect here is not that, because WM_NCCALCSIZE above hands the client the whole
+    // window. Measured with the real cursor read across six surfaces: every cursorShape in
+    // the chrome stayed an arrow - the icons under the bar, the scrub bar, the menu rows -
+    // while the hover itself plainly works, since the bubbles do appear. Answering here
+    // from the window's own cursor covers all of them at once; a shape we do not know
+    // falls through to Qt.
+    if (msg == WM_SETCURSOR && self && self->m_win) {
+        if (auto *qw = qobject_cast<QQuickWindow *>(self->m_win)) {
+            QQuickItem *root = qw->property("contentItem").value<QQuickItem *>();
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(h, &pt);
+            if (root) {
+                if (QQuickItem *c = cursorBearing(root, QPointF(pt.x, pt.y))) {
+                    if (HCURSOR cur = systemCursor(c->cursor().shape())) {
+                        SetCursor(cur);
+                        return TRUE;
+                    }
+                }
+            }
+        }
+        if (HCURSOR c = systemCursor(self->m_win->cursor().shape())) {
+            SetCursor(c);
+            return TRUE;
+        }
     }
     const LRESULT r = DefSubclassProc(h, msg, wp, lp);
     // Qt answers our landing write with a deferred position change of its own, and

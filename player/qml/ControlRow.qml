@@ -29,6 +29,8 @@ Item {
     // to, so they go grey where that is the reason - the same treatment the audio and
     // subtitle cells get when the track list is empty.
     property bool hasChapters: true
+    // The speaker glyph carries this: muted draws the same speaker with a slash over it.
+    property bool muted: false
 
     signal action(string what)
     signal volumePicked(real percent)
@@ -249,7 +251,11 @@ Item {
                x: row.xOf(row.leftOrder[row.tier], "cc", row.pitchL); hasMenu: true
                live: row.subCount > 0
                tipText: "字幕"; tipKeys: row.subCount > 0 ? "S" : "本片无字幕" }
-        Cell { name: "volume"; x: row.xOf(row.leftOrder[row.tier], "volume", row.pitchL)
+        // The glyph carries the mute state; the command behind the cell does not, so the
+        // slashed speaker is still the same 静音/取消静音 toggle. `key` is what the tier
+        // lists and the shell's menu look the cell up by - see the play cell.
+        Cell { name: row.muted ? "volumeMuted" : "volume"; key: "volume"
+               x: row.xOf(row.leftOrder[row.tier], "volume", row.pitchL)
                tipText: "静音"; tipKeys: "M" }
 
         Item {
@@ -290,6 +296,10 @@ Item {
                 anchors.fill: parent
                 anchors.margins: -6
                 hoverEnabled: true
+                // Clicking it sets the level and dragging moves the knob, so it is a hand
+                // like the scrub bar above it - the arrow it used to keep made the two
+                // bars on the row read as different kinds of thing.
+                cursorShape: Qt.PointingHandCursor
                 onEntered: row.hoverCells = row.hoverCells + 1
                 onExited: row.hoverCells = row.hoverCells - 1
                 onClicked: (m) => row.volumePicked(100 * m.x / width)

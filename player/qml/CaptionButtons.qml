@@ -81,6 +81,7 @@ Item {
                     id: area
                     anchors.fill: parent
                     hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
                     onClicked: root.picked(cell.key)
                 }
             }

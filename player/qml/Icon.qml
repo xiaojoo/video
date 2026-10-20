@@ -34,6 +34,10 @@ Item {
         "cast":         { d: "M2 16.1a5.9 5.9 0 0 1 5.9 5.9M2 12.1a9.9 9.9 0 0 1 9.9 9.9M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6", filled: false },
         "cc":           { d: "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9.2 10.1a2.6 2.6 0 1 0 0 3.8M16.2 10.1a2.6 2.6 0 1 0 0 3.8", filled: false },
         "volume":       { d: "M4 9.5h3L11.5 6v12L7 14.5H4zM15 9a4.5 4.5 0 0 1 0 6M17.8 6.6a8 8 0 0 1 0 10.8", filled: false },
+        // Asked for "a slash on the icon it has now", so the speaker and its waves stay
+        // and one stroke goes across them. The slash is inset by its own width so the two
+        // do not fuse where they cross the speaker's outline.
+        "volumeMuted":  { d: "M4 9.5h3L11.5 6v12L7 14.5H4zM15 9a4.5 4.5 0 0 1 0 6M17.8 6.6a8 8 0 0 1 0 10.8M4.2 4.2l15.6 15.6", filled: false },
         "prevChapter":  { d: "M6 5.5v13M19 6l-9 6 9 6z", filled: true },
         "nextChapter":  { d: "M18 5.5v13M5 6l9 6-9 6z", filled: true },
         "play":         { d: "M8 5l12 7-12 7z", filled: true },

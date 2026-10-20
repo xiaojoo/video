@@ -18,6 +18,9 @@ class PlayerCore final : public QObject
     Q_PROPERTY(double position READ position NOTIFY positionChanged)
     Q_PROPERTY(double duration READ duration NOTIFY durationChanged)
     Q_PROPERTY(bool paused READ paused NOTIFY pausedChanged)
+    // The speaker glyph has to say "muted", so the shell needs the state and not just
+    // the command that flips it.
+    Q_PROPERTY(bool muted READ muted NOTIFY mutedChanged)
     Q_PROPERTY(int chapter READ chapter NOTIFY chapterChanged)
     Q_PROPERTY(QString chapterTitle READ chapterTitle NOTIFY chapterChanged)
     Q_PROPERTY(QVariantList chapterStarts READ chapterStarts NOTIFY chapterChanged)
@@ -52,6 +55,7 @@ public:
     double position() const { return m_position; }
     double duration() const { return m_duration; }
     bool paused() const { return m_paused; }
+    bool muted() const { return m_muted; }
     int chapter() const { return m_chapter; }
     QString chapterTitle() const { return m_chapterTitle; }
     QVariantList chapterStarts() const { return m_chapterStarts; }
@@ -86,6 +90,7 @@ signals:
     void positionChanged();
     void durationChanged();
     void pausedChanged();
+    void mutedChanged();
     void chapterChanged();
     void mediaTitleChanged();
     void mediaUrlChanged();
@@ -113,6 +118,7 @@ private:
     double m_position = 0.0;
     double m_duration = 0.0;
     bool m_paused = false;
+    bool m_muted = false;
     double m_videoAspect = 0.0;
     int m_chapter = -1;
     QStringList m_chapterTitles;

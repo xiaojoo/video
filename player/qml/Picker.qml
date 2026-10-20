@@ -180,6 +180,7 @@ Item {
                         id: hit
                         anchors.fill: parent
                         hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
                         onClicked: picker.picked(line.index)
                     }
                 }

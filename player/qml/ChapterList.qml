@@ -11,6 +11,9 @@ Rectangle {
     // The gap left above and below the drawer - one number, because the top is asked to
     // read like the bottom, and the bottom one is the control band.
     property real gap: 0
+    // The gap at its right edge. The caller feeds it the same number the window's close
+    // button uses, so the two surfaces line up on one margin instead of two guesses.
+    property real edgeGap: 0
     // Chapter start times and the names that go with them, both handed over by the
     // caller: the drawer, the header line and the hover bubble must not disagree about
     // what the chapters of this file are.
@@ -32,8 +35,8 @@ Rectangle {
 
     readonly property real drawerW: Theme.drawerWidthRatio * refW
     width: drawerW
-    // Flush to the right edge, no slide: it is either out or it is not.
-    x: (parent ? parent.width : 0) - drawerW
+    // Held off the right edge by `edgeGap`, no slide: it is either out or it is not.
+    x: (parent ? parent.width : 0) - drawerW - edgeGap
     y: gap
     height: Math.max(0, (parent ? parent.height : 480) - 2 * gap)
     radius: 10
@@ -63,6 +66,7 @@ Rectangle {
         MouseArea {
             anchors.fill: parent
             anchors.margins: -6
+            cursorShape: Qt.PointingHandCursor
             onClicked: panel.dismissed()
         }
     }
@@ -122,6 +126,7 @@ Rectangle {
                 id: rowHit
                 anchors.fill: parent
                 hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
                 onClicked: panel.picked(index)
             }
         }

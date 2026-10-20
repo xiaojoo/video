@@ -97,6 +97,7 @@ Item {
             id: over
             anchors.fill: parent
             hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
             onClicked: library.scan()
         }
     }
@@ -143,6 +144,7 @@ Item {
             id: pickOver
             anchors.fill: parent
             hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
             onClicked: folderPick.open()
         }
     }
@@ -173,6 +175,7 @@ Item {
             id: backOver
             anchors.fill: parent
             hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
             onClicked: win.page = "player"
         }
     }
@@ -202,6 +205,12 @@ Item {
             required property var mediaId
             // The rename is edited in place, on the card's own label - not in a dialog.
             property bool renaming: false
+            // One "the pointer is on this card" for everything the card shows. Qt hands a
+            // mouse-over to exactly one item, so while the corner ✕ is hovered the card's
+            // own area reports false - and the ✕ used to be shown *by* that flag, which
+            // meant moving onto it hid it, which gave the hover back, which showed it
+            // again. Measured: the plate's colour never changed under the pointer.
+            readonly property bool hovered: mouse.containsMouse || hideHit.containsMouse
 
             function startRename() {
                 renameField.text = cell.title
@@ -229,8 +238,8 @@ Item {
                 height: page.artH
                 radius: 4
                 color: "#17171B"
-                border.width: mouse.containsMouse ? 2 : 1
-                border.color: mouse.containsMouse ? Theme.accent : "#2C2C31"
+                border.width: cell.hovered ? 2 : 1
+                border.color: cell.hovered ? Theme.accent : "#2C2C31"
 
                 // The first frame, cropped to the card by the box it fills. Two
                 // pixels inside the card: at one pixel the image's square corner
@@ -316,6 +325,7 @@ Item {
                 id: mouse
                 anchors.fill: parent
                 hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
                 onClicked: (m) => {
                     if (m.button === Qt.RightButton) {
@@ -333,21 +343,43 @@ Item {
             // Remove from the library. Only on hover, and only clickable while shown:
             // an affordance nobody can see must not be a hit target. Declared after the
             // card's own MouseArea so it is the one that gets the click.
-            Text {
+            //
+            // A plate, not a loose glyph: the card is a frame off the film, and the
+            // ✕ used to sit directly on it - white on hover over a bright frame read as
+            // nothing at all. The plate is wider than the glyph so the mark that can be
+            // hit is the mark that is drawn.
+            Rectangle {
                 id: hideBadge
                 z: 2
                 anchors.top: art.top
                 anchors.right: art.right
                 anchors.margins: 8
-                text: "✕"
-                color: hideHit.containsMouse ? Theme.textPrimary : Theme.textSecondary
-                font.pixelSize: page.height * 0.024
-                font.family: Theme.uiFont
-                visible: mouse.containsMouse && !cell.renaming
+                width: hideGlyph.width + hideGlyph.height * 1.1
+                height: hideGlyph.height * 1.5
+                radius: 4
+                color: hideHit.containsMouse ? "#F2000000" : "#B3000000"
+                visible: cell.hovered && !cell.renaming
+
+                Text {
+                    id: hideGlyph
+                    anchors.centerIn: parent
+                    // The plate is sized and placed off the glyph's *line box*, and the
+                    // ✕'s ink does not sit in the middle of that box - measured on the
+                    // plate over a white part of the frame (its edges are a hard
+                    // transition there): plate rows 111..142, ink rows 123..133, so the
+                    // mark lay 1.5 px below the plate's centre at a 17.35 px font.
+                    // Centring the box cannot fix that, so the box goes up by the same
+                    // 0.086 of the type size, which keeps the mark centred at every
+                    // window size.
+                    anchors.verticalCenterOffset: -font.pixelSize * 0.086
+                    text: "✕"
+                    color: hideHit.containsMouse ? Theme.textPrimary : Theme.glyph
+                    font.pixelSize: page.height * 0.024
+                    font.family: Theme.uiFont
+                }
                 MouseArea {
                     id: hideHit
                     anchors.fill: parent
-                    anchors.margins: -6
                     hoverEnabled: true
                     enabled: hideBadge.visible
                     cursorShape: Qt.PointingHandCursor

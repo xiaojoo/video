@@ -63,11 +63,22 @@ Window {
         playerCore.setPropertyString("video-aspect-override", win.aspectSteps[i]);
     }
 
+    // Which control the open dropdown belongs to, so a second click on the same one is a
+    // dismissal instead of a re-open on top of itself. Only read while the picker is
+    // visible, so a stale name from a list that has since timed out is harmless.
+    property string pickerFor: ""
+
     // The three cells that hold one of several values share this one dropdown. `at` is
     // "right" when it is opened as a submenu of the right-click menu, which also pulls it
     // in to the parent card's edge instead of the row's.
     function openPicker(name, item, at) {
+        if (picker.visible && win.pickerFor === name) {
+            picker.hide();
+            win.pickerFor = "";
+            return;
+        }
         tip.hide();
+        win.pickerFor = name;
         const inset = at === "right" ? playerMenu.sidePad : 0;
         if (name === "speed") {
             picker.show(item, win.speedSteps.map(v => win.speedLabel(v)),
@@ -196,7 +207,8 @@ Window {
         else if (what === "menu") win.page = "library";
         else if (what === "cc") playerCore.cycleProperty("sid");
         else if (what === "audioTrack") playerCore.cycleProperty("aid");
-        else if (what === "mute" || what === "volume") playerCore.cycleProperty("mute");
+        else if (what === "mute" || what === "volume" || what === "volumeMuted")
+            playerCore.cycleProperty("mute");
         else if (what === "chapters") chapters.open = !chapters.open;
         win.touch();
     }
@@ -706,6 +718,8 @@ Window {
             refW: shellWidth
             // The same gap above as below: the bottom one is the control band.
             gap: win.scrimH
+            // And the same margin on its right as the window's close button keeps.
+            edgeGap: caption.gap
             edges: win.edgeTimes
             labels: win.chapterLabels
             onPicked: (index) => {
@@ -739,6 +753,7 @@ Window {
             audioCount: playerCore.audioTracks.length
             subCount: playerCore.subTracks.length
             hasChapters: win.hasChapters
+            muted: playerCore.muted
             onAction: (what) => win.act(what)
             onVolumePicked: (pct) => playerCore.setVolume(pct)
             onPickFor: (name, item) => win.openPicker(name, item)
@@ -872,6 +887,11 @@ Window {
         z: 10
         anchors.fill: parent
         active: page === "library"
+        // An inactive Loader has no content, but it is still a full-window item at z 10 -
+        // and it is the first thing a hit-test meets. Measured while chasing the cursor:
+        // the item under the pointer for every point on the player page came back as this
+        // Loader, so nothing below it was ever reached.
+        visible: page === "library"
         sourceComponent: LibraryPage { }
     }
 
