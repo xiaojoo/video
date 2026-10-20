@@ -67,6 +67,19 @@ public:
     Q_INVOKABLE QStringList pathsNeedingCover(int limit = 20);
     Q_INVOKABLE void setPoster(const QString &path, const QString &file);
 
+    // The card's menu. `hideMedia` clears the display only: the file is not touched and
+    // stays exactly where it is, and scanning its folder again brings the card back.
+    Q_INVOKABLE void hideMedia(qint64 id);
+    // Renames the library row, not the file on disk. The `custom` mark is what keeps the
+    // next scan from deriving the title from the file name again.
+    Q_INVOKABLE void setTitle(qint64 id, const QString &title);
+    // Asks the shell to open the file's folder with that file selected.
+    Q_INVOKABLE bool revealInFolder(const QString &path);
+    // The name the library shows for this file, but only where the user typed one:
+    // otherwise mpv's own title (the file name) is just as right, and cheaper. The
+    // player page reads this so a renamed card is called the same thing in both places.
+    Q_INVOKABLE QString titleForPath(const QString &path) const;
+
     // Baseline filename estimator: release-style names, "Title (2008)" folders,
     // dot/underscore separators. Returns false when nothing credible was found.
     static bool parseName(const QString &fileName, const QString &parentDir,
@@ -75,6 +88,8 @@ public:
 signals:
     void scanned();
     void rowChanged();
+    // A card left or entered the grid without a scan (hidden, renamed).
+    void rowsChanged();
     // The header's 时长 N/M is filled by the backfill as well as by a scan, so it
     // needs a signal of its own; re-emitting scanned() would re-enter the pump.
     void statsChanged();
@@ -83,6 +98,10 @@ private:
     void ensureSchema();
     void walk(const QString &dirPath, int depth);
     void record(const QString &absPath, const QString &kind, qint64 size, qint64 mtime);
+    // The media row owning this path when the user named it, and clearing the display
+    // mark when a scan walks over the file again.
+    qint64 customMediaIdOfPath(const QString &absPath) const;
+    void unhidePath(const QString &absPath);
     QStringList pathsWithoutDuration(int limit);
     void countDurations();
     void setDuration(const QString &path, double seconds);
@@ -115,6 +134,9 @@ public:
         DurationRole,
         ParsedRole,
         PosterRole,
+        // The card menu acts on a row by its media id, not by its position: a
+        // hidden card changes the numbering under the grid.
+        IdRole,
     };
 
     explicit LibraryModel(Library *lib, QObject *parent = nullptr);

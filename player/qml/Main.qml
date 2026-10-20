@@ -123,6 +123,22 @@ Window {
     }
     // mpv reports -1 when the file has no chapter under the play head.
     readonly property bool hasChapters: playerCore.chapterStarts.length > 0
+    // What the library calls the file that is loaded right now - non-empty only where a
+    // card was renamed. The player's own title comes from the file name, so without this
+    // a renamed card would still play under its release name.
+    //
+    // `libRev` is the dependency that makes it re-read: the card can be renamed while
+    // that same film is already loaded, and 返回播放 comes back with an unchanged
+    // mediaUrl - a binding that only watches the url would keep the old name on screen.
+    property int libRev: 0
+    Connections {
+        target: library
+        function onRowsChanged() { win.libRev++ }
+    }
+    readonly property string libraryTitle: {
+        win.libRev;                   // read for the dependency, not for the value
+        return library.titleForPath(playerCore.mediaUrl);
+    }
     function edgeList() {
         return win.edgeTimes;
     }
@@ -179,6 +195,80 @@ Window {
         else if (what === "mute" || what === "volume") playerCore.cycleProperty("mute");
         else if (what === "chapters") chapters.open = !chapters.open;
         win.touch();
+    }
+
+    // --- right-click menu -------------------------------------------------
+    // The row of icons under the bar, offered as a menu on the picture. The rows come
+    // off the row's own tier orders instead of a second written-out list, so the menu
+    // can never promise a command the bar has dropped for this window size - and the
+    // mini window, which carries seven icons, gets seven rows rather than sixteen that
+    // would hang off its 270 px.
+    readonly property var menuNames: controls.leftOrder[controls.tier]
+            .concat(controls.centerOrder[controls.tier],
+                    controls.rightOrder[controls.tier])
+
+    function menuLabel(name) {
+        if (name === "play")
+            return playerCore.paused ? "播放" : "暂停";
+        const t = {
+            menu: "打开媒体库", cast: "投屏", cc: "字幕", volume: "静音",
+            prevChapter: "上一个章节", nextChapter: "下一个章节",
+            back10: "后退 10 秒", fwd10: "前进 10 秒", audioTrack: "音轨",
+            chapters: "章节列表", rotate: "画面旋转", aspect: "画面比例",
+            speed: "倍速播放", pip: "小窗播放", collapse: "全屏"
+        };
+        return t[name];
+    }
+
+    // The icon's own `live` rule: grey, still listed, still readable - only the click
+    // is withheld, because there is nothing for it to do.
+    function menuLive(name) {
+        if (name === "cast")
+            return false;                       // 投屏 is not wired up
+        if (name === "cc")
+            return playerCore.subTracks.length > 0;
+        if (name === "audioTrack")
+            return playerCore.audioTracks.length > 0;
+        if (name === "prevChapter" || name === "nextChapter")
+            return win.hasChapters;
+        return true;
+    }
+
+    // Built when the menu opens, from the values live at that moment. Not a binding:
+    // a binding whose rows come out of function calls captures the dependencies of
+    // whatever it read the first time, and a paused film would keep "暂停".
+    function menuList() {
+        const names = win.menuNames;
+        const out = [];
+        for (let i = 0; i < names.length; ++i)
+            out.push({ label: win.menuLabel(names[i]), action: names[i],
+                       on: win.menuLive(names[i]) });
+        return out;
+    }
+
+    function openMenuAt(px, py) {
+        tip.hide();
+        picker.hide();
+        chapters.open = false;
+        // The menu is a transport surface, so it brings the bar with it: the dropdowns
+        // it hands off to live inside the chrome, and would be invisible at opacity 0.
+        win.uiVisible = true;
+        playerMenu.showAt(px, py, win.menuList(), null);
+        win.touch();
+    }
+
+    function menuPick(what) {
+        // The five cells that hold one of several values open the same dropdown the icon
+        // opens, from the same glyph, so the menu cannot offer a different set of choices
+        // than the bar does. Every other row is a command the keys already send.
+        if (what === "cc" || what === "audioTrack" || what === "rotate"
+                || what === "aspect" || what === "speed") {
+            const glyph = controls.cells[what];
+            if (glyph)
+                win.openPicker(what, glyph);
+            return;
+        }
+        win.act(what);
     }
 
     // The "big view" for F: true fullscreen in one step, under a cover that is a copy
@@ -258,6 +348,7 @@ Window {
     readonly property bool pointerInBand: bandZone.containsMouse || bar.hovering
                                           || bar.scrubbing || controls.pointerInside
                                           || picker.visible || chapters.open
+                                          || playerMenu.visible
     // The pointer is on the open dropdown, or on the row of icons it belongs to.
     readonly property bool pointerOnMenu: picker.visible
                                           && (picker.pointerOn || controls.pointerInside)
@@ -462,7 +553,9 @@ Window {
                 id: mediaTitle
                 width: titleCol.room
                 elide: Text.ElideRight
-                text: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Oppenheimer (2023)"
+                text: win.libraryTitle.length ? win.libraryTitle
+                      : (playerCore.mediaTitle.length ? playerCore.mediaTitle
+                                                      : "Oppenheimer (2023)")
                 color: Theme.textPrimary
                 font.pixelSize: win.headerFont
                 font.family: Theme.uiFont
@@ -645,6 +738,39 @@ Window {
             interval: 220
             onTriggered: picker.hide()
         }
+    }
+
+    // The picture's right button. Window level, not inside the chrome, so it answers
+    // with the bar faded out; and it takes the right button only, which is how a
+    // right-click on an icon reaches it - every cell under the bar accepts the left
+    // button alone, so the right one falls through the whole stack to here. Under the
+    // menu and over everything that would otherwise eat the press.
+    MouseArea {
+        z: 32
+        anchors.fill: parent
+        acceptedButtons: Qt.RightButton
+        enabled: win.page === "player" && !videoHost.transitioning
+        onClicked: (m) => win.openMenuAt(m.x, m.y)
+    }
+
+    // With the menu up, a left click anywhere is a dismissal - not a request to toggle
+    // the chrome or to seek on the bar underneath. Right button is deliberately not
+    // taken here: it falls through to the layer below so a second right-click moves the
+    // menu instead of only closing it.
+    MouseArea {
+        z: 33
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton
+        visible: playerMenu.visible
+        enabled: playerMenu.visible
+        onClicked: playerMenu.hide()
+    }
+
+    ContextMenu {
+        id: playerMenu
+        z: 34
+        refH: shellHeight
+        onPicked: (action, target) => win.menuPick(action)
     }
 
     // Keyboard. Shortcut is scoped to this window and fires without waiting for

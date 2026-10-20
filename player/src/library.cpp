@@ -14,6 +14,9 @@
 #include <QElapsedTimer>
 #include <QSet>
 
+#include <windows.h>
+#include <shellapi.h>
+
 Library::Library(QObject *parent) : QObject(parent)
 {
     m_videoExt = { "mp4", "m4v", "mkv", "webm", "avi", "mov", "flv", "wmv", "ts", "m2ts",
@@ -68,6 +71,24 @@ void Library::ensureSchema()
             if (!alter.exec(u"ALTER TABLE files ADD COLUMN probed INTEGER"_qs))
                 qWarning("ddl alter failed: %s", qPrintable(alter.lastError().text()));
         }
+    }
+
+    // Two more marks on the media row, both about the card rather than the file:
+    // `hidden` is the "remove from the library" the card menu offers (the file stays
+    // exactly where it is on disk), and `custom` says the title was typed by the user,
+    // so the next scan must not derive it from the file name again.
+    QSqlQuery minfo(m_db);
+    if (minfo.exec(u"PRAGMA table_info(media)"_qs)) {
+        QStringList have;
+        while (minfo.next())
+            have << minfo.value(1).toString().toLower();
+        QSqlQuery alter(m_db);
+        if (!have.contains(u"hidden"_qs)
+            && !alter.exec(u"ALTER TABLE media ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"_qs))
+            qWarning("ddl alter media.hidden failed: %s", qPrintable(alter.lastError().text()));
+        if (!have.contains(u"custom"_qs)
+            && !alter.exec(u"ALTER TABLE media ADD COLUMN custom INTEGER NOT NULL DEFAULT 0"_qs))
+            qWarning("ddl alter media.custom failed: %s", qPrintable(alter.lastError().text()));
     }
 }
 
@@ -156,6 +177,9 @@ void Library::record(const QString &absPath, const QString &kind, qint64 size, q
     chk.exec();
     if (chk.next() && chk.value(1).toLongLong() == size && chk.value(2).toLongLong() == mtime) {
         ++m_skipped;
+        // A card the user removed from the view comes back when its folder is scanned
+        // again - the mark was only ever about the display, and this is the way back.
+        unhidePath(absPath);
         return;
     }
 
@@ -189,7 +213,11 @@ void Library::record(const QString &absPath, const QString &kind, qint64 size, q
     look.addBindValue(title);
     look.addBindValue(year);
     look.exec();
-    const qint64 mediaId = look.next() ? look.value(0).toLongLong() : 0;
+    // A row the user renamed keeps the name they typed: re-deriving the title from the
+    // file name here would undo the rename and leave a second card for the same file.
+    qint64 mediaId = customMediaIdOfPath(absPath);
+    if (mediaId == 0)
+        mediaId = look.next() ? look.value(0).toLongLong() : 0;
 
     QSqlQuery up(m_db);
     up.prepare(u"INSERT INTO files(media_id, path, size, mtime, duration, probed, scanned) "
@@ -205,6 +233,103 @@ void Library::record(const QString &absPath, const QString &kind, qint64 size, q
     up.addBindValue(QDateTime::currentSecsSinceEpoch());
     if (!up.exec())
         qWarning("file upsert failed: %s", qPrintable(up.lastError().text()));
+    // The same rule as the unchanged branch: scanning the folder the file lives in
+    // brings its card back.
+    unhidePath(absPath);
+}
+
+// The media row this path belongs to, but only when the user named it: a scan must
+// not re-derive a title that was typed in.
+qint64 Library::customMediaIdOfPath(const QString &absPath) const
+{
+    QSqlQuery q(m_db);
+    q.prepare(u"SELECT f.media_id FROM files f JOIN media m ON m.id = f.media_id "
+              "WHERE f.path = ? AND COALESCE(m.custom, 0) = 1"_qs);
+    q.addBindValue(absPath);
+    return (q.exec() && q.next()) ? q.value(0).toLongLong() : 0;
+}
+
+void Library::unhidePath(const QString &absPath)
+{
+    QSqlQuery q(m_db);
+    q.prepare(u"UPDATE media SET hidden = 0 WHERE hidden = 1 "
+              "AND id = (SELECT media_id FROM files WHERE path = ?)"_qs);
+    q.addBindValue(absPath);
+    q.exec();
+}
+
+void Library::hideMedia(qint64 id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(u"UPDATE media SET hidden = 1 WHERE id = ?"_qs);
+    q.addBindValue(id);
+    if (!q.exec()) {
+        qWarning("hide failed: %s", qPrintable(q.lastError().text()));
+        return;
+    }
+    qInfo("LIBRARY hide media=%lld", long long(id));
+    emit rowsChanged();
+}
+
+void Library::setTitle(qint64 id, const QString &title)
+{
+    const QString t = title.trimmed();
+    if (t.isEmpty()) {
+        qInfo("LIBRARY rename refused (empty) media=%lld", long long(id));
+        return;
+    }
+    QSqlQuery q(m_db);
+    // `custom` is what tells the next scan to leave this title alone.
+    q.prepare(u"UPDATE media SET title = ?, custom = 1 WHERE id = ?"_qs);
+    q.addBindValue(t);
+    q.addBindValue(id);
+    if (!q.exec()) {
+        qWarning("rename failed: %s", qPrintable(q.lastError().text()));
+        return;
+    }
+    qInfo("LIBRARY rename media=%lld to \"%s\"", long long(id), qPrintable(t));
+    emit rowsChanged();
+}
+
+bool Library::revealInFolder(const QString &path)
+{
+    // The shell's own select-and-open. The argument has to reach explorer as
+    // `/select,"C:\dir with space\file.mkv"` - quotes around the path only. QProcess is
+    // not usable here: it quotes the whole argument when it contains a space, and that
+    // form makes explorer open its default folder with nothing selected (measured - the
+    // window came up titled "文档" for a path with a space in it). ShellExecuteW takes
+    // the parameter string as it is given.
+    const QString native = QDir::toNativeSeparators(path);
+    if (native.isEmpty())
+        return false;
+    const std::wstring params = L"/select,\"" + native.toStdWString() + L"\"";
+    const HINSTANCE r = ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(),
+                                      nullptr, SW_SHOWNORMAL);
+    // ShellExecuteW returns an HINSTANCE; values above 32 are success.
+    const bool ok = reinterpret_cast<INT_PTR>(r) > 32;
+    qInfo("LIBRARY reveal %s ok=%d", qPrintable(path), ok ? 1 : 0);
+    return ok;
+}
+
+QString Library::titleForPath(const QString &path) const
+{
+    if (path.isEmpty())
+        return {};
+    const QString key = QDir::cleanPath(QDir::fromNativeSeparators(path));
+    QSqlQuery q(m_db);
+    // Only rows the user named are candidates. The compare happens here rather than in
+    // the WHERE clause because SQLite's LIKE ignores case only for ASCII, and these
+    // paths are Chinese as often as not.
+    q.prepare(u"SELECT m.title, f.path FROM media m JOIN files f ON f.media_id = m.id "
+              u"WHERE COALESCE(m.custom, 0) = 1"_qs);
+    if (!q.exec())
+        return {};
+    while (q.next()) {
+        if (QDir::cleanPath(QDir::fromNativeSeparators(q.value(1).toString()))
+                .compare(key, Qt::CaseInsensitive) == 0)
+            return q.value(0).toString();
+    }
+    return {};
 }
 
 void Library::scan()
@@ -229,9 +354,9 @@ void Library::scan()
     m_fileCount = int(m_seenFiles);
 
     QSqlQuery q(m_db);
-    if (q.exec(u"SELECT COUNT(*) FROM media"_qs) && q.next())
+    if (q.exec(u"SELECT COUNT(*) FROM media WHERE COALESCE(hidden, 0) = 0"_qs) && q.next())
         m_mediaCount = q.value(0).toInt();
-    if (q.exec(u"SELECT COUNT(*) FROM media WHERE parsed=0"_qs) && q.next())
+    if (q.exec(u"SELECT COUNT(*) FROM media WHERE parsed=0 AND COALESCE(hidden, 0) = 0"_qs) && q.next())
         m_unparsed = q.value(0).toInt();
     countDurations();
 
@@ -308,7 +433,8 @@ QList<MediaRow> Library::rows(int limit) const
               "       (SELECT f.path FROM files f WHERE f.media_id=m.id LIMIT 1), "
               "       (SELECT f.size FROM files f WHERE f.media_id=m.id LIMIT 1), "
               "       (SELECT f.duration FROM files f WHERE f.media_id=m.id LIMIT 1) "
-              "FROM media m ORDER BY m.title COLLATE NOCASE LIMIT ?"_qs);
+              "FROM media m WHERE COALESCE(m.hidden, 0) = 0 "
+              "ORDER BY m.title COLLATE NOCASE LIMIT ?"_qs);
     q.addBindValue(limit);
     q.exec();
     while (q.next()) {
@@ -438,6 +564,9 @@ LibraryModel::LibraryModel(Library *lib, QObject *parent)
     : QAbstractListModel(parent), m_lib(lib)
 {
     connect(lib, &Library::scanned, this, &LibraryModel::reload);
+    // A card hidden or renamed by the menu changes the grid at once; the rename also
+    // has to repaint the label, which a reload of the rows does.
+    connect(lib, &Library::rowsChanged, this, &LibraryModel::reload);
     m_coalesce.setSingleShot(true);
     m_coalesce.setInterval(250);
     connect(&m_coalesce, &QTimer::timeout, this, &LibraryModel::reload);
@@ -462,6 +591,7 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
     case DurationRole: return r.duration;
     case ParsedRole: return r.parsed;
     case PosterRole: return r.poster;
+    case IdRole: return QVariant::fromValue(r.id);
     }
     return {};
 }
@@ -476,6 +606,7 @@ QHash<int, QByteArray> LibraryModel::roleNames() const
         { DurationRole, "duration" },
         { ParsedRole, "parsed" },
         { PosterRole, "poster" },
+        { IdRole, "mediaId" },
     };
 }
 

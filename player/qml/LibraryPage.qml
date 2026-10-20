@@ -18,6 +18,15 @@ Item {
         return h > 0 ? h + ":" + pad(m) + ":" + pad(ss) : m + ":" + pad(ss)
     }
 
+    // The card's right-click menu. One instance for the whole grid, so two cards cannot
+    // be open at once; the action is applied to whichever card opened it. A card hidden
+    // or renamed reloads the grid from C++ (Library::rowsChanged).
+    readonly property var cardItems: [
+        { label: "打开文件所在文件夹", action: "reveal" },
+        { label: "重命名",              action: "rename" },
+        { label: "从媒体库移除",         action: "hide" }
+    ]
+
     Rectangle {
         anchors.fill: parent
         color: "#0A0A0C"
@@ -182,6 +191,7 @@ Item {
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         delegate: Item {
+            id: cell
             required property string title
             required property int year
             required property string path
@@ -189,6 +199,25 @@ Item {
             required property string kind
             required property double duration
             required property string poster
+            required property var mediaId
+            // The rename is edited in place, on the card's own label - not in a dialog.
+            property bool renaming: false
+
+            function startRename() {
+                renameField.text = cell.title
+                cell.renaming = true
+                renameField.forceActiveFocus()
+                renameField.select(0, renameField.text.length)
+            }
+            function commit() {
+                const t = renameField.text.trim()
+                if (t.length > 0 && t !== cell.title)
+                    library.setTitle(cell.mediaId, t)
+                cell.renaming = false
+            }
+            function cancel() {
+                cell.renaming = false
+            }
             width: grid.cellWidth
             height: grid.cellHeight
 
@@ -287,8 +316,110 @@ Item {
                 id: mouse
                 anchors.fill: parent
                 hoverEnabled: true
-                onClicked: { playerCore.load(path); win.page = "player"; }
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: (m) => {
+                    if (m.button === Qt.RightButton) {
+                        // The menu's id is in this component's scope; `page.cardMenu`
+                        // would be undefined, because an id is not a property of the
+                        // object it sits on.
+                        const at = cell.mapToItem(page, m.x, m.y);
+                        cardMenu.showAt(at.x, at.y, page.cardItems, cell);
+                        return;
+                    }
+                    playerCore.load(path); win.page = "player";
+                }
             }
+
+            // Remove from the library. Only on hover, and only clickable while shown:
+            // an affordance nobody can see must not be a hit target. Declared after the
+            // card's own MouseArea so it is the one that gets the click.
+            Text {
+                id: hideBadge
+                z: 2
+                anchors.top: art.top
+                anchors.right: art.right
+                anchors.margins: 8
+                text: "✕"
+                color: hideHit.containsMouse ? Theme.textPrimary : Theme.textSecondary
+                font.pixelSize: page.height * 0.024
+                font.family: Theme.uiFont
+                visible: mouse.containsMouse && !cell.renaming
+                MouseArea {
+                    id: hideHit
+                    anchors.fill: parent
+                    anchors.margins: -6
+                    hoverEnabled: true
+                    enabled: hideBadge.visible
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: library.hideMedia(cell.mediaId)
+                }
+            }
+
+            // The same slot the title occupies, one line taller than the glyph: the
+            // label is replaced where it stands rather than edited in a window elsewhere.
+            Rectangle {
+                id: renameBox
+                z: 3
+                x: 4
+                y: nameText.y - 2
+                width: parent.width - 8
+                height: nameText.height + 4
+                radius: 3
+                color: "#17171B"
+                border.color: Theme.accent
+                border.width: 1
+                visible: cell.renaming
+                TextInput {
+                    id: renameField
+                    anchors.fill: parent
+                    anchors.leftMargin: 2
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: Theme.textPrimary
+                    font.pixelSize: nameText.font.pixelSize
+                    font.family: Theme.uiFont
+                    selectionColor: Theme.accent
+                    onAccepted: cell.commit()
+                    Keys.onEscapePressed: cell.cancel()
+                    // Losing the field without Enter - a click on another card, or on the
+                    // window's own buttons - abandons the edit. Without this the card
+                    // stays in edit mode and the next click both closes it and starts the
+                    // film.
+                    onActiveFocusChanged: if (!activeFocus && cell.renaming)
+                        cell.cancel()
+                }
+            }
+        }
+    }
+
+    // The card's menu, and the layer that dismisses it. Both above the grid: with a menu
+    // open, a click anywhere but on a row is a dismissal, not a request to start playing
+    // the card underneath it.
+    MouseArea {
+        z: cardMenu.z - 1
+        anchors.fill: parent
+        visible: cardMenu.visible
+        enabled: cardMenu.visible
+        // A right-click somewhere else while a menu is open moves the menu to that
+        // card, so both buttons have to reach this layer.
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onClicked: cardMenu.hide()
+    }
+
+    ContextMenu {
+        id: cardMenu
+        z: 20
+        space: page
+        refH: shellHeight
+        onPicked: (action, target) => {
+            if (!target)
+                return;
+            if (action === "reveal")
+                library.revealInFolder(target.path);
+            else if (action === "rename")
+                target.startRename();
+            else if (action === "hide")
+                library.hideMedia(target.mediaId);
         }
     }
 }

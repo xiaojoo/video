@@ -143,6 +143,11 @@ Item {
     function shown(list, name) {
         return list.indexOf(name) >= 0;
     }
+
+    // The cells by name. The shell's right-click menu reaches the five value cells
+    // through this: their command is "open this dropdown from this glyph", so a menu
+    // row that stands in for one has to anchor on the same icon, not on the row.
+    property var cells: ({})
     function groupW(list, pitch) {
         if (list.length === 0)
             return 0;
@@ -214,6 +219,7 @@ Item {
                     row.action(cell.name);
             }
         }
+        Component.onCompleted: row.cells[cell.name] = glyph
     }
 
     // ---- left group: menu / cast / CC / volume + slider ----
