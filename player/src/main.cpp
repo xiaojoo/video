@@ -13,6 +13,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
+#include <QScreen>
 
 #include <QTimer>
 #include <QElapsedTimer>
@@ -46,7 +47,8 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     QCommandLineOption shot(u"shot"_qs, u"grab the chrome to FILE then exit"_qs, u"file"_qs);
     QCommandLineOption size(u"size"_qs, u"WxH"_qs, u"wh"_qs, u"1282x723"_qs);
-    QCommandLineOption at(u"at"_qs, u"screen X,Y of the video window"_qs, u"xy"_qs, u"120,60"_qs);
+    QCommandLineOption at(u"at"_qs, u"screen X,Y of the video window (default: centred on "
+                                  u"the work area)"_qs, u"xy"_qs, u""_qs);
     QCommandLineOption bg(u"bg"_qs, u"background image path (style-only mode)"_qs, u"path"_qs);
     QCommandLineOption open(u"open"_qs, u"media file to load on start"_qs, u"path"_qs);
     QCommandLineOption diag(u"diag"_qs, u"show the mpv diagnostic line"_qs);
@@ -101,8 +103,23 @@ int main(int argc, char *argv[])
     const int w = wh.size() == 2 ? wh.at(0).toInt() : 1282;
     const int h = wh.size() == 2 ? wh.at(1).toInt() : 723;
     const QStringList xy = parser.value(at).split(u',');
-    const int atX = xy.size() == 2 ? xy.at(0).toInt() : 120;
-    const int atY = xy.size() == 2 ? xy.at(1).toInt() : 60;
+    // No `--at` means: open in the middle of the screen's work area. The fixed 120,60 it
+    // used to fall back to put the window in a corner on every panel, and on a 4K one
+    // that corner is nowhere near where the eye starts. The work area rather than the
+    // full geometry, so the task bar counts as space the window cannot sit in; and
+    // clamped, because a window bigger than the screen would centre into negative
+    // coordinates and lose its top-left corner off the panel.
+    int atX = 120;
+    int atY = 60;
+    if (xy.size() == 2) {
+        atX = xy.at(0).toInt();
+        atY = xy.at(1).toInt();
+    } else if (QScreen *scr = QGuiApplication::primaryScreen()) {
+        const QRect avail = scr->availableGeometry();
+        atX = qMax(avail.x(), avail.x() + (avail.width() - w) / 2);
+        atY = qMax(avail.y(), avail.y() + (avail.height() - h) / 2);
+    }
+    qInfo("PLACE %s at %d,%d size %dx%d", xy.size() == 2 ? "--at" : "centred", atX, atY, w, h);
 
     Library library;
     LibraryModel libraryModel(&library);
