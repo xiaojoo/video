@@ -63,18 +63,22 @@ Window {
         playerCore.setPropertyString("video-aspect-override", win.aspectSteps[i]);
     }
 
-    // The three cells that hold one of several values share this one dropdown.
-    function openPicker(name, item) {
+    // The three cells that hold one of several values share this one dropdown. `at` is
+    // "right" when it is opened as a submenu of the right-click menu, which also pulls it
+    // in to the parent card's edge instead of the row's.
+    function openPicker(name, item, at) {
         tip.hide();
+        const inset = at === "right" ? playerMenu.sidePad : 0;
         if (name === "speed") {
             picker.show(item, win.speedSteps.map(v => win.speedLabel(v)),
-                        win.nearest(win.speedSteps, playerCore.speed));
+                        win.nearest(win.speedSteps, playerCore.speed), at, inset);
             win.pickerApply = (i) => playerCore.setSpeed(win.speedSteps[i]);
         } else if (name === "aspect") {
-            picker.show(item, win.aspectSteps.map(s => s === "-1" ? "自动" : s), win.aspectIdx);
+            picker.show(item, win.aspectSteps.map(s => s === "-1" ? "自动" : s), win.aspectIdx,
+                        at, inset);
             win.pickerApply = (i) => win.pickAspect(i);
         } else if (name === "rotate") {
-            picker.show(item, win.rotateSteps.map(d => d + "°"), win.rotateIdx);
+            picker.show(item, win.rotateSteps.map(d => d + "°"), win.rotateIdx, at, inset);
             win.pickerApply = (i) => win.pickRotate(i);
         } else if (name === "cc" || name === "audioTrack") {
             const tracks = name === "cc" ? playerCore.subTracks : playerCore.audioTracks;
@@ -85,7 +89,7 @@ Window {
                 if (tracks[i].selected)
                     cur = i;
             }
-            picker.show(item, tracks.map(t => t.label), cur);
+            picker.show(item, tracks.map(t => t.label), cur, at, inset);
             win.pickerApply = (i) => playerCore.selectTrack(name === "cc" ? "sub" : "audio",
                                                             tracks[i].id);
         }
@@ -180,7 +184,7 @@ Window {
     // the keyboard shortcuts both land here, so the two cannot drift apart.
     function act(what) {
         console.log("action ->", what);
-        picker.hide();
+        win.closeSub();
         const d = playerCore.duration;
         if (what === "play" || what === "pause") playerCore.togglePause();
         else if (what === "back10") playerCore.seekTo(Math.max(0, playerCore.position - 10));
@@ -207,19 +211,6 @@ Window {
             .concat(controls.centerOrder[controls.tier],
                     controls.rightOrder[controls.tier])
 
-    function menuLabel(name) {
-        if (name === "play")
-            return playerCore.paused ? "播放" : "暂停";
-        const t = {
-            menu: "打开媒体库", cast: "投屏", cc: "字幕", volume: "静音",
-            prevChapter: "上一个章节", nextChapter: "下一个章节",
-            back10: "后退 10 秒", fwd10: "前进 10 秒", audioTrack: "音轨",
-            chapters: "章节列表", rotate: "画面旋转", aspect: "画面比例",
-            speed: "倍速播放", pip: "小窗播放", collapse: "全屏"
-        };
-        return t[name];
-    }
-
     // The icon's own `live` rule: grey, still listed, still readable - only the click
     // is withheld, because there is nothing for it to do.
     function menuLive(name) {
@@ -237,18 +228,29 @@ Window {
     // Built when the menu opens, from the values live at that moment. Not a binding:
     // a binding whose rows come out of function calls captures the dependencies of
     // whatever it read the first time, and a paused film would keep "暂停".
+    //
+    // The name and the key hint are read off the cell itself, not written out again
+    // here: the bubble over the icon and the menu row are then the same two strings by
+    // construction, including the ones that carry a value (0°, 自动, 1×) and the one
+    // that swaps with the state (播放 / 暂停).
     function menuList() {
         const names = win.menuNames;
         const out = [];
-        for (let i = 0; i < names.length; ++i)
-            out.push({ label: win.menuLabel(names[i]), action: names[i],
-                       on: win.menuLive(names[i]) });
+        for (let i = 0; i < names.length; ++i) {
+            const cell = controls.cells[names[i]];
+            out.push({ label: cell ? cell.tipText : names[i],
+                       action: names[i],
+                       on: win.menuLive(names[i]),
+                       icon: cell ? cell.name : "",
+                       keys: cell ? cell.tipKeys : "",
+                       sub: cell ? cell.hasMenu : false });
+        }
         return out;
     }
 
     function openMenuAt(px, py) {
         tip.hide();
-        picker.hide();
+        win.closeSub();
         chapters.open = false;
         // The menu is a transport surface, so it brings the bar with it: the dropdowns
         // it hands off to live inside the chrome, and would be invisible at opacity 0.
@@ -258,17 +260,64 @@ Window {
     }
 
     function menuPick(what) {
-        // The five cells that hold one of several values open the same dropdown the icon
-        // opens, from the same glyph, so the menu cannot offer a different set of choices
-        // than the bar does. Every other row is a command the keys already send.
-        if (what === "cc" || what === "audioTrack" || what === "rotate"
-                || what === "aspect" || what === "speed") {
-            const glyph = controls.cells[what];
-            if (glyph)
-                win.openPicker(what, glyph);
+        // A value row's command is the list beside it, and hover already opened that -
+        // the row does not hide the menu, so there is nothing left for the click to do.
+        // Every other row is a command the keys already send.
+        if (win.isValueCell(what))
+            return;
+        win.act(what);
+    }
+
+    readonly property var valueCells: ["cc", "audioTrack", "rotate", "aspect", "speed"]
+    function isValueCell(what) {
+        return win.valueCells.indexOf(what) >= 0;
+    }
+
+    // --- the menu's submenus ----------------------------------------------
+    // The five rows that hold one of several values open the same list the icon opens,
+    // but beside their own row and with the menu left up, so the pair reads as one
+    // cascade instead of a jump down to the control row.
+    property string subFor: ""
+    property Item subRow: null
+
+    function openSub(what, row) {
+        win.subFor = what;
+        win.subRow = row;
+        win.openPicker(what, row, "right");
+    }
+
+    function closeSub() {
+        win.subFor = "";
+        win.subRow = null;
+        picker.hide();
+    }
+
+    function menuHovered(what, row) {
+        subDwell.stop();
+        if (what.length === 0) {
+            // A plain row under the pointer means the list beside the previous row is no
+            // longer the thing being read. Leaving a row altogether does not close it:
+            // that would dismiss the pair the moment the pointer starts for the list.
+            if (win.subFor.length > 0)
+                win.closeSub();
             return;
         }
-        win.act(what);
+        if (win.subFor === what)
+            return;
+        win.closeSub();
+        subDwell.what = what;
+        subDwell.row = row;
+        subDwell.restart();
+    }
+
+    // The dwell is what stops a sweep down sixteen rows from popping five boxes. Same
+    // family as the 220 ms that closes the dropdown once the pointer has left it.
+    Timer {
+        id: subDwell
+        interval: 200
+        property string what: ""
+        property Item row: null
+        onTriggered: if (row) win.openSub(what, row)
     }
 
     // The "big view" for F: true fullscreen in one step, under a cover that is a copy
@@ -349,9 +398,11 @@ Window {
                                           || bar.scrubbing || controls.pointerInside
                                           || picker.visible || chapters.open
                                           || playerMenu.visible
-    // The pointer is on the open dropdown, or on the row of icons it belongs to.
+    // The pointer is on the open dropdown, on the row of icons it belongs to, or on the
+    // menu row that a submenu hangs off.
     readonly property bool pointerOnMenu: picker.visible
-                                          && (picker.pointerOn || controls.pointerInside)
+                                          && (picker.pointerOn || controls.pointerInside
+                                              || playerMenu.pointerInside)
     onPointerOnMenuChanged: {
         if (!picker.visible)
             return;
@@ -718,18 +769,6 @@ Window {
             }
         }
 
-        Picker {
-            id: picker
-            z: 31
-            space: ui
-            refH: shellHeight
-            onPicked: (i) => {
-                if (win.pickerApply)
-                    win.pickerApply(i);
-                picker.hide();
-            }
-        }
-
         // The dropdown also closes when the pointer leaves it. The delay is what
         // lets the cursor cross the 8 px gap between the icon and the card without
         // being counted as gone.
@@ -737,6 +776,25 @@ Window {
             id: pickerLeave
             interval: 220
             onTriggered: picker.hide()
+        }
+    }
+
+    // The one dropdown, at window level: the same list serves the five value icons and
+    // the submenu that hangs off a row of the right-click menu, and the menu's own
+    // click-outside layer (z 33) would otherwise eat every click meant for it.
+    Picker {
+        id: picker
+        z: 40
+        refH: shellHeight
+        onPicked: (i) => {
+            if (win.pickerApply)
+                win.pickerApply(i);
+            const fromMenu = win.subFor.length > 0;
+            win.closeSub();
+            // A value chosen out of a submenu ends the whole interaction, the same way
+            // choosing a command from the menu does.
+            if (fromMenu)
+                playerMenu.hide();
         }
     }
 
@@ -771,6 +829,12 @@ Window {
         z: 34
         refH: shellHeight
         onPicked: (action, target) => win.menuPick(action)
+        onHovered: (what, row) => win.menuHovered(what, row)
+        // The submenu belongs to the menu: when the menu goes, the list beside it goes
+        // too - which is also how a click outside the pair clears it. closeSub() hides the
+        // dropdown, so this must not be written the other way round or the two would
+        // call each other.
+        onVisibleChanged: if (!visible) win.closeSub()
     }
 
     // Keyboard. Shortcut is scoped to this window and fires without waiting for

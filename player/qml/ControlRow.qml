@@ -146,7 +146,9 @@ Item {
 
     // The cells by name. The shell's right-click menu reaches the five value cells
     // through this: their command is "open this dropdown from this glyph", so a menu
-    // row that stands in for one has to anchor on the same icon, not on the row.
+    // row that stands in for one has to anchor on the same icon, not on the row. It is
+    // also where the menu takes its label and its key hint, so the bubble and the menu
+    // cannot name the same control two different ways.
     property var cells: ({})
     function groupW(list, pitch) {
         if (list.length === 0)
@@ -162,6 +164,13 @@ Item {
     component Cell: Item {
         id: cell
         required property string name
+        // The name the tier lists use, which is what the shell looks up. Only the play
+        // cell differs from what it draws: its glyph swaps with the state, and a map
+        // keyed on the drawn glyph would lose that row the moment the film started.
+        property string key: cell.name
+        // The glyph, handed out because an id inside an inline component is not a
+        // property of the component - `cell.glyph` reads undefined.
+        readonly property Item anchor: glyph
         property string tipText: ""
         property string tipKeys: ""
         // Drawn beside the glyph, for the one control whose value has to be read
@@ -219,7 +228,7 @@ Item {
                     row.action(cell.name);
             }
         }
-        Component.onCompleted: row.cells[cell.name] = glyph
+        Component.onCompleted: row.cells[cell.key] = cell
     }
 
     // ---- left group: menu / cast / CC / volume + slider ----
@@ -315,7 +324,7 @@ Item {
         // puts the glyph on the group's centre line *and* makes the two gaps beside it
         // equal - measured with the old +0.18 push, 56 px left of play against 41 right.
         readonly property real playInkOff: (row.playing ? 1.0 : 2.0) / 24 * row.icon * 1.35
-        Cell { name: row.playing ? "pause" : "play"
+        Cell { name: row.playing ? "pause" : "play"; key: "play"
                x: row.xOf(row.centerOrder[row.tier], "play", row.pitchC) - center.playInkOff
                width: row.icon * 1.35; height: row.icon * 1.35
                anchors.verticalCenter: parent.verticalCenter

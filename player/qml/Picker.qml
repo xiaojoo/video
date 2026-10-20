@@ -16,6 +16,13 @@ Item {
     property var options: []
     property int current: -1
     property Item target: null
+    // "above" is the control row's own dropdown: it stands over the glyph. "right" is the
+    // same list used as a submenu of the right-click menu, hanging off the row that owns
+    // it - the menu stays open, so the two read as one cascade.
+    property string side: "above"
+    // How much of the anchor's width to give back, so a submenu measured from a row that
+    // stops short of its card can hug the card instead of the row.
+    property real rightInset: 0
 
     signal picked(int index)
 
@@ -41,12 +48,14 @@ Item {
     HoverHandler { id: over }
     readonly property bool pointerOn: over.hovered
 
-    function show(item, list, cur) {
+    function show(item, list, cur, at, inset) {
         if (!item || !list || list.length === 0)
             return;
         target = item;
         options = list;
         current = cur;
+        side = at === undefined ? "above" : at;
+        rightInset = inset === undefined ? 0 : inset;
         visible = true;
         // Reposition here rather than relying on onVisibleChanged: switching from
         // one menu to another leaves `visible` true, so that handler never fires
@@ -65,6 +74,18 @@ Item {
         if (!target || !space)
             return;
         const p = target.mapToItem(space, 0, 0);
+        if (side === "right") {
+            // Hanging off the row that owns it. `rightInset` is the row's distance to the
+            // card's edge, added back so the gap is measured from the card and not from
+            // the text column inside it; go left when the right side has no room. The
+            // first option lands on the parent row's own line, which costs the padding.
+            let x = p.x + target.width + rightInset + standOff;
+            if (x + card.width > space.width - 6)
+                x = p.x - rightInset - card.width - standOff;
+            picker.x = Math.max(6, x);
+            picker.y = Math.max(6, Math.min(space.height - card.height - 6, p.y - pad));
+            return;
+        }
         let x = p.x + target.width / 2 - card.width / 2;
         x = Math.max(6, Math.min(space.width - card.width - 6, x));
         let y = p.y - card.height - standOff;

@@ -29,6 +29,9 @@ Item {
         x: 0
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton
+        // The bar is the one thing on the row you drag rather than press, and the arrow
+        // it wore read as "nothing here". Same hand the icons use.
+        cursorShape: Qt.PointingHandCursor
 
         function frac(mx) { return Math.max(0, Math.min(1, mx / Math.max(1, width))) }
 
