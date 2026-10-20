@@ -100,15 +100,29 @@ Window {
         return h > 0 ? h + ":" + p(m, 2) + ":" + p(s, 2) : p(m, 1) + ":" + p(s, 2);
     }
 
-    // The bar and the transport buttons must agree on where the edges are, so
-    // both read this list: real chapters when mpv has them, mock ticks scaled
-    // onto the duration otherwise. A property, not a function call, so anything
-    // binding to it is told when the file or the duration changes.
-    readonly property var edgeTimes: playerCore.duration > 0
-        ? (playerCore.chapterStarts.length > 1
-           ? playerCore.chapterStarts
-           : win.mockTicks.map(f => f * playerCore.duration))
-        : []
+    // Where the chapter edges are. Real file data only: the bar's ticks, the two chapter
+    // buttons and the drawer all read this, and it used to fall back to a hardcoded table
+    // of eighteen fractions when the file had no chapters - which put a "Chapter 9" and a
+    // highlighted drawer row on screen for a file that has none. A chapter-less file now
+    // shows no chapters; the two buttons go grey where that leaves nothing to jump to.
+    readonly property var edgeTimes: playerCore.chapterStarts
+
+    // The names, resolved once: what the file calls each chapter, or its position in the
+    // file's own list when it names nothing. One place computes it, the header line, the
+    // hover bubble and the drawer all read the same array.
+    readonly property var chapterLabels: {
+        const out = [];
+        for (let i = 0; i < playerCore.chapterTitles.length; ++i) {
+            const t = playerCore.chapterTitles[i];
+            out.push(t.length ? t : "章节 " + (i + 1));
+        }
+        return out;
+    }
+    function chapterName(i) {
+        return win.chapterLabels.length > i ? win.chapterLabels[i] : "";
+    }
+    // mpv reports -1 when the file has no chapter under the play head.
+    readonly property bool hasChapters: playerCore.chapterStarts.length > 0
     function edgeList() {
         return win.edgeTimes;
     }
@@ -205,12 +219,6 @@ Window {
         function onPictureReady() { win.startSwap() }
         function onSettled() { win.snapping = false }
     }
-
-    readonly property var mockTicks: [
-        0.0951, 0.1537, 0.2016, 0.2390, 0.2919, 0.3325, 0.3927, 0.4309,
-        0.4659, 0.5309, 0.5691, 0.6138, 0.6634, 0.7114, 0.7553, 0.8374,
-        0.9228, 0.9585
-    ]
 
     // The picture. libmpv draws into a texture on this window's own device and the
     // scene graph samples it here, so the scrim, the bar and the buttons are drawn
@@ -465,7 +473,13 @@ Window {
                 id: chapterLine
                 width: titleCol.room
                 elide: Text.ElideRight
-                text: playerCore.chapter >= 0 ? "Chapter " + (playerCore.chapter + 1) : "Chapter 2"
+                text: playerCore.chapter >= 0
+                      ? (playerCore.chapterTitle.length ? playerCore.chapterTitle
+                                                        : win.chapterName(playerCore.chapter))
+                      : ""
+                // No file, or a file with no chapters: the line is gone rather than
+                // holding a made-up "Chapter 2" under the name.
+                visible: text.length > 0
                 color: Theme.textSecondary
                 // The house factor for secondary text (Tip and the dropdown use it
                 // too); otherwise this line ends up taller than the title above it.
@@ -528,7 +542,7 @@ Window {
                                             bar.x + bar.width * bar.hoverPos - width / 2))
             y: bar.y - height - shellHeight * 0.020
             visible: bar.hovering && bar.hoverPos >= 0
-            chapterLabel: "Chapter " + (win.chapterAt(bar.hoverPos) + 1)
+            chapterLabel: win.hasChapters ? win.chapterName(win.chapterAt(bar.hoverPos)) : ""
             timeLabel: win.fmt(bar.hoverPos * playerCore.duration)
             thumb: {
                 const n = thumbs.frames.length
@@ -549,6 +563,7 @@ Window {
             // The same gap above as below: the bottom one is the control band.
             gap: win.scrimH
             edges: win.edgeTimes
+            labels: win.chapterLabels
             onPicked: (index) => {
                 const t = win.edgeTimes[index];
                 if (t !== undefined)
@@ -579,6 +594,7 @@ Window {
             speedLabel: win.speedLabel(playerCore.speed)
             audioCount: playerCore.audioTracks.length
             subCount: playerCore.subTracks.length
+            hasChapters: win.hasChapters
             onAction: (what) => win.act(what)
             onVolumePicked: (pct) => playerCore.setVolume(pct)
             onPickFor: (name, item) => win.openPicker(name, item)

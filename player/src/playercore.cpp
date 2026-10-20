@@ -64,6 +64,12 @@ PlayerCore::PlayerCore(QObject *parent) : QObject(parent)
     if (trobs < 0)
         qWarning("observe track-list -> %s", mpv_error_string(trobs));
     mpv_observe_property(m_mpv, 0, "chapter", MPV_FORMAT_INT64);
+    // The list itself, not just the index. Some demuxers only finish reading the
+    // chapter atoms after the file has loaded, and a FILE_LOADED read alone then
+    // reports "no chapters" for a file that has them.
+    const int chobs = mpv_observe_property(m_mpv, 0, "chapter-list", MPV_FORMAT_NONE);
+    if (chobs < 0)
+        qWarning("observe chapter-list -> %s", mpv_error_string(chobs));
     mpv_observe_property(m_mpv, 0, "media-title", MPV_FORMAT_STRING);
     mpv_observe_property(m_mpv, 0, "hwdec-current", MPV_FORMAT_STRING);
     mpv_observe_property(m_mpv, 0, "video-codec", MPV_FORMAT_STRING);
@@ -156,6 +162,10 @@ void PlayerCore::onPropertyChange(void *propPtr)
         // Read back through the property rather than the event payload: the shape
         // is the same one refreshTracks() already knows how to walk.
         refreshTracks();
+        return;
+    }
+    if (!std::strcmp(n, "chapter-list")) {
+        refreshChapters();
         return;
     }
     if (p->format == MPV_FORMAT_NONE) {

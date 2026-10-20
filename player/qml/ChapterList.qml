@@ -11,11 +11,11 @@ Rectangle {
     // The gap left above and below the drawer - one number, because the top is asked to
     // read like the bottom, and the bottom one is the control band.
     property real gap: 0
-    // Chapter start times, in seconds. The caller hands over the same list the bar's
-    // ticks and the two chapter buttons walk, so the drawer can never be empty while the
-    // bar shows edges; the names come from the file when it carries them.
+    // Chapter start times and the names that go with them, both handed over by the
+    // caller: the drawer, the header line and the hover bubble must not disagree about
+    // what the chapters of this file are.
     property var edges: []
-    readonly property var names: playerCore.chapterTitles
+    property var labels: []
 
     function fmt(t) {
         if (!isFinite(t) || t < 0)
@@ -25,8 +25,7 @@ Rectangle {
         return h > 0 ? h + ":" + p(m, 2) + ":" + p(s, 2) : p(m, 1) + ":" + p(s, 2);
     }
     function name(i) {
-        const t = names.length > i ? names[i] : "";
-        return t.length ? t : "章节 " + (i + 1);
+        return labels.length > i ? labels[i] : "";
     }
     signal picked(int index)
     signal dismissed()
@@ -66,6 +65,18 @@ Rectangle {
             anchors.margins: -6
             onClicked: panel.dismissed()
         }
+    }
+
+    // A file with no chapters opens an empty drawer, and says so rather than showing
+    // nothing at all.
+    Text {
+        visible: panel.edges.length === 0
+        x: 16
+        y: header.y + header.height + 18
+        text: "此文件没有章节"
+        color: Theme.textSecondary
+        font.pixelSize: 14
+        font.family: Theme.uiFont
     }
 
     ListView {

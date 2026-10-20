@@ -9,7 +9,7 @@ Item {
     required property real refW
     required property real refH
 
-    property string chapterLabel: "Chapter 16"
+    property string chapterLabel: ""      // empty: the file has no chapters to name
     property string timeLabel: "02:15:29"
     property url thumb: ""
 
@@ -30,6 +30,7 @@ Item {
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: card.chapterLabel
+            visible: text.length > 0
             color: Theme.textPrimary
             font.pixelSize: card.smallFont
             font.family: Theme.uiFont

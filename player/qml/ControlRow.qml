@@ -25,6 +25,10 @@ Item {
     // dead icon that still explains itself beats one that eats a click.
     property int audioCount: 0
     property int subCount: 0
+    // With no chapters in the file there is nothing for the two chapter buttons to jump
+    // to, so they go grey where that is the reason - the same treatment the audio and
+    // subtitle cells get when the track list is empty.
+    property bool hasChapters: true
 
     signal action(string what)
     signal volumePicked(real percent)
@@ -293,7 +297,7 @@ Item {
         Cell { name: "prevChapter"; visible: row.shown(row.centerOrder[row.tier], "prevChapter")
                x: row.xOf(row.centerOrder[row.tier], "prevChapter", row.pitchC)
                anchors.verticalCenter: parent.verticalCenter
-               tipText: "上一个章节"; tipKeys: "J" }
+               tipText: "上一个章节"; tipKeys: "J"; live: row.hasChapters }
         Cell { name: "back10"; visible: row.shown(row.centerOrder[row.tier], "back10")
                x: row.xOf(row.centerOrder[row.tier], "back10", row.pitchC)
                width: row.icon * 1.15; height: row.icon * 1.15
@@ -318,7 +322,7 @@ Item {
         Cell { name: "nextChapter"; visible: row.shown(row.centerOrder[row.tier], "nextChapter")
                x: row.xOf(row.centerOrder[row.tier], "nextChapter", row.pitchC)
                anchors.verticalCenter: parent.verticalCenter
-               tipText: "下一个章节"; tipKeys: "L" }
+               tipText: "下一个章节"; tipKeys: "L"; live: row.hasChapters }
 
         // The skip glyphs carry a numeral inside the ring. The two offsets are the
         // measured gap between the ink of "10" and the ring's centre (the ink is
