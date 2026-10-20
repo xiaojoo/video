@@ -460,6 +460,21 @@ QRect VideoHost::monitorRect() const
              int(mi.rcMonitor.bottom - mi.rcMonitor.top) };
 }
 
+QRect VideoHost::workArea() const
+{
+    // The work area of the monitor the window is on, not `SPI_GETWORKAREA`: that one is
+    // only ever the primary monitor's, so maximising a window on a second screen would
+    // move it to the first. Same source fullscreen uses.
+    if (!m_hwnd)
+        return {};
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi))
+        return {};
+    const RECT &w = mi.rcWork;
+    return { int(w.left), int(w.top), int(w.right - w.left), int(w.bottom - w.top) };
+}
+
 void VideoHost::grabPicture()
 {
     fillCover();
@@ -565,7 +580,7 @@ void VideoHost::armReveal()
 void VideoHost::notePresented(int w, int h, int n)
 {
     m_presented = QSize(w, h);
-    if (!m_settledPending || !m_revealByFrame)
+    if (!m_settledPending)
         return;
     qInfo("SWAP present %dx%d frame %d, %d ms after the write", w, h, n,
           m_swapClock.elapsed());
@@ -630,9 +645,9 @@ void VideoHost::toggleFullscreen()
         // window is actually zoomed; otherwise the live rect is exact and the
         // placement's copy is two pixels short (1298x760 for a 1298x762 window).
         WINDOWPLACEMENT wp{ uint32_t(sizeof(wp)) };
-        m_restoreMax = false;
+        m_restoreMax = m_max;
         if (GetWindowPlacement(m_hwnd, &wp)) {
-            m_restoreMax = wp.showCmd == SW_SHOWMAXIMIZED;
+            m_restoreMax = m_restoreMax || wp.showCmd == SW_SHOWMAXIMIZED;
             const RECT &n = wp.rcNormalPosition;
             m_restoreRect = m_restoreMax
                 ? QRect{ int(n.left), int(n.top), int(n.right - n.left), int(n.bottom - n.top) }
@@ -656,7 +671,6 @@ void VideoHost::toggleFullscreen()
         // cannot happen because there is no flip.
         showCover();
         armReveal();
-        m_revealByFrame = true;
         // The tray goes behind the cover, before the landing: hiding it makes Explorer
         // recompute the work area, and doing that after the write costs a second
         // re-layout of a 4K surface - measured the first frame at the new size arriving
@@ -680,7 +694,6 @@ void VideoHost::toggleFullscreen()
     m_fs = false;
     m_settledPending = true;
     m_bandIn = false;
-    m_revealByFrame = false;
     qInfo("SWAP out to %d,%d %dx%d max=%d", m_restoreRect.x(), m_restoreRect.y(),
           m_restoreRect.width(), m_restoreRect.height(), m_restoreMax ? 1 : 0);
     m_trans = true;
@@ -689,10 +702,7 @@ void VideoHost::toggleFullscreen()
     if (m_restoreMax) {
         // The cover stays, but only for the writes. What it has to hide on this leg is
         // the task bar's band coming back; the caption no longer repaints because the
-        // style never changes. What follows is the shell's own maximise, left on screen
-        // on purpose: from a full-monitor client to the maximised one the visible change
-        // is the 48 px at the bottom, and watching it land reads as motion instead of a
-        // freeze.
+        // style never changes.
         // The band is not faded here, unlike the way in. Fading it needs the strip to
         // dissolve into the task bar underneath it, and per-pixel alpha does not do that
         // here: with the DIB declared ARGB (BI_BITFIELDS + bV5AlphaMask) and
@@ -704,28 +714,22 @@ void VideoHost::toggleFullscreen()
         // presentCover().
         showCover();
         armReveal();
-        m_revealByFrame = true;
         // The order is the one the two-window build wrote down: the tray goes back
-        // *before* the maximise, because the maximised rect is whatever the work area is
-        // at the moment of the call, and answering that twice is two geometry steps.
+        // *before* the maximise, because the work area is whatever it is at the moment of
+        // the call and the landing rect is read from it. Answering that twice is two
+        // geometry steps.
         SetWindowPos(m_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         restoreTaskbar();
+        // Landed on the work area rather than handed to `ShowWindow(SW_MAXIMIZE)`: the
+        // same reason the tile has, and it also means the rect Windows recorded as the
+        // normal position while we were fullscreen never gets used, so the
+        // SetWindowPlacement repair this replaced is gone with it.
+        if (!m_maxFrom.isValid())
+            m_maxFrom = m_restoreRect;
+        m_max = true;
         m_swapClock.start();        // the trace's zero point is the write below
-        ShowWindow(m_hwnd, SW_MAXIMIZE);
-        // Going in, the window was moved while it was not zoomed - and a moved,
-        // unzoomed window is exactly what Windows records as the normal position. So the
-        // restore button would have brought back a full-screen window (measured:
-        // SC_RESTORE gave 0,0 3840x2160). Write the rect saved before the swap back,
-        // with the zoomed state left as it is.
-        WINDOWPLACEMENT back{ uint32_t(sizeof(back)) };
-        if (GetWindowPlacement(m_hwnd, &back)) {
-            back.showCmd = SW_SHOWMAXIMIZED;
-            back.rcNormalPosition = { m_restoreRect.x(), m_restoreRect.y(),
-                                      m_restoreRect.x() + m_restoreRect.width(),
-                                      m_restoreRect.y() + m_restoreRect.height() };
-            SetWindowPlacement(m_hwnd, &back);
-        }
+        landOn(workArea());
         m_settled.setInterval(200);
         emit resized();
         emit fullscreenChanged();
@@ -755,36 +759,50 @@ void VideoHost::toggleMaximized()
         toggleFullscreen();       // out of fullscreen goes back where it came from
         return;
     }
-    // The cover goes up here too. The frame architecture widened this gap rather than
-    // narrowing it: the client now covers what used to be the frame, so the area the
-    // window grows into holds no painted pixels until Qt presents at the new size, and
-    // what shows through them is the desktop.
+    // One landing write onto the work area, which is the route fullscreen already takes.
+    // Going through `ShowWindow(SW_MAXIMIZE)` instead hands the window to the shell, and
+    // the shell cross-fades it for ~210 ms with the desktop showing around both images;
+    // no present of ours marks the end of that, so hiding it meant holding the cover for
+    // 240 ms after the press - measured 325 ms from press to picture, 266 ms of which was
+    // a frozen screen and one hard step. Landed this way the third frame at the new size
+    // comes 12-29 ms after the write and the cover comes down on it: 96-108 ms.
     //
-    // This leg is *not* frame-driven. The frames go quiet long before the screen is: what
-    // carries the seam is the shell's own maximise/restore animation, and it runs behind
-    // the window, so no present of ours marks its end. Measured on a leg that revealed on
-    // the third frame at 6 ms after the write: 31 of 80 captured frames matched neither the
-    // before nor the after picture, from 1496 ms to 1704 ms of the recording - about
-    // 210 ms - peaking at 17.7 % of the screen, and the worst frame is the two film images
-    // cross-faded on top of each other with the desktop around them. Held to the timer
-    // instead, that whole span is behind the cover and what you get is one freeze and one
-    // step.
+    // The cover still has to be up for the write itself: the client now covers what used
+    // to be the frame, so the area the window grows into holds no painted pixels until Qt
+    // presents at the new size, and what shows through them is the desktop.
+    const bool maxed = m_max || IsZoomed(m_hwnd) != 0;
     m_settledPending = true;
     m_bandIn = false;
-    m_revealByFrame = false;
     m_press.start();
     fillCover();
     showCover();
     armReveal();
     m_trans = true;
     emit transitioningChanged();
-    const bool wasZoomed = IsZoomed(m_hwnd) != 0;
-    ShowWindow(m_hwnd, wasZoomed ? SW_RESTORE : SW_MAXIMIZE);
-    qInfo("MAX zoom=%d rect=%d,%d %dx%d", wasZoomed ? 0 : 1, geometry().x(),
-          geometry().y(), geometry().width(), geometry().height());
-    // 240 ms: the animation measured 210 ms from the press, of which the grab alone takes
-    // 33-42 ms, so the timer starts that much after the press.
-    m_settled.setInterval(240);
+    if (maxed) {
+        // Win+Up and snap assist still put the window into the system's zoomed state, and
+        // then the only copy of the rect to come back from is the placement's.
+        QRect back = m_maxFrom;
+        if (!back.isValid()) {
+            WINDOWPLACEMENT wp{ uint32_t(sizeof(wp)) };
+            if (GetWindowPlacement(m_hwnd, &wp))
+                back = QRect{ wp.rcNormalPosition.left, wp.rcNormalPosition.top,
+                              wp.rcNormalPosition.right - wp.rcNormalPosition.left,
+                              wp.rcNormalPosition.bottom - wp.rcNormalPosition.top };
+        }
+        m_max = false;
+        landOn(back.isValid() ? back : geometry());
+    } else {
+        m_maxFrom = geometry();
+        m_max = true;
+        landOn(workArea());
+    }
+    qInfo("MAX maxed=%d zoom=%d rect=%d,%d %dx%d", maxed ? 1 : 0,
+          IsZoomed(m_hwnd) != 0 ? 1 : 0, geometry().x(), geometry().y(),
+          geometry().width(), geometry().height());
+    // Only a backstop, like the fullscreen legs: a resize Qt never draws a frame for must
+    // still hand the screen back.
+    m_settled.setInterval(200);
     emit resized();
 }
 
@@ -822,6 +840,7 @@ void VideoHost::toggleMini()
         // (left, top, right, bottom) - passing the corners makes the restore window
         // as big as its own screen offset.
         m_preMiniRect = geometry();
+        m_maxBeforeMini = m_max;
         HMONITOR mon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
         MONITORINFO mi{};
         mi.cbSize = sizeof(mi);
@@ -839,6 +858,7 @@ void VideoHost::toggleMini()
                      m_preMiniRect.width(), m_preMiniRect.height(),
                      SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         m_mini = false;
+        m_max = m_maxBeforeMini;   // the rect coming back is the one mini replaced
     }
     emit resized();
     emit miniChanged();

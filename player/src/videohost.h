@@ -71,11 +71,12 @@ public:
     // client terms.
     QRect clientGeometry() const;
     void setClientSize(int w, int h);
-    // The window is in the zoomed state, which is what decides whether the top strip
-    // may drag it around: a maximised window that slides under the cursor instead of
-    // snapping back to a normal rect is a bug, not a feature.
+    // The window fills the screen's work area. That is now our own state rather than
+    // the system's zoomed one - see m_max - and it is what decides whether the top
+    // strip may drag the window and whether the edge bands may resize it: a maximised
+    // window that slides under the cursor instead of snapping back is a bug.
     Q_PROPERTY(bool zoomed READ zoomed NOTIFY resized)
-    bool zoomed() const { return m_hwnd && IsZoomed(m_hwnd) != 0; }
+    bool zoomed() const { return m_max || (m_hwnd && IsZoomed(m_hwnd) != 0); }
 
 signals:
     void pictureReady();
@@ -92,6 +93,9 @@ private:
     // One Win32 step onto `to`: leave the zoomed state, land on the rect, and take or
     // give back the topmost band in the same call.
     void landOn(const QRect &to);
+    // The work area of the monitor this window is on - what a maximised window covers.
+    // Read every time rather than cached: it moves when the task bar hides.
+    QRect workArea() const;
     // Take the task bar out of the way for the duration of a transition, so its
     // bright band is not left to appear or disappear on the shell's own clock.
     void stashTaskbar();
@@ -142,10 +146,6 @@ private:
     // the picture at its new rect on the panel, and that is when the cover comes down.
     QSize m_presented;
     QSize m_swapFrom;
-    // Whether a presented frame is allowed to end the cover. Only the way in: the way
-    // out lands on the maximised state, which the shell animates for ~290 ms, and a
-    // frame presented at the new client size says nothing about that.
-    bool m_revealByFrame = false;
     // From the write to the reveal, for the trace.
     QElapsedTimer m_swapClock;
     // From the press that started the swap, so the grab and the cover are told apart.
@@ -166,6 +166,17 @@ private:
     // Fullscreen has to come back to the maximised state when the user was
     // maximised going in, because the maximised rect is not a normal position.
     bool m_restoreMax = false;
+    // Our own maximised state. `ShowWindow(SW_MAXIMIZE)` hands the window to the shell,
+    // which cross-fades it for ~210 ms with the desktop showing around the two images;
+    // nothing we present marks the end of that, so hiding it cost a 240 ms hold. Landing
+    // on the work area with one write has no animation to hide - the same route
+    // fullscreen already takes - so the state is ours to remember instead.
+    bool m_max = false;
+    // The rect the tile comes back from.
+    QRect m_maxFrom;
+    // Mini replaces whatever rect the window had and puts it back on the way out, so the
+    // maximised state has to survive that round trip rather than be read off the rect.
+    bool m_maxBeforeMini = false;
     // l, t, r, b of the native frame; all zero while frameless.
     RECT m_insets{};
 };
