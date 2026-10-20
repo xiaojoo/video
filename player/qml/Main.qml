@@ -102,14 +102,15 @@ Window {
 
     // The bar and the transport buttons must agree on where the edges are, so
     // both read this list: real chapters when mpv has them, mock ticks scaled
-    // onto the duration otherwise.
+    // onto the duration otherwise. A property, not a function call, so anything
+    // binding to it is told when the file or the duration changes.
+    readonly property var edgeTimes: playerCore.duration > 0
+        ? (playerCore.chapterStarts.length > 1
+           ? playerCore.chapterStarts
+           : win.mockTicks.map(f => f * playerCore.duration))
+        : []
     function edgeList() {
-        const d = playerCore.duration;
-        if (d <= 0)
-            return [];
-        if (playerCore.chapterStarts.length > 1)
-            return playerCore.chapterStarts;
-        return win.mockTicks.map(f => f * d);
+        return win.edgeTimes;
     }
 
     // An edge within two seconds is treated as "already there", so the button
@@ -248,7 +249,7 @@ Window {
     // resumes once it has left.
     readonly property bool pointerInBand: bandZone.containsMouse || bar.hovering
                                           || bar.scrubbing || controls.pointerInside
-                                          || picker.visible
+                                          || picker.visible || chapters.open
     // The pointer is on the open dropdown, or on the row of icons it belongs to.
     readonly property bool pointerOnMenu: picker.visible
                                           && (picker.pointerOn || controls.pointerInside)
@@ -285,6 +286,12 @@ Window {
         tip.hide()
         picker.hide()
     }
+
+    // The drawer is a reading surface over the picture, so any change to the picture's
+    // shape takes it away: our own maximise and fullscreen writes, a drag on the edge,
+    // and a resize the shell does to us (Win+Up, snap assist) all move vw/vh.
+    onVwChanged: chapters.open = false
+    onVhChanged: chapters.open = false
 
     // Gesture layer, below the controls: empty-area click toggles the chrome,
     // wheel sets volume, double-click toggles fullscreen on the mpv host.
@@ -405,6 +412,11 @@ Window {
         anchors.left: parent.left
         anchors.right: parent.right
         height: caption.height
+        // Above `ui`: the click-outside layer that dismisses a dropdown or the drawer
+        // covers the whole window, and the window's own close/min/max must not be eaten
+        // by it - measured, a click on the maximise tile with the drawer out only closed
+        // the drawer.
+        z: 1
 
         CaptionButtons {
             id: caption
@@ -533,8 +545,12 @@ Window {
 
         ChapterList {
             id: chapters
+            refW: shellWidth
+            // The same gap above as below: the bottom one is the control band.
+            gap: win.scrimH
+            edges: win.edgeTimes
             onPicked: (index) => {
-                const t = playerCore.chapterStarts[index];
+                const t = win.edgeTimes[index];
                 if (t !== undefined)
                     playerCore.seekTo(t + 0.5);
                 chapters.open = false;
@@ -579,15 +595,18 @@ Window {
             refH: shellHeight
         }
 
-        // Click outside an open dropdown closes it. This sits *under* the chrome
-        // (the gesture layer is below it, the controls above): a click on another
-        // menu cell has to reach that cell, or switching menus costs two clicks.
+        // Click outside an open dropdown or an open drawer closes it. This sits *under*
+        // the chrome (the gesture layer is below it, the controls above): a click on
+        // another menu cell has to reach that cell, or switching menus costs two clicks.
         MouseArea {
             anchors.fill: parent
             z: -0.25
-            visible: picker.visible
-            enabled: picker.visible
-            onClicked: picker.hide()
+            visible: picker.visible || chapters.open
+            enabled: picker.visible || chapters.open
+            onClicked: {
+                picker.hide()
+                chapters.open = false
+            }
         }
 
         Picker {

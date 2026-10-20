@@ -61,4 +61,7 @@ QtObject {
     // The gap between the time at the end of the bar and the bar itself: 28 px on the
     // reference strip = 0.0368 of its height.
     readonly property real timeGapHRatio: 0.0368
+    // The chapter drawer, as a ratio of the launch width: the card it replaces measured
+    // 0.24 of the *live* width, which is how it turned into a 900 px column at 3840.
+    readonly property real drawerWidthRatio: 0.24
 }
