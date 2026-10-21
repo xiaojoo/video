@@ -51,6 +51,12 @@ Item {
         "back10":       { d: "M12 5a7 7 0 1 0 6.9 8.4", filled: false, cap: head(18.9, 13.4, 0.199, -0.98, 3.2, 2.0, 1.0) },
         "fwd10":        { d: "M12 5a7 7 0 1 1-6.9 8.4", filled: false, cap: head(5.1, 13.4, -0.199, -0.98, 3.2, 2.0, 1.0) },
         "chapters":     { d: "M4 6h16M4 12h16M4 18h10", filled: false },
+        // Three list rules and a play head beside them. The pair is laid out so the ink
+        // of the whole glyph - the round caps included - spans x 2.7..21.5 and y
+        // 5.7..18.3, i.e. centred in the 24-unit box like its neighbours; a play
+        // triangle drawn at the box's own centre would read 1 px right of them.
+        "playlist":     { d: "M3.5 6.5h8M3.5 12h8M3.5 17.5h8", filled: false,
+                          cap: "M15 8.5l6.5 3.5-6.5 3.5z" },
         "audioTrack":   { d: "M4 13a8 8 0 1 1 16 0M4 13v3a2 2 0 0 0 2 2h1v-5H6a2 2 0 0 0-2 2zm16 0v3a2 2 0 0 1-2 2h-1v-5h1a2 2 0 0 1 2 2z", filled: false },
         "rotate":       { d: "M20 11a8 8 0 1 0-2.3 6", filled: false, cap: head(17.7, 17, 0.725, -0.689, 3.2, 2.0, 1.0) },
         "aspect":       { d: "M3 6h18v12H3zM8 9.5v5M16 9.5v5", filled: false },

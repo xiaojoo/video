@@ -99,9 +99,9 @@ Item {
     readonly property var leftOrder:  [["menu", "volume"], ["menu", "volume"],
                                        ["menu", "cast", "cc", "volume"]]
     readonly property var rightOrder: [["pip", "collapse"],
-                                       ["chapters", "speed", "pip", "collapse"],
-                                       ["audioTrack", "chapters", "rotate", "aspect",
-                                        "speed", "pip", "collapse"]]
+                                       ["playlist", "speed", "pip", "collapse"],
+                                       ["audioTrack", "playlist", "rotate",
+                                        "aspect", "speed", "pip", "collapse"]]
     // Narrow tier is play plus the two chapter jumps: in a window that small, skipping to
     // the next chapter is the thing that has no other handle, while a ten-second nudge
     // still has the scrub bar under the pointer.
@@ -406,9 +406,13 @@ Item {
                x: row.xOf(row.rightOrder[row.tier], "audioTrack", row.pitchL)
                hasMenu: true; live: row.audioCount > 0
                tipText: "音轨"; tipKeys: row.audioCount > 0 ? "A" : "无音轨" }
-        Cell { name: "chapters";   visible: row.shown(row.rightOrder[row.tier], "chapters")
-               x: row.xOf(row.rightOrder[row.tier], "chapters", row.pitchL)
-               tipText: "章节列表"; tipKeys: "T" }
+        // The dock beside the film. It greys with nothing loaded because there is no
+        // folder to list then - and, like the other dead cells, it still explains
+        // itself on hover.
+        Cell { name: "playlist";   visible: row.shown(row.rightOrder[row.tier], "playlist")
+               x: row.xOf(row.rightOrder[row.tier], "playlist", row.pitchL)
+               live: playerCore.mediaUrl.length > 0
+               tipText: "播放列表"; tipKeys: "P" }
         Cell { name: "rotate";     visible: row.shown(row.rightOrder[row.tier], "rotate")
                x: row.xOf(row.rightOrder[row.tier], "rotate", row.pitchL)
                hasMenu: true; tipText: "画面旋转"; tipKeys: row.rotateDeg + "°" }

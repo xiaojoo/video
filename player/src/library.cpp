@@ -332,6 +332,68 @@ QString Library::titleForPath(const QString &path) const
     return {};
 }
 
+QVariantList Library::itemsBeside(const QString &mediaUrl) const
+{
+    QVariantList out;
+    // The url is what PlayerCore holds, so this is the one place that knows how to get
+    // from it back to the file system: QUrl::toLocalFile has no QML equivalent.
+    QString local = mediaUrl;
+    if (local.startsWith(u"file:"_qs))
+        local = QUrl(mediaUrl).toLocalFile();
+    const QFileInfo fi(QDir::cleanPath(QDir::fromNativeSeparators(local)));
+    // A disc path (…/Movie/BDMV) has no folder of siblings to list - its parent is part
+    // of the disc - so it gets the empty list and the panel says so.
+    if (!fi.exists() || !fi.isFile())
+        return out;
+    const QString dirKey = QDir::cleanPath(fi.absolutePath());
+    if (dirKey.length() < 2)
+        return out;
+    QDir dir(dirKey);
+    if (!dir.exists())
+        return out;
+
+    // What the catalogue already knows about this folder. The LIKE is only a coarse
+    // filter - SQLite folds case for ASCII but not for the Chinese halves of these
+    // paths, and a `_` in a folder name makes it match a little too much - so every
+    // row it returns is checked again below against the entry we are about to list.
+    // The scan is bounded by the folder instead of the whole library on purpose: the
+    // playlist re-reads this every time a film changes.
+    QHash<QString, QVariantMap> known;
+    QSqlQuery q(m_db);
+    q.prepare(u"SELECT f.path, f.duration, m.poster, m.title, COALESCE(m.custom, 0) "
+              u"FROM files f JOIN media m ON m.id = f.media_id WHERE f.path LIKE ?"_qs);
+    q.addBindValue(dirKey + u"/%"_qs);
+    if (q.exec()) {
+        while (q.next()) {
+            QVariantMap m;
+            m.insert(u"duration"_qs, q.value(1).toDouble());
+            m.insert(u"poster"_qs, q.value(2).toString());
+            // Only a name the user typed beats the file name here; the derived title is
+            // the file name anyway, and the picture shows the file name.
+            m.insert(u"title"_qs, q.value(4).toBool() ? q.value(3).toString() : QString());
+            known.insert(QDir::cleanPath(QDir::fromNativeSeparators(q.value(0).toString())), m);
+        }
+    }
+
+    const QStringList names = dir.entryList(QDir::Files, QDir::Name);
+    for (const QString &name : names) {
+        const QString full = QDir::cleanPath(dir.absolutePath() + QLatin1Char('/') + name);
+        const QString ext = QFileInfo(full).suffix().toLower();
+        const bool video = m_videoExt.contains(ext);
+        if (!video && !m_audioExt.contains(ext))
+            continue;
+        QVariantMap m = known.value(full);
+        m.insert(u"name"_qs, name);
+        m.insert(u"path"_qs, full);
+        m.insert(u"url"_qs, QUrl::fromLocalFile(full).toString());
+        m.insert(u"kind"_qs, video ? u"video"_qs : u"audio"_qs);
+        if (!m.contains(u"duration"_qs))
+            m.insert(u"duration"_qs, 0.0);
+        out << m;
+    }
+    return out;
+}
+
 void Library::scan()
 {
     if (!m_db.isOpen())

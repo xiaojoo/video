@@ -209,7 +209,8 @@ Window {
         else if (what === "audioTrack") playerCore.cycleProperty("aid");
         else if (what === "mute" || what === "volume" || what === "volumeMuted")
             playerCore.cycleProperty("mute");
-        else if (what === "chapters") chapters.open = !chapters.open;
+        else if (what === "chapters") win.showTab("chapters");
+        else if (what === "playlist") win.showTab("files");
         win.touch();
     }
 
@@ -263,7 +264,6 @@ Window {
     function openMenuAt(px, py) {
         tip.hide();
         win.closeSub();
-        chapters.open = false;
         // The menu is a transport surface, so it brings the bar with it: the dropdowns
         // it hands off to live inside the chrome, and would be invisible at opacity 0.
         win.uiVisible = true;
@@ -376,7 +376,13 @@ Window {
     // over it in the same pass - which is why there is no second window any more.
     VideoItem {
         id: video
-        anchors.fill: parent
+        // The film's own column: the full window until the dock opens and takes a
+        // strip off the right - and when it does, the window has already grown by the
+        // same number, so this is the width the picture had before.
+        x: 0
+        y: 0
+        width: win.stageW
+        height: win.height
         core: playerCore
         // Nothing can be loaded before the render context exists; PlayerCore
         // holds the request until this fires.
@@ -403,12 +409,119 @@ Window {
     readonly property real scrimH: shellHeight * Theme.scrimHeightRatio
     readonly property real bandTop: win.vh - win.scrimH
 
+    // ---- the playlist dock -------------------------------------------------
+    // Opening it widens the window by exactly the panel's width, so the film keeps the
+    // rect it had and every chrome pixel on it keeps its place - which is the whole
+    // reason this is a column of the window and not a card over the picture. Where the
+    // window cannot grow (the maximised, fullscreen or mini state, or a screen edge
+    // closer than the panel is wide) `plExtra` stays 0 and the dock stands over the
+    // right of the picture instead; the film never shrinks because the dock opened.
+    property bool plOpen: false
+    // Which of the dock's two lists is showing. The cell opens it on the files and the
+    // `T` key on the chapters, so the shortcut that used to raise the drawer still
+    // reaches the same list - it just no longer covers the film to do it.
+    property string plTab: "files"
+    readonly property real plW: Math.round(Theme.playlistWidthRatio * shellHeight)
+    // What the last open actually added. A stored number rather than a binding: the
+    // room to our right is measured against our own width, and a binding that reads
+    // `width` to produce the thing that changes `width` settles one step late.
+    property real plExtra: 0
+    // The width we added but have not been able to take back yet, because the window was
+    // maximised (or fullscreen, or mini) when the dock closed: those states own the rect,
+    // and writing it there would fight the shell. Measured before this existed: grow ->
+    // maximise -> close the dock -> restore left the window at 1615 px with the dock gone,
+    // because the grown width had been baked into the restore rect.
+    property real plOwed: 0
+    // The film's width, and everything drawn on it. Window chrome (the caption buttons,
+    // the resize bands, the top drag strip) follows `width`; the picture's own chrome
+    // follows this.
+    readonly property real stageW: width - plExtra
+    // The folder listing. `libRev` is the white-read dependency: a rename in the media
+    // library has to reach the rows too, and a function call in a binding only tracks
+    // what it reads.
+    readonly property var plItems: { win.libRev; return library.itemsBeside(playerCore.mediaUrl) }
+
+    function plCanGrow() {
+        return !videoHost.zoomed && !videoHost.fullscreen && !videoHost.mini
+    }
+
+    function setPlaylist(on) {
+        if (on === win.plOpen)
+            return;
+        if (on) {
+            // Still carrying the width from a dock that closed while the window was
+            // maximised: adopt it instead of growing a second time on top of it.
+            if (win.plOwed > 0) {
+                win.plExtra = Math.min(win.plW, win.plOwed);
+                win.plOwed = 0;
+                win.plOpen = true;
+                win.touch();
+                return;
+            }
+            // In the states that own the rect the dock simply stands over the right of
+            // the picture; `plExtra` stays 0 so the film keeps the whole window.
+            win.plExtra = plCanGrow()
+                          ? Math.max(0, Math.min(win.plW, videoHost.workArea().x
+                                                 + videoHost.workArea().width
+                                                 - (win.x + win.width)))
+                          : 0;
+            win.plOpen = true;
+            // Both writes happen in this one turn, so the scene graph sees the pair and
+            // not the step in between.
+            if (win.plExtra > 0)
+                videoHost.setRect(win.x, win.y, win.width + win.plExtra, win.height);
+        } else {
+            const back = win.plExtra;
+            win.plExtra = 0;
+            win.plOpen = false;
+            if (back > 0) {
+                if (plCanGrow())
+                    videoHost.setRect(win.x, win.y, win.width - back, win.height);
+                else
+                    win.plOwed = back;
+            }
+        }
+        win.touch();
+    }
+
+    // One cell, one tab: pressing the same cell again closes the dock, pressing the
+    // other one moves across without a second open.
+    function showTab(tab) {
+        if (win.plOpen && win.plTab === tab) {
+            win.setPlaylist(false);
+            return;
+        }
+        win.plTab = tab;
+        if (!win.plOpen)
+            win.setPlaylist(true);
+        else
+            win.touch();
+    }
+
+    // The owed width goes back the moment the window is ours to size again. Triggered on
+    // the window's own width rather than `videoHost.resized`: that signal is only emitted
+    // by the transitions this app starts itself, and an external restore (the shell's
+    // Win+Down, a snap, the task bar) changes the rect without it - measured, the window
+    // came back 333 px too wide and stayed that way until the dock was opened and closed
+    // again. Decided on the rect rather than on `videoHost.zoomed`, because the WM_SIZE
+    // that carries the restore arrives while the zoomed flag is still set.
+    onWidthChanged: {
+        if (win.plOwed <= 0 || videoHost.fullscreen || videoHost.mini)
+            return;
+        const wa = videoHost.workArea();
+        if (width >= wa.width && height >= wa.height)
+            return;
+        const back = win.plOwed;
+        win.plOwed = 0;
+        videoHost.setRect(x, y, width - back, height);
+    }
+
     // The chrome stays up as long as the pointer is anywhere in that band - the
     // bar, a button, or the gap between two buttons - and the countdown only
     // resumes once it has left.
     readonly property bool pointerInBand: bandZone.containsMouse || bar.hovering
                                           || bar.scrubbing || controls.pointerInside
-                                          || picker.visible || chapters.open
+                                          || picker.visible || win.plOpen
                                           || playerMenu.visible
     // The pointer is on the open dropdown, on the row of icons it belongs to, or on the
     // menu row that a submenu hangs off.
@@ -449,12 +562,9 @@ Window {
         picker.hide()
     }
 
-    // The drawer is a reading surface over the picture, so any change to the picture's
-    // shape takes it away: our own maximise and fullscreen writes, a drag on the edge,
-    // and a resize the shell does to us (Win+Up, snap assist) all move vw/vh.
-    onVwChanged: chapters.open = false
-    onVhChanged: chapters.open = false
-
+    // The dock does not close when the picture changes shape, the way the old chapter
+    // drawer did: it is a column of the window now, so a resize only moves the edge it
+    // stops at.
     // Gesture layer, below the controls: empty-area click toggles the chrome,
     // wheel sets volume, double-click toggles fullscreen on the mpv host.
     // It stops at the top of the control band on purpose - a click between two
@@ -548,7 +658,7 @@ Window {
         visible: page !== "library"
         x: 0
         y: win.vh - win.scrimH
-        width: win.vw
+        width: win.stageW
         height: win.scrimH
         opacity: win.uiVisible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
@@ -573,6 +683,10 @@ Window {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
+        // The dock takes the window's right strip, so the caption goes back to the
+        // film's edge - measured before this, the three tiles landed on top of the
+        // dock's own header and its ✕.
+        anchors.rightMargin: win.plExtra
         height: caption.height
         // Above `ui`: the click-outside layer that dismisses a dropdown or the drawer
         // covers the whole window, and the window's own close/min/max must not be eaten
@@ -648,7 +762,12 @@ Window {
     Item {
         id: ui
         visible: page !== "library" && !videoHost.transitioning
-        anchors.fill: parent
+        // Everything the film carries lives in here, so it all follows the film's
+        // column rather than the window's.
+        x: 0
+        y: 0
+        width: win.stageW
+        height: win.height
         opacity: win.uiVisible ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
 
@@ -666,7 +785,7 @@ Window {
 
         Text {
             id: durText
-            x: win.vw - win.inset - width
+            x: win.stageW - win.inset - width
             anchors.verticalCenter: bar.verticalCenter
             text: win.fmt(playerCore.duration)
             color: Theme.glyph
@@ -694,7 +813,7 @@ Window {
             id: card
             refW: shellWidth
             refH: shellHeight
-            x: Math.max(win.inset, Math.min(win.vw - win.inset - width,
+            x: Math.max(win.inset, Math.min(win.stageW - win.inset - width,
                                             bar.x + bar.width * bar.hoverPos - width / 2))
             y: bar.y - height - shellHeight * 0.020
             visible: bar.hovering && bar.hoverPos >= 0
@@ -711,30 +830,10 @@ Window {
             }
         }
 
-
-
-        ChapterList {
-            id: chapters
-            refW: shellWidth
-            // The same gap above as below: the bottom one is the control band.
-            gap: win.scrimH
-            // And the same margin on its right as the window's close button keeps.
-            edgeGap: caption.gap
-            edges: win.edgeTimes
-            labels: win.chapterLabels
-            onPicked: (index) => {
-                const t = win.edgeTimes[index];
-                if (t !== undefined)
-                    playerCore.seekTo(t + 0.5);
-                chapters.open = false;
-            }
-            onDismissed: chapters.open = false
-        }
-
         ControlRow {
             id: controls
             x: 0
-            width: win.vw
+            width: win.stageW
             // Fixed at the height the row has where the window was launched, so
             // maximising or going fullscreen no longer scales the bar, the glyphs and
             // the time text with it. Everything derived from it inside ControlRow
@@ -770,18 +869,15 @@ Window {
             refH: shellHeight
         }
 
-        // Click outside an open dropdown or an open drawer closes it. This sits *under*
+        // Click outside an open dropdown closes it. This sits *under*
         // the chrome (the gesture layer is below it, the controls above): a click on
         // another menu cell has to reach that cell, or switching menus costs two clicks.
         MouseArea {
             anchors.fill: parent
             z: -0.25
-            visible: picker.visible || chapters.open
-            enabled: picker.visible || chapters.open
-            onClicked: {
-                picker.hide()
-                chapters.open = false
-            }
+            visible: picker.visible
+            enabled: picker.visible
+            onClicked: picker.hide()
         }
 
         // The dropdown also closes when the pointer leaves it. The delay is what
@@ -823,7 +919,9 @@ Window {
         anchors.fill: parent
         acceptedButtons: Qt.RightButton
         enabled: win.page === "player" && !videoHost.transitioning
-        onClicked: (m) => win.openMenuAt(m.x, m.y)
+        // The dock's column is not the film's: a right-click there must not open the
+        // transport menu, so this layer only answers for the picture's own width.
+        onClicked: (m) => { if (m.x < win.stageW) win.openMenuAt(m.x, m.y) }
     }
 
     // With the menu up, a left click anywhere is a dismissal - not a request to toggle
@@ -864,6 +962,7 @@ Window {
     Shortcut { sequence: "S"; enabled: win.page === "player"; onActivated: win.act("cc") }
     Shortcut { sequence: "A"; enabled: win.page === "player"; onActivated: win.act("audioTrack") }
     Shortcut { sequence: "T"; enabled: win.page === "player"; onActivated: win.act("chapters") }
+    Shortcut { sequence: "P"; enabled: win.page === "player"; onActivated: win.act("playlist") }
     Shortcut { sequence: "M"; enabled: win.page === "player"; onActivated: win.act("mute") }
     // F is the only entry left that goes to true fullscreen (over the task bar);
     // the double-click and the expand cell both hand the window to Windows' own
@@ -874,14 +973,49 @@ Window {
         onActivated: {
             if (picker.visible)
                 picker.hide();
-            else if (chapters.open)
-                chapters.open = false;
+            else if (win.plOpen)
+                win.setPlaylist(false);
             else if (win.page === "library")
                 win.page = "player";
             else if (videoHost.fullscreen)
                 win.toggleFs();
         }
     }
+
+    // The playlist dock: a column of the window rather than of `ui`, because it is
+    // opened and closed by hand and must not fade out with the chrome while it is being
+    // read. z 30 puts it over the film and under the menu layers, which is the order the
+    // right-click gate below assumes.
+    Playlist {
+        id: playlist
+        z: 30
+        refH: shellHeight
+        mediaPath: playerCore.mediaUrl
+        items: win.plItems
+        edges: win.edgeTimes
+        labels: win.chapterLabels
+        chapter: playerCore.chapter
+        tab: win.plTab
+        visible: win.plOpen && win.page === "player"
+        onPicked: (url) => { playerCore.load(url); win.touch() }
+        onChapterPicked: (index) => {
+            const t = win.edgeTimes[index];
+            if (t !== undefined)
+                playerCore.seekTo(t + 0.5);
+            win.touch();
+        }
+        onTabPicked: (tab) => { win.plTab = tab; win.touch() }
+        onDismissed: win.setPlaylist(false)
+    }
+
+    // Going to the library page, or into the mini window, takes the room the dock was
+    // given away: both surfaces own the whole window, so the dock goes back the way it
+    // came and the width it added goes with it.
+    Connections {
+        target: videoHost
+        function onMiniChanged() { if (videoHost.mini && win.plOpen) win.setPlaylist(false) }
+    }
+    onPageChanged: if (page !== "player" && win.plOpen) win.setPlaylist(false)
 
     Loader {
         z: 10
@@ -982,7 +1116,7 @@ Window {
         z: 21
         x: win.cornerGrab
         y: 0
-        width: Math.max(0, win.width - 2 * win.cornerGrab - caption.width)
+        width: Math.max(0, win.stageW - 2 * win.cornerGrab - caption.width)
         height: Math.max(16, caption.height)
         // With no native caption left to grab, this strip is the only move handle the
         // window has. Dragging a zoomed window stays disabled: what the system does

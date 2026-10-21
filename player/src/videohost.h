@@ -39,6 +39,10 @@ public:
     bool transitioning() const { return m_trans; }
     bool fullscreen() const { return m_fs; }
     Q_INVOKABLE QRect monitorRect() const;
+    // The work area of the monitor this window is on: what a maximised window covers,
+    // and how much room there is to the right of us for the playlist dock to widen
+    // into. Read every time rather than cached: it moves when the task bar hides.
+    Q_INVOKABLE QRect workArea() const;
     Q_INVOKABLE void toggleFullscreen();
     // The middle button of the top row: the system's own maximise one way, and the way
     // out of it the other. No rect is written by hand, which is what keeps the shell's
@@ -93,9 +97,6 @@ private:
     // One Win32 step onto `to`: leave the zoomed state, land on the rect, and take or
     // give back the topmost band in the same call.
     void landOn(const QRect &to);
-    // The work area of the monitor this window is on - what a maximised window covers.
-    // Read every time rather than cached: it moves when the task bar hides.
-    QRect workArea() const;
     // Take the task bar out of the way for the duration of a transition, so its
     // bright band is not left to appear or disappear on the shell's own clock.
     void stashTaskbar();

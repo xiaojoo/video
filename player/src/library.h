@@ -9,6 +9,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
+#include <QVariantList>
 
 struct MediaRow {
     qint64 id = 0;
@@ -79,6 +80,14 @@ public:
     // otherwise mpv's own title (the file name) is just as right, and cheaper. The
     // player page reads this so a renamed card is called the same thing in both places.
     Q_INVOKABLE QString titleForPath(const QString &path) const;
+    // Every playable file sitting in the same folder as the one that is playing, in the
+    // order the shell lists them, each with what the catalogue knows about it: the
+    // duration, the cover and - only where the user typed one - the name. The right-hand
+    // playlist reads this, so a file that is also in the library is called and drawn the
+    // same way in both places, and one that never got scanned still shows up with
+    // nothing but its file name. Takes PlayerCore's own url, because getting from that
+    // back to the file system needs QUrl, which QML has no equivalent of.
+    Q_INVOKABLE QVariantList itemsBeside(const QString &mediaUrl) const;
 
     // Baseline filename estimator: release-style names, "Title (2008)" folders,
     // dot/underscore separators. Returns false when nothing credible was found.

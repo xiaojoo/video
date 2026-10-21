@@ -60,8 +60,8 @@ qt_add_qml_module(appPlayerui
         qml/Picker.qml
         qml/CaptionButtons.qml
         qml/LibraryPage.qml
-        qml/ChapterList.qml
         qml/ContextMenu.qml
+        qml/Playlist.qml
 )
 
 target_link_libraries(appPlayerui PRIVATE Qt6::Quick Qt6::Svg Qt6::QuickControls2 Qt6::Sql Qt6::QuickDialogs2 user32 gdi32 dwmapi d3d11 comctl32 shell32)

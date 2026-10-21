@@ -64,4 +64,10 @@ QtObject {
     // The chapter drawer, as a ratio of the launch width: the card it replaces measured
     // 0.24 of the *live* width, which is how it turned into a 900 px column at 3840.
     readonly property real drawerWidthRatio: 0.24
+    // The playlist dock on the right. Read off the reference he sent: that panel is
+    // 330 px on a 677 px tall window = 0.49 of its height. 0.46 is the same column
+    // narrowed by 7% so a row keeps a 200 px text column next to its 96 px cover at
+    // the launch size. A ratio of the launch height, like everything else that must
+    // not grow because the window did.
+    readonly property real playlistWidthRatio: 0.46
 }
