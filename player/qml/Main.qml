@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Dialogs
 import Playerui
 
 Window {
@@ -149,6 +150,7 @@ Window {
     Connections {
         target: library
         function onRowsChanged() { win.libRev++ }
+        function onPlaylistsChanged() { win.plRev++ }
     }
     readonly property string libraryTitle: {
         win.libRev;                   // read for the dependency, not for the value
@@ -196,6 +198,10 @@ Window {
     function act(what) {
         console.log("action ->", what);
         win.closeSub();
+        // Every transport command - the icons, the context menu, the keyboard - comes
+        // through here, so this is the one place that can say "the pointer asked for
+        // something else" and leave the rename.
+        playlist.endEdit();
         const d = playerCore.duration;
         if (what === "play" || what === "pause") playerCore.togglePause();
         else if (what === "back10") playerCore.seekTo(Math.max(0, playerCore.position - 10));
@@ -209,8 +215,7 @@ Window {
         else if (what === "audioTrack") playerCore.cycleProperty("aid");
         else if (what === "mute" || what === "volume" || what === "volumeMuted")
             playerCore.cycleProperty("mute");
-        else if (what === "chapters") win.showTab("chapters");
-        else if (what === "playlist") win.showTab("files");
+        else if (what === "playlist") win.setPlaylist(!win.plOpen);
         win.touch();
     }
 
@@ -417,9 +422,9 @@ Window {
     // closer than the panel is wide) `plExtra` stays 0 and the dock stands over the
     // right of the picture instead; the film never shrinks because the dock opened.
     property bool plOpen: false
-    // Which of the dock's two lists is showing. The cell opens it on the files and the
-    // `T` key on the chapters, so the shortcut that used to raise the drawer still
-    // reaches the same list - it just no longer covers the film to do it.
+    // Which of the dock's two lists is showing. Only the labels inside the dock change
+    // it; the cell and `P` just open and close the column, and it reopens on whichever
+    // list was last read.
     property string plTab: "files"
     readonly property real plW: Math.round(Theme.playlistWidthRatio * shellHeight)
     // What the last open actually added. A stored number rather than a binding: the
@@ -440,6 +445,84 @@ Window {
     // library has to reach the rows too, and a function call in a binding only tracks
     // what it reads.
     readonly property var plItems: { win.libRev; return library.itemsBeside(playerCore.mediaUrl) }
+
+    // ---- 我的播单 -----------------------------------------------------------
+    // The lists are read through a counter rather than a plain binding: a function call
+    // in a binding only re-runs when a property it *read* changes, and `library.playlists()`
+    // reads none - the database did. `libRev` is folded in so a rename in the media
+    // library reaches the titles shown here too.
+    property int plRev: 0
+    readonly property var plLists: { win.plRev; win.libRev; return library.playlists() }
+    property int plOpenList: -1
+    readonly property var plEntries: {
+        win.plRev
+        return win.plOpenList >= 0 ? library.playlistItems(win.plOpenList) : []
+    }
+    // Which list the film on screen came from and which entry of it. -1 / "" means it was
+    // opened some other way, and then nothing follows it - the queue is a fact about how
+    // this film started, not a mode the user has to remember to leave.
+    property int plQueueList: -1
+    property string plQueuePath: ""
+    // The list the file dialog is about to add to, kept because the dialog's answer
+    // arrives a whole event loop after it was opened.
+    property int plPickTarget: -1
+
+    function plCreate() {
+        const id = library.createPlaylist("")
+        if (id >= 0)
+            win.plOpenList = id
+        win.touch()
+    }
+
+    function plToggleList(id) {
+        win.plOpenList = win.plOpenList === id ? -1 : id
+        playlist.pendingDelete = -1
+        playlist.endEdit()
+        win.touch()
+    }
+
+    function plDeleteList(id) {
+        library.deletePlaylist(id)
+        if (win.plOpenList === id)
+            win.plOpenList = -1
+        if (win.plQueueList === id) {
+            win.plQueueList = -1
+            win.plQueuePath = ""
+        }
+        playlist.pendingDelete = -1
+        playlist.endEdit()
+    }
+
+    function plPlayEntry(id, path, url) {
+        win.plOpenList = id
+        win.plQueueList = id
+        win.plQueuePath = path
+        playerCore.load(url)
+        win.touch()
+    }
+
+    // The next entry of the list the current film came from. Read from the database
+    // rather than a remembered array, so an entry added, removed or reordered while the
+    // film plays is already reflected in what comes next.
+    function plAdvance() {
+        if (win.plQueueList < 0)
+            return
+        const e = library.playlistItems(win.plQueueList)
+        let i = -1
+        for (let k = 0; k < e.length; ++k)
+            if (e[k].path === win.plQueuePath)
+                i = k
+        if (i < 0 || i + 1 >= e.length) {
+            win.plQueueList = -1
+            win.plQueuePath = ""
+            console.log("queue -> end")
+            return
+        }
+        const n = e[i + 1]
+        win.plQueuePath = n.path
+        console.log("queue -> next", n.name)
+        playerCore.load(n.url)
+    }
 
     function plCanGrow() {
         return !videoHost.zoomed && !videoHost.fullscreen && !videoHost.mini
@@ -474,6 +557,9 @@ Window {
             const back = win.plExtra;
             win.plExtra = 0;
             win.plOpen = false;
+            // The rename does not come back on its own, and reopening the dock to a row
+            // still in its box looks like the panel remembered being clicked.
+            playlist.endEdit();
             if (back > 0) {
                 if (plCanGrow())
                     videoHost.setRect(win.x, win.y, win.width - back, win.height);
@@ -482,20 +568,6 @@ Window {
             }
         }
         win.touch();
-    }
-
-    // One cell, one tab: pressing the same cell again closes the dock, pressing the
-    // other one moves across without a second open.
-    function showTab(tab) {
-        if (win.plOpen && win.plTab === tab) {
-            win.setPlaylist(false);
-            return;
-        }
-        win.plTab = tab;
-        if (!win.plOpen)
-            win.setPlaylist(true);
-        else
-            win.touch();
     }
 
     // The owed width goes back the moment the window is ours to size again. Triggered on
@@ -580,6 +652,7 @@ Window {
         onClicked: (m) => {
             win.uiVisible = !win.uiVisible;
             console.log("uiVisible ->", win.uiVisible);
+            playlist.endEdit();
             win.touch();
         }
         // Double-click on the picture is play/pause now, not a window state.
@@ -616,7 +689,17 @@ Window {
     // over the duration, and the cache is keyed on the file.
     Connections {
         target: playerCore
-        function onMediaUrlChanged() { thumbs.clear(); }
+        // A film opened any way other than the queue cancels it: the queue describes how
+        // this particular film was reached, and picking from the folder list, the library
+        // or the command line is a different answer.
+        function onMediaUrlChanged() {
+            thumbs.clear()
+            if (win.plQueuePath.length > 0 && playerCore.mediaUrl !== win.plQueuePath) {
+                win.plQueueList = -1
+                win.plQueuePath = ""
+            }
+        }
+        function onEndOfFile() { win.plAdvance() }
         // Pausing brings the chrome up - there is nothing to hide it for - and
         // playing again re-arms the countdown, which nothing else would do.
         function onPausedChanged() {
@@ -961,7 +1044,6 @@ Window {
     Shortcut { sequence: "L"; enabled: win.page === "player"; onActivated: win.act("nextChapter") }
     Shortcut { sequence: "S"; enabled: win.page === "player"; onActivated: win.act("cc") }
     Shortcut { sequence: "A"; enabled: win.page === "player"; onActivated: win.act("audioTrack") }
-    Shortcut { sequence: "T"; enabled: win.page === "player"; onActivated: win.act("chapters") }
     Shortcut { sequence: "P"; enabled: win.page === "player"; onActivated: win.act("playlist") }
     Shortcut { sequence: "M"; enabled: win.page === "player"; onActivated: win.act("mute") }
     // F is the only entry left that goes to true fullscreen (over the task bar);
@@ -996,6 +1078,10 @@ Window {
         labels: win.chapterLabels
         chapter: playerCore.chapter
         tab: win.plTab
+        lists: win.plLists
+        entries: win.plEntries
+        openList: win.plOpenList
+        queuePath: win.plQueuePath
         visible: win.plOpen && win.page === "player"
         onPicked: (url) => { playerCore.load(url); win.touch() }
         onChapterPicked: (index) => {
@@ -1004,8 +1090,47 @@ Window {
                 playerCore.seekTo(t + 0.5);
             win.touch();
         }
-        onTabPicked: (tab) => { win.plTab = tab; win.touch() }
+        onTabPicked: (tab) => { win.plTab = tab; playlist.endEdit(); win.touch() }
+        onCreateRequested: win.plCreate()
+        onListClicked: (id) => win.plToggleList(id)
+        onListRenamed: (id, name) => library.renamePlaylist(id, name)
+        onListDeleteRequested: (id) => { playlist.pendingDelete = id; win.touch() }
+        onListDeleteConfirmed: (id) => win.plDeleteList(id)
+        onListAddRequested: (id) => { win.plPickTarget = id; filePick.open() }
+        onEntryClicked: (id, path, url) => win.plPlayEntry(id, path, url)
+        onEntryRemoved: (id, path) => library.removeFromPlaylist(id, path)
+        onEntryMoved: (id, path, dir) => library.movePlaylistItem(id, path, dir)
         onDismissed: win.setPlaylist(false)
+    }
+
+    // Adding from disk goes through the shell's own picker: the point of a playlist is to
+    // hold things that are not in the library, and a folder scan would either copy or
+    // catalogue them. Neither happens - the dialog's urls are handed to the database as
+    // paths, and only paths.
+    FileDialog {
+        id: filePick
+        title: "添加到播单"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["可播放的文件 (*.mp4 *.m4v *.mkv *.webm *.avi *.mov *.flv *.wmv"
+                      + " *.ts *.m2ts *.mp3 *.flac *.alac *.m4a *.opus *.ogg *.oga *.wav *.ape)",
+                      "所有文件 (*)"]
+        onAccepted: {
+            if (win.plPickTarget < 0)
+                return
+            const paths = []
+            // `selectedFiles`, not `selectedUrls`: this Qt's FileDialog exports
+            // fileMode / selectedFile / selectedFiles / currentFile / currentFiles /
+            // currentFolder (read out of QtQuick/Dialogs/plugins.qmltypes), and the name
+            // the docs use for the same list elsewhere is not what this type has. With
+            // `selectedUrls` the handler threw "ReferenceError: selectedUrls is not
+            // defined" on its first line, so a real pick - dialog open, file named,
+            // 打开 clicked, dialog gone - added nothing and said nothing.
+            for (let i = 0; i < selectedFiles.length; ++i)
+                paths.push(String(selectedFiles[i]))
+            library.addToPlaylist(win.plPickTarget, paths)
+            win.plOpenList = win.plPickTarget
+            win.plPickTarget = -1
+        }
     }
 
     // Going to the library page, or into the mini window, takes the room the dock was

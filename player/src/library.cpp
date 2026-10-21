@@ -51,6 +51,14 @@ void Library::ensureSchema()
         " id INTEGER PRIMARY KEY, media_id INTEGER, path TEXT UNIQUE,"
         " size INTEGER, mtime INTEGER, duration REAL, probed INTEGER, scanned INTEGER)",
         "CREATE INDEX IF NOT EXISTS files_media_idx ON files(media_id)",
+        // The user's own lists. Deliberately not the catalogue: a playlist row is a path
+        // and an order, so adding a film here never copies it, never scans it in, and
+        // survives (and outlives) whatever the catalogue does with that file.
+        "CREATE TABLE IF NOT EXISTS playlists("
+        " id INTEGER PRIMARY KEY, name TEXT, ord INTEGER)",
+        "CREATE TABLE IF NOT EXISTS playlist_items("
+        " id INTEGER PRIMARY KEY, playlist_id INTEGER, path TEXT, ord INTEGER,"
+        " UNIQUE(playlist_id, path))",
     };
     for (const char *sql : ddl) {
         QSqlQuery q(m_db);
@@ -389,9 +397,229 @@ QVariantList Library::itemsBeside(const QString &mediaUrl) const
         m.insert(u"kind"_qs, video ? u"video"_qs : u"audio"_qs);
         if (!m.contains(u"duration"_qs))
             m.insert(u"duration"_qs, 0.0);
+        // A file the catalogue has never seen has no row to take a title or a cover
+        // from, and an absent key is not the same as an empty one: the dock reads
+        // `it.title.length` and threw "Cannot read property 'length' of undefined" for
+        // every not-yet-scanned file in the folder.
+        if (!m.contains(u"title"_qs))
+            m.insert(u"title"_qs, QString());
+        if (!m.contains(u"poster"_qs))
+            m.insert(u"poster"_qs, QString());
         out << m;
     }
     return out;
+}
+
+// A playlist path is stored in exactly the form the rest of the shell compares on -
+// forward slashes, cleaned - because the dock finds a file's duration and cover by
+// matching this text against `files.path`, and the two come from different places
+// (the catalogue's own walk, a file dialog, a folder listing). The dialog hands over a
+// file:// url, and QML has no way to turn that into a path in this Qt, so it arrives
+// here as a string and is unwrapped.
+static QString plKey(const QString &raw)
+{
+    QString path = raw;
+    if (path.startsWith(u"file:"))
+        path = QUrl(path).toLocalFile();
+    return QDir::cleanPath(QDir::fromNativeSeparators(path));
+}
+
+QVariantList Library::playlists() const
+{
+    QVariantList out;
+    if (!m_db.isOpen())
+        return out;
+    QSqlQuery q(m_db);
+    q.prepare(u"SELECT p.id, p.name, (SELECT COUNT(*) FROM playlist_items i"
+              u" WHERE i.playlist_id = p.id) FROM playlists p ORDER BY p.ord, p.id"_qs);
+    if (!q.exec())
+        return out;
+    while (q.next()) {
+        QVariantMap m;
+        m.insert(u"id"_qs, q.value(0).toLongLong());
+        m.insert(u"name"_qs, q.value(1).toString());
+        m.insert(u"count"_qs, q.value(2).toInt());
+        out << m;
+    }
+    return out;
+}
+
+QVariantList Library::playlistItems(qint64 playlistId) const
+{
+    QVariantList out;
+    if (!m_db.isOpen())
+        return out;
+    QSqlQuery q(m_db);
+    // LEFT JOIN, not JOIN: a playlist entry the catalogue has never seen still plays,
+    // it just has no duration and no cover to show.
+    q.prepare(u"SELECT i.path, i.ord, f.duration, m.poster, m.title, COALESCE(m.custom, 0)"
+              u" FROM playlist_items i"
+              u" LEFT JOIN files f ON f.path = i.path"
+              u" LEFT JOIN media m ON m.id = f.media_id"
+              u" WHERE i.playlist_id = ? ORDER BY i.ord, i.id"_qs);
+    q.addBindValue(playlistId);
+    if (!q.exec())
+        return out;
+    while (q.next()) {
+        const QString path = q.value(0).toString();
+        QVariantMap m;
+        m.insert(u"path"_qs, path);
+        m.insert(u"url"_qs, QUrl::fromLocalFile(path).toString());
+        m.insert(u"name"_qs, QFileInfo(path).fileName());
+        m.insert(u"title"_qs, q.value(5).toBool() ? q.value(4).toString() : QString());
+        m.insert(u"duration"_qs, q.value(2).isNull() ? 0.0 : q.value(2).toDouble());
+        m.insert(u"poster"_qs, q.value(3).toString());
+        out << m;
+    }
+    return out;
+}
+
+qint64 Library::createPlaylist(const QString &name)
+{
+    if (!m_db.isOpen())
+        return -1;
+    const QString n = name.trimmed().isEmpty() ? u"未命名播单"_qs : name.trimmed();
+    QSqlQuery q(m_db);
+    q.prepare(u"SELECT COALESCE(MAX(ord), -1) + 1 FROM playlists"_qs);
+    int ord = 0;
+    if (q.exec() && q.next())
+        ord = q.value(0).toInt();
+    q.prepare(u"INSERT INTO playlists(name, ord) VALUES (?, ?)"_qs);
+    q.addBindValue(n);
+    q.addBindValue(ord);
+    if (!q.exec()) {
+        qWarning("playlist create failed: %s", qPrintable(q.lastError().text()));
+        return -1;
+    }
+    const qint64 id = q.lastInsertId().toLongLong();
+    qInfo("LIBRARY playlist created id=%lld \"%s\"", long long(id), qPrintable(n));
+    emit playlistsChanged();
+    return id;
+}
+
+void Library::renamePlaylist(qint64 id, const QString &name)
+{
+    const QString n = name.trimmed();
+    if (n.isEmpty()) {
+        qInfo("LIBRARY playlist rename refused (empty) id=%lld", long long(id));
+        return;
+    }
+    QSqlQuery q(m_db);
+    q.prepare(u"UPDATE playlists SET name = ? WHERE id = ?"_qs);
+    q.addBindValue(n);
+    q.addBindValue(id);
+    if (!q.exec()) {
+        qWarning("playlist rename failed: %s", qPrintable(q.lastError().text()));
+        return;
+    }
+    qInfo("LIBRARY playlist id=%lld renamed to \"%s\"", long long(id), qPrintable(n));
+    emit playlistsChanged();
+}
+
+void Library::deletePlaylist(qint64 id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(u"DELETE FROM playlist_items WHERE playlist_id = ?"_qs);
+    q.addBindValue(id);
+    if (!q.exec())
+        qWarning("playlist items delete failed: %s", qPrintable(q.lastError().text()));
+    q.prepare(u"DELETE FROM playlists WHERE id = ?"_qs);
+    q.addBindValue(id);
+    if (!q.exec()) {
+        qWarning("playlist delete failed: %s", qPrintable(q.lastError().text()));
+        return;
+    }
+    qInfo("LIBRARY playlist deleted id=%lld", long long(id));
+    emit playlistsChanged();
+}
+
+void Library::addToPlaylist(qint64 id, const QStringList &paths)
+{
+    if (!m_db.isOpen() || id < 0)
+        return;
+    QSqlQuery ord(m_db);
+    ord.prepare(u"SELECT COALESCE(MAX(ord), -1) + 1 FROM playlist_items WHERE playlist_id = ?"_qs);
+    ord.addBindValue(id);
+    int next = 0;
+    if (ord.exec() && ord.next())
+        next = ord.value(0).toInt();
+    int added = 0;
+    for (const QString &raw : paths) {
+        const QString path = plKey(raw);
+        if (path.isEmpty())
+            continue;
+        // UNIQUE(playlist_id, path) is the dedupe: adding the same film twice is a no-op
+        // rather than a second row that would then play twice in the queue.
+        QSqlQuery q(m_db);
+        q.prepare(u"INSERT OR IGNORE INTO playlist_items(playlist_id, path, ord) VALUES (?,?,?)"_qs);
+        q.addBindValue(id);
+        q.addBindValue(path);
+        q.addBindValue(next++);
+        if (q.exec() && q.numRowsAffected() > 0)
+            ++added;
+    }
+    qInfo("LIBRARY playlist id=%lld added %d of %d", long long(id), added, int(paths.size()));
+    if (added > 0)
+        emit playlistsChanged();
+}
+
+void Library::removeFromPlaylist(qint64 id, const QString &path)
+{
+    QSqlQuery q(m_db);
+    q.prepare(u"DELETE FROM playlist_items WHERE playlist_id = ? AND path = ?"_qs);
+    q.addBindValue(id);
+    q.addBindValue(plKey(path));
+    if (!q.exec()) {
+        qWarning("playlist item delete failed: %s", qPrintable(q.lastError().text()));
+        return;
+    }
+    emit playlistsChanged();
+}
+
+// Manual order, one step at a time: the row trades its `ord` with its neighbour. A
+// single UPDATE would collide with nothing here because ord is not unique, but swapping
+// keeps every other row's number untouched, which is what makes an interrupted drag or a
+// repeated click idempotent.
+void Library::movePlaylistItem(qint64 id, const QString &path, int dir)
+{
+    const QString mine = plKey(path);
+    QSqlQuery find(m_db);
+    find.prepare(u"SELECT id, ord FROM playlist_items WHERE playlist_id = ? AND path = ?"_qs);
+    find.addBindValue(id);
+    find.addBindValue(mine);
+    if (!find.exec() || !find.next())
+        return;
+    const qint64 mineId = find.value(0).toLongLong();
+    const int ord = find.value(1).toInt();
+    QSqlQuery other(m_db);
+    other.prepare(u"SELECT id, ord FROM playlist_items WHERE playlist_id = ? AND ord "
+                  + QString(dir < 0 ? "<" : ">") + u" ? ORDER BY ord "
+                  + QString(dir < 0 ? "DESC" : "ASC") + u" LIMIT 1"_qs);
+    other.addBindValue(id);
+    other.addBindValue(ord);
+    if (!other.exec() || !other.next())
+        return;                       // already first / last: nothing to trade
+    const qint64 otherId = other.value(0).toLongLong();
+    const int otherOrd = other.value(1).toInt();
+    // Trade the two numbers: the neighbour takes the slot this row is leaving and this
+    // row takes the one the neighbour vacated. Written the other way round - each row
+    // bound to its own `ord` - both UPDATEs succeed and nothing moves, which is what the
+    // up and down marks did on screen: no error, no change.
+    QSqlQuery up(m_db);
+    up.prepare(u"UPDATE playlist_items SET ord = ? WHERE id = ?"_qs);
+    up.addBindValue(ord);
+    up.addBindValue(otherId);
+    if (!up.exec()) {
+        qWarning("playlist reorder failed: %s", qPrintable(up.lastError().text()));
+        return;
+    }
+    QSqlQuery back(m_db);
+    back.prepare(u"UPDATE playlist_items SET ord = ? WHERE id = ?"_qs);
+    back.addBindValue(otherOrd);
+    back.addBindValue(mineId);
+    if (!back.exec())
+        qWarning("playlist reorder failed: %s", qPrintable(back.lastError().text()));
+    emit playlistsChanged();
 }
 
 void Library::scan()

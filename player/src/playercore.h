@@ -87,6 +87,10 @@ public:
 
 signals:
     void hasMediaChanged();
+    // The film reached its last frame on its own. Distinct from the media going away,
+    // because `loadfile ... replace` (what the playlist queue uses) also ends the current
+    // file - and that must not advance the queue a second time.
+    void endOfFile();
     void positionChanged();
     void durationChanged();
     void pausedChanged();
@@ -115,6 +119,7 @@ private:
 
     struct mpv_handle *m_mpv = nullptr;
     bool m_hasMedia = false;
+    bool m_eof = false;
     double m_position = 0.0;
     double m_duration = 0.0;
     bool m_paused = false;

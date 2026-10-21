@@ -179,7 +179,7 @@ Item {
                         width: menu.glyphSize
                         height: menu.glyphSize
                         visible: menu.hasIcons
-                        name: line.item ? line.item.icon : ""
+                        name: line.item && line.item.icon ? line.item.icon : ""
                         color: !line.live ? "#4A4A4E"
                                : (hit.containsMouse ? Theme.textPrimary : Theme.textSecondary)
                     }
@@ -197,7 +197,11 @@ Item {
                         id: keys
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        text: line.item ? line.item.keys : ""
+                        // A row list that carries no key column at all is the normal case,
+                        // not an error: the media library's card menu has no icons and no
+                        // shortcuts. `undefined` into a QString property is what the
+                        // assignment complained about, ten times per card menu.
+                        text: line.item && line.item.keys ? line.item.keys : ""
                         visible: menu.hasKeys && text.length > 0
                         // Stays on the secondary grey even under hover: the label is the
                         // thing being pointed at, and whitening both would say so twice.

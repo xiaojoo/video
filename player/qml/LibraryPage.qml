@@ -21,11 +21,24 @@ Item {
     // The card's right-click menu. One instance for the whole grid, so two cards cannot
     // be open at once; the action is applied to whichever card opened it. A card hidden
     // or renamed reloads the grid from C++ (Library::rowsChanged).
-    readonly property var cardItems: [
-        { label: "打开文件所在文件夹", action: "reveal" },
-        { label: "重命名",              action: "rename" },
-        { label: "从媒体库移除",         action: "hide" }
-    ]
+    // Built when the menu opens, not bound: the playlists can change while this page is
+    // up, and a function call in a binding would answer with whatever the list was the
+    // first time it was read.
+    function cardItems() {
+        const out = [
+            { label: "打开文件所在文件夹", action: "reveal" },
+            { label: "重命名",              action: "rename" },
+            { label: "从媒体库移除",         action: "hide" }
+        ];
+        const ls = library.playlists();
+        for (let i = 0; i < ls.length; ++i)
+            out.push({ label: "加到「" + ls[i].name + "」", action: "pl:" + ls[i].id });
+        // With no list to add to the row says so and stays grey, rather than vanishing:
+        // the action exists, the target does not yet.
+        if (ls.length === 0)
+            out.push({ label: "加到播单（还没有播单）", action: "", on: false });
+        return out;
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -333,7 +346,7 @@ Item {
                         // would be undefined, because an id is not a property of the
                         // object it sits on.
                         const at = cell.mapToItem(page, m.x, m.y);
-                        cardMenu.showAt(at.x, at.y, page.cardItems, cell);
+                        cardMenu.showAt(at.x, at.y, page.cardItems(), cell);
                         return;
                     }
                     playerCore.load(path); win.page = "player";
@@ -452,6 +465,8 @@ Item {
                 target.startRename();
             else if (action === "hide")
                 library.hideMedia(target.mediaId);
+            else if (action.indexOf("pl:") === 0)
+                library.addToPlaylist(Number(action.slice(3)), [target.path]);
         }
     }
 }

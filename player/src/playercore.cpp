@@ -56,6 +56,10 @@ PlayerCore::PlayerCore(QObject *parent) : QObject(parent)
     mpv_observe_property(m_mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(m_mpv, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(m_mpv, 0, "pause", MPV_FORMAT_FLAG);
+    // The only end-of-playback signal this app can use: keep-open is on, so a film that
+    // runs out is never unloaded and MPV_EVENT_END_FILE does not fire for it. Measured on
+    // a 2.023 s clip - the play head stopped on the last frame and no event came.
+    mpv_observe_property(m_mpv, 0, "eof-reached", MPV_FORMAT_FLAG);
     mpv_observe_property(m_mpv, 0, "mute", MPV_FORMAT_FLAG);
     mpv_observe_property(m_mpv, 0, "volume", MPV_FORMAT_DOUBLE);
     mpv_observe_property(m_mpv, 0, "speed", MPV_FORMAT_DOUBLE);
@@ -137,6 +141,7 @@ void PlayerCore::drainEvents()
             }
             m_blurayPending = false;
             m_hasMedia = false;
+            m_eof = false;
             m_chapterStarts.clear();
             m_chapterTitles.clear();
             m_audioTracks.clear();
@@ -179,6 +184,17 @@ void PlayerCore::onPropertyChange(void *propPtr)
     } else if (!std::strcmp(n, "duration") && p->format == MPV_FORMAT_DOUBLE) {
         m_duration = *static_cast<double *>(p->data);
         emit durationChanged();
+    } else if (!std::strcmp(n, "eof-reached") && p->format == MPV_FORMAT_FLAG) {
+        // Rising edge only: the property stays true while the last frame is held, and a
+        // repeat would skip the next entry as well.
+        const bool atEnd = *static_cast<int *>(p->data) != 0;
+        if (atEnd && !m_eof) {
+            m_eof = true;
+            qInfo("EOF reached");
+            emit endOfFile();
+        } else if (!atEnd) {
+            m_eof = false;
+        }
     } else if (!std::strcmp(n, "fullscreen") && p->format == MPV_FORMAT_FLAG) {
         m_fsActive = *static_cast<int *>(p->data) != 0;
         qInfo("fsActive -> %d", m_fsActive ? 1 : 0);

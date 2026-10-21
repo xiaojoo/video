@@ -89,6 +89,22 @@ public:
     // back to the file system needs QUrl, which QML has no equivalent of.
     Q_INVOKABLE QVariantList itemsBeside(const QString &mediaUrl) const;
 
+    // ---- the user's own playlists ------------------------------------------
+    // A list of paths and an order. Nothing here copies a file or adds it to the
+    // catalogue: the dock plays the path, and the catalogue is only ever consulted to
+    // show a duration and a cover it happens to know.
+    Q_INVOKABLE QVariantList playlists() const;
+    Q_INVOKABLE QVariantList playlistItems(qint64 playlistId) const;
+    // Returns the new row's id, or -1. An empty name keeps the default one.
+    Q_INVOKABLE qint64 createPlaylist(const QString &name = QString());
+    Q_INVOKABLE void renamePlaylist(qint64 id, const QString &name);
+    Q_INVOKABLE void deletePlaylist(qint64 id);
+    // Appends, in the order given, skipping what is already in there.
+    Q_INVOKABLE void addToPlaylist(qint64 id, const QStringList &paths);
+    Q_INVOKABLE void removeFromPlaylist(qint64 id, const QString &path);
+    // Trades a row's place with its neighbour: -1 up, +1 down, and a no-op at either end.
+    Q_INVOKABLE void movePlaylistItem(qint64 id, const QString &path, int dir);
+
     // Baseline filename estimator: release-style names, "Title (2008)" folders,
     // dot/underscore separators. Returns false when nothing credible was found.
     static bool parseName(const QString &fileName, const QString &parentDir,
@@ -99,6 +115,10 @@ signals:
     void rowChanged();
     // A card left or entered the grid without a scan (hidden, renamed).
     void rowsChanged();
+    // Anything about the user's lists changed: a list created, named, deleted, or an
+    // entry added, removed, reordered. One signal for both the list of playlists and the
+    // entries of the open one, because the dock reads them together.
+    void playlistsChanged();
     // The header's 时长 N/M is filled by the backfill as well as by a scan, so it
     // needs a signal of its own; re-emitting scanned() would re-enter the pump.
     void statsChanged();

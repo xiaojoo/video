@@ -8,6 +8,11 @@ Item {
     property real weight: 1.6
     implicitWidth: 24
     implicitHeight: 24
+    // A name the table does not have - "" above all, which is what a menu row with no
+    // glyph column carries - used to reach `table[name].filled` and throw "Value is
+    // undefined and could not be converted to an object" once per binding per row. An
+    // unknown name draws nothing; that is the whole job here.
+    readonly property var spec: root.table[root.name] || ({ d: "", filled: false, cap: "" })
 
     // An arrowhead sitting on the end of an arc: an isoceles triangle whose axis
     // is the arc's own direction of travel. The previous versions used right
@@ -57,6 +62,16 @@ Item {
         // triangle drawn at the box's own centre would read 1 px right of them.
         "playlist":     { d: "M3.5 6.5h8M3.5 12h8M3.5 17.5h8", filled: false,
                           cap: "M15 8.5l6.5 3.5-6.5 3.5z" },
+        // The four small marks the playlist rows use. All drawn on the same 24 grid and
+        // with the same 1.6 stroke as the rest, so a 14 px row glyph matches a 25 px
+        // control-row glyph instead of looking thin next to it.
+        "plus":         { d: "M12 5.5v13M5.5 12h13", filled: false },
+        "up":           { d: "M6.5 14.5L12 9l5.5 5.5", filled: false },
+        "down":         { d: "M6.5 9.5L12 15l5.5-5.5", filled: false },
+        // A pencil at 45°: the body, the ferrule line, and the tip as its own filled
+        // wedge so it still reads at 14 px.
+        "pencil":       { d: "M6 18l1.2-4.1L15.6 5.5l3 3-8.4 8.4zM14 7.2l2.8 2.8",
+                          filled: false, cap: "M5.2 19.4l1.6-4.2 2.6 2.6z" },
         "audioTrack":   { d: "M4 13a8 8 0 1 1 16 0M4 13v3a2 2 0 0 0 2 2h1v-5H6a2 2 0 0 0-2 2zm16 0v3a2 2 0 0 1-2 2h-1v-5h1a2 2 0 0 1 2 2z", filled: false },
         "rotate":       { d: "M20 11a8 8 0 1 0-2.3 6", filled: false, cap: head(17.7, 17, 0.725, -0.689, 3.2, 2.0, 1.0) },
         "aspect":       { d: "M3 6h18v12H3zM8 9.5v5M16 9.5v5", filled: false },
@@ -90,20 +105,20 @@ Item {
         preferredRendererType: Shape.CurveRenderer
 
         ShapePath {
-            strokeWidth: root.table[root.name].filled ? 1.2 : root.weight
+            strokeWidth: root.spec.filled ? 1.2 : root.weight
             strokeColor: root.color
-            fillColor: root.table[root.name].filled ? root.color : "transparent"
+            fillColor: root.spec.filled ? root.color : "transparent"
             strokeStyle: ShapePath.SolidLine
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
-            PathSvg { path: root.table[root.name].d }
+            PathSvg { path: root.spec.d }
         }
 
         ShapePath {
             strokeWidth: 0
             strokeColor: "transparent"
             fillColor: root.color
-            PathSvg { path: root.table[root.name].cap || "" }
+            PathSvg { path: root.spec.cap || "" }
         }
     }
 }
