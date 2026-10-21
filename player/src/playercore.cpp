@@ -464,6 +464,17 @@ void PlayerCore::togglePause()
 {
     if (!m_mpv)
         return;
+    if (m_eof) {
+        // At the end there is nothing to un-pause into: keep-open holds the last frame
+        // and the clock has stopped, so the only thing a play request can mean is "play
+        // it again". The seek back clears eof-reached on its own, so no flag is written
+        // here and the queue keeps its normal behaviour while a film is running.
+        qInfo("play at the end -> restart");
+        seekTo(0.0);
+        int play = 0;
+        mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &play);
+        return;
+    }
     int v = m_paused ? 0 : 1;
     mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &v);
 }
