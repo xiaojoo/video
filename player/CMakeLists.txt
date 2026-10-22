@@ -28,12 +28,13 @@ qt_add_executable(appPlayerui
     appPlayerui.rc
 )
 
-# The window icon, loaded in main.cpp as :/app/app.svg. The .ico that goes into the exe
-# is rasterised from this same file.
+# The window icon and the exe's file icon are the same app.ico (16 and 24 are a simplified
+# cut of the figure; see icons/app_small.svg), and icons/make.py regenerates every frame
+# from the two SVGs.
 qt_add_resources(appPlayerui "appicons"
     PREFIX "/app"
     BASE "icons"
-    FILES "icons/app.svg"
+    FILES "icons/app.ico"
 )
 
 set(LIBMPV_DIR "${CMAKE_SOURCE_DIR}/../vendor/libmpv")

@@ -42,9 +42,13 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(u"Playerui"_qs);
     QGuiApplication::setOrganizationName(u"local"_qs);
-    // The taskbar and the alt-tab strip take this one. Explorer's file icon for the exe
-    // comes from appPlayerui.rc, and both are rasterised from icons/app.svg.
-    app.setWindowIcon(QIcon(u":/app/app.svg"_qs));
+    // The taskbar and the alt-tab strip take this one, and it is the same .ico that
+    // appPlayerui.rc puts into the exe, so the two surfaces cannot disagree: every size is
+    // a frame of its own, 16 and 24 from the simplified figure (four 13-unit holes land on
+    // 1.6 px each and stop reading as film). The SVG is deliberately not registered - a
+    // scalable entry counts as a match for every size in Qt's lookup, so it would win the
+    // 16 px request and hand back the four-hole cut.
+    app.setWindowIcon(QIcon(u":/app/app.ico"_qs));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(u"player shell"_qs);
