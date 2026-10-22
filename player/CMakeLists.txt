@@ -76,6 +76,7 @@ qt_add_qml_module(appPlayerui
 
 target_link_libraries(appPlayerui PRIVATE Qt6::Quick Qt6::Svg Qt6::QuickControls2 Qt6::Sql Qt6::QuickDialogs2 user32 gdi32 dwmapi d3d11 comctl32 shell32)
 
-# Dev build: console subsystem so qml errors reach the terminal. Flip back to ON
-# before shipping so double-clicking does not open a console window.
-set_target_properties(appPlayerui PROPERTIES WIN32_EXECUTABLE OFF)
+# Dev build: console subsystem so qml errors reach the terminal. Packaging
+# configures with -DSHIP_WIN32=ON so double-clicking does not open a console.
+option(SHIP_WIN32 "Build the windowed (no console) variant for packaging" OFF)
+set_target_properties(appPlayerui PROPERTIES WIN32_EXECUTABLE ${SHIP_WIN32})
