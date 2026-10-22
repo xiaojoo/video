@@ -11,9 +11,26 @@ Windows 桌面的本地视频播放器。**解码与画面交给 libmpv，窗口
 | 系统 | Windows 10/11 x64 |
 | Qt | 6.11.2，MSVC 2022 64-bit；用到 Quick、QuickControls2、Svg、Sql、QuickDialogs2 |
 | 工具链 | Visual Studio 2022 的 C++ 工具链 + CMake ≥ 3.22 + Ninja |
-| libmpv | mpv `v0.41.0-1186-ga2cd83c56`（render API：client API 2.6），头文件与 `libmpv-2.dll` 放在 `vendor/libmpv/` |
+| libmpv | mpv `v0.41.0-1186-ga2cd83c56`（render API：client API 2.6），头文件与 `libmpv-2.dll` 放在 `vendor/libmpv/`，地址见下 |
 
-`vendor/` 不入库（libmpv 的 DLL 121 MB）。把它解压到 `vendor/libmpv/` 后：
+### 前置依赖的下载地址
+
+| 依赖 | 从哪拿 |
+|---|---|
+| **libmpv**（本项目在用的这颗） | 发布页 <https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261016>，资产 [`mpv-dev-x86_64-20261016-git-a2cd83c56d.7z`](https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261016/mpv-dev-x86_64-20261016-git-a2cd83c56d.7z)（31,570,004 字节）；CPU 是 Haswell 及更新的话可以用同 tag 的 [`mpv-dev-x86_64-v3-….7z`](https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261016/mpv-dev-x86_64-v3-20261016-git-a2cd83c56d.7z)（32,818,105 字节）。要最新构建看 [releases/latest](https://github.com/shinchiro/mpv-winbuild-cmake/releases/latest) |
+| **Qt 6.11.2** | 官方安装器页 <https://www.qt.io/download-qt-installer>；归档目录 <https://download.qt.io/official_releases/qt/6.11/>（下有 6.11.0 / 6.11.1 / 6.11.2）；命令行安装用 `pip install aqtinstall` 之后 `aqt install-qt windows desktop 6.11.2 win64_msvc2022_64 -O D:\Program\Qt` |
+| **CMake** | <https://cmake.org/download/> |
+| **Ninja** | <https://github.com/ninja-build/ninja/releases> |
+| **Visual Studio 2022** | <https://visualstudio.microsoft.com/downloads/>，只勾"使用 C++ 的桌面开发"工作负载 |
+
+几点交代：
+
+- 上面每个链接都请求过一遍：Qt / CMake / VS 那几个直接 200；GitHub 的几个在这台机上**直连不通、走本地代理才 200**（`curl` 直连返回 000）。国内网络卡 GitHub 时同理，换个代理或镜像再下。
+- 本项目 `vendor/libmpv/libmpv-2.dll` 的版本串就是 `v0.41.0-1186-ga2cd83c56`，对应上面那个 20261016 的 tag；`vendor/libmpv-1015/` 留的是上一天 20261015 的同一资产，用来做前后对照。
+- 解压后把 `include/`、`libmpv-2.dll`、`libmpv-2.lib` 放到 `vendor/libmpv/`——这份构建只读这三样（`CMakeLists.txt` 里的 `target_include_directories`、`target_link_libraries` 和构建后拷贝各用其一），`vendor/libmpv/` 里其余文件它不碰。
+- `aqt` 那条是这台机当初装 Qt 用的方式（日志里是 aqtinstall 3.3.0）；这次**没有重跑它**，参数写法以 aqt 文档为准。
+
+`vendor/` 不入库（libmpv 的 DLL 121 MB）。补齐之后：
 
 ```bat
 call "D:\Program\VisualStudio\VC\Auxiliary\Build\vcvars64.bat"
