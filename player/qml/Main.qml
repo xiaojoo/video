@@ -1166,55 +1166,10 @@ Window {
     // there moves win.x/win.y under the cursor, and the cursor position is read back from
     // that origin, so the delta feeds itself - that is the violent flicker they showed.
     //
-    // Positions are rebuilt from the window's own screen origin, not from the item-local
-    // delta: the window moves under the grab, so a local delta would read zero on the very
-    // next event and the drag would stall.
+    // The grab is polled, not event-driven: see VideoHost::startDrag. 0 slides the whole
+    // window; a band passes its own bits (1 left, 2 right, 4 top, 8 bottom).
     readonly property int edgeGrab: 8
     readonly property int cornerGrab: 20
-    property point pressGlobal
-    property rect pressHost
-
-    function grabAt(item, m) {
-        return Qt.point(win.x + item.x + m.x, win.y + item.y + m.y);
-    }
-    function grabBegin(item, m) {
-        win.pressGlobal = win.grabAt(item, m);
-        win.pressHost = videoHost.rect;
-    }
-    // bits: 1 left, 2 right, 4 top, 8 bottom
-    function grabResize(item, edges, m) {
-        const d = Qt.point(win.grabAt(item, m).x - win.pressGlobal.x,
-                           win.grabAt(item, m).y - win.pressGlobal.y);
-        const r = win.pressHost;
-        let l = r.x, t = r.y, rt = r.x + r.width, b = r.y + r.height;
-        if (edges & 1)
-            l += d.x;
-        if (edges & 2)
-            rt += d.x;
-        if (edges & 4)
-            t += d.y;
-        if (edges & 8)
-            b += d.y;
-        if (rt - l < 400) {
-            if (edges & 1)
-                l = rt - 400;
-            else
-                rt = l + 400;
-        }
-        if (b - t < 225) {
-            if (edges & 4)
-                t = b - 225;
-            else
-                b = t + 225;
-        }
-        videoHost.setRect(l, t, rt - l, b - t);
-    }
-    function grabMove(item, m) {
-        const d = Qt.point(win.grabAt(item, m).x - win.pressGlobal.x,
-                           win.grabAt(item, m).y - win.pressGlobal.y);
-        videoHost.setRect(win.pressHost.x + d.x, win.pressHost.y + d.y,
-                          win.pressHost.width, win.pressHost.height);
-    }
 
     component Band: MouseArea {
         id: band
@@ -1224,8 +1179,8 @@ Window {
         // screen and the second is the shell's own size.
         enabled: !videoHost.fullscreen && !videoHost.zoomed
         hoverEnabled: true
-        onPressed: (m) => win.grabBegin(band, m)
-        onPositionChanged: { if (pressed) win.grabResize(band, edges, mouse); }
+        onPressed: videoHost.startDrag(edges)
+        onReleased: videoHost.endDrag()
     }
 
     // cursorShape is set at each use site: MouseArea applies it on enter and
@@ -1250,8 +1205,11 @@ Window {
         enabled: !videoHost.fullscreen && !videoHost.zoomed
         hoverEnabled: true
         cursorShape: Qt.SizeAllCursor
-        onPressed: (m) => win.grabBegin(topStrip, m)
-        onPositionChanged: (m) => { if (pressed) win.grabMove(topStrip, m); }
+        // Not QWindow::startSystemMove: measured on a real 1080p film, the shell's move
+        // loop starves our presentation path - the picture stops changing entirely while
+        // the window glides, and comes back in one jump on release.
+        onPressed: videoHost.startDrag(0)
+        onReleased: videoHost.endDrag()
     }
 
     Text {

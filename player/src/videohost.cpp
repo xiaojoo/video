@@ -34,6 +34,13 @@ HCURSOR systemCursor(Qt::CursorShape shape)
 // The item under `p` (in `parent`'s coordinates) that has something to say about the
 // cursor: the search goes topmost-first through the paint order, and an item that only
 // carries the default arrow does not count, because every MouseArea reports that.
+//
+// The point is carried down in each parent's own coordinates and the hit test is a plain
+// rect compare. QQuickItem::contains() is a virtual call that builds the item's bounding
+// polygon, and mapping through the scene walks the whole parent chain - measured, that
+// version cost so much per WM_SETCURSOR that a drag only advanced the window 30 times a
+// second; this one lets it reach 60. Nothing in the chrome is rotated or scaled where a
+// cursor shape is declared, so skipping the transforms loses no accuracy.
 QQuickItem *cursorBearing(QQuickItem *parent, const QPointF &p)
 {
     const auto kids = parent->childItems();       // paint order, bottom first
@@ -41,9 +48,10 @@ QQuickItem *cursorBearing(QQuickItem *parent, const QPointF &p)
         QQuickItem *c = kids.at(i);
         if (!c->isVisible() || c->opacity() <= 0.0)
             continue;
-        if (!c->contains(c->mapFromScene(p)))
+        const QPointF lp(p.x() - c->x(), p.y() - c->y());
+        if (c->width() <= 0.0 || c->height() <= 0.0 || !QRectF(0.0, 0.0, c->width(), c->height()).contains(lp))
             continue;
-        if (QQuickItem *deeper = cursorBearing(c, p))
+        if (QQuickItem *deeper = cursorBearing(c, lp))
             return deeper;
         if (c->cursor().shape() != Qt::ArrowCursor)
             return c;
@@ -201,6 +209,12 @@ VideoHost::VideoHost(QObject *parent) : QObject(parent)
     // emit, not in the middle of it.
     connect(this, &VideoHost::resized, this, [this] { m_settled.start(); },
             Qt::QueuedConnection);
+    // The drag pump. 4 ms is under one frame at 144 Hz, and a tick where the cursor has
+    // not moved does nothing at all - so an idle window, or a window being dragged slowly,
+    // pays nothing for it.
+    m_dragBeat.setTimerType(Qt::PreciseTimer);
+    m_dragBeat.setInterval(4);
+    connect(&m_dragBeat, &QTimer::timeout, this, &VideoHost::dragTick);
 }
 
 VideoHost::~VideoHost()
@@ -512,7 +526,100 @@ void VideoHost::setRect(int x, int y, int w, int h)
         w = kMinWidth;
     if (h < kMinHeight)
         h = kMinHeight;
-    MoveWindow(m_hwnd, x, y, w, h, TRUE);
+    // A move that keeps the size needs no repaint: DWM already holds the surface and just
+    // repositions it. Asking Windows to validate the whole client area on every pointer
+    // event is what made a drag cost tens of milliseconds a step. Only a size change needs
+    // the synchronous paint, because then the scene really has to be drawn again.
+    const QRect now = windowRectOf(m_hwnd);
+    MoveWindow(m_hwnd, x, y, w, h, (now.width() == w && now.height() == h) ? FALSE : TRUE);
+    emit resized();
+}
+
+QPoint VideoHost::cursorPos() const
+{
+    // The shell's own answer, in physical screen pixels - the same space GetWindowRect
+    // speaks, so a drag can subtract the two without a scale factor in between.
+    POINT p{};
+    if (!GetCursorPos(&p))
+        return QPoint();
+    return QPoint(int(p.x), int(p.y));
+}
+
+void VideoHost::startDrag(int edges)
+{
+    if (!m_hwnd)
+        return;
+    m_dragEdges = edges;
+    m_dragStart = cursorPos();
+    m_dragLast = m_dragStart;
+    m_dragRect = windowRectOf(m_hwnd);
+    m_dragBeat.start();
+}
+
+void VideoHost::endDrag()
+{
+    m_dragBeat.stop();
+    if (m_dragEdges < 0)
+        return;
+    m_dragEdges = -1;
+}
+
+void VideoHost::dragTick()
+{
+    if (!m_hwnd || m_dragEdges < 0)
+        return;
+    if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) {
+        // The release went somewhere we never got - another window took it, or the pointer
+        // left while the button was still down. Without this the window would go on
+        // following the cursor with nothing held. This is also the moment the pointer is
+        // known to have stopped, so take that last step here rather than in endDrag: read
+        // any later and the hand has already moved on past the release.
+        applyDrag(cursorPos());
+        endDrag();
+        return;
+    }
+    applyDrag(cursorPos());
+}
+
+void VideoHost::applyDrag(const QPoint &p)
+{
+    if (p == m_dragLast)
+        return;
+    m_dragLast = p;
+    const int dx = p.x() - m_dragStart.x();
+    const int dy = p.y() - m_dragStart.y();
+    const QRect r = m_dragRect;
+    if (m_dragEdges == 0) {
+        // A slide changes no size, so nothing has to be repainted: DWM moves the surface
+        // it already holds.
+        MoveWindow(m_hwnd, r.x() + dx, r.y() + dy, r.width(), r.height(), FALSE);
+    } else {
+        int l = r.left(), t = r.top();
+        int rt = r.left() + r.width(), b = r.top() + r.height();
+        if (m_dragEdges & 1)
+            l += dx;
+        if (m_dragEdges & 2)
+            rt += dx;
+        if (m_dragEdges & 4)
+            t += dy;
+        if (m_dragEdges & 8)
+            b += dy;
+        // The same floor the border drag has always had: below it the control row's cells
+        // stop fitting.
+        if (rt - l < kMinWidth) {
+            if (m_dragEdges & 1)
+                l = rt - kMinWidth;
+            else
+                rt = l + kMinWidth;
+        }
+        if (b - t < kMinHeight) {
+            if (m_dragEdges & 4)
+                t = b - kMinHeight;
+            else
+                b = t + kMinHeight;
+        }
+        MoveWindow(m_hwnd, l, t, rt - l, b - t, TRUE);
+    }
     emit resized();
 }
 

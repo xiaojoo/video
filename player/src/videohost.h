@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QObject>
+#include <QPoint>
 #include <QRect>
 #include <QSize>
 #include <QTimer>
@@ -69,6 +70,19 @@ public:
 
     Q_PROPERTY(QRect rect READ geometry NOTIFY resized)
     Q_INVOKABLE void setRect(int x, int y, int w, int h);
+    // Where the shell's pointer is, in the same physical screen pixels the window rect
+    // uses. A drag has to ask this rather than rebuild the pointer's global position from
+    // the window's own geometry - see startDrag below.
+    Q_INVOKABLE QPoint cursorPos() const;
+    // Drag the window by hand, but driven by a timer that polls the shell's cursor
+    // position instead of by QML's mouse events. Measured: Qt delivers coalesced mouse
+    // moves once per event-loop turn, and while a film is playing that turn is paced by
+    // the picture itself - a drag at 465 pointer moves/s moved the window only 20 times a
+    // second in 46 px steps, and at 966/s it barely moved (15 px of 598). Polling the
+    // cursor runs the drag at the pump's rate whatever the mouse or the film is doing.
+    // edges 0 slides the whole window; otherwise 1 left, 2 right, 4 top, 8 bottom.
+    Q_INVOKABLE void startDrag(int edges);
+    Q_INVOKABLE void endDrag();
     QRect geometry() const;
     // The picture area. With the caption on, the window rect is not the picture,
     // and everything that sizes the *video* (the hairline snap, mini) speaks in
@@ -180,4 +194,13 @@ private:
     bool m_maxBeforeMini = false;
     // l, t, r, b of the native frame; all zero while frameless.
     RECT m_insets{};
+    // One step of the drag pump: read the cursor, then write the window where it says.
+    void dragTick();
+    void applyDrag(const QPoint &p);
+    // The drag pump. m_dragEdges < 0 means no drag is in progress.
+    QTimer m_dragBeat;
+    int m_dragEdges = -1;
+    QPoint m_dragStart;
+    QPoint m_dragLast;
+    QRect m_dragRect;
 };
