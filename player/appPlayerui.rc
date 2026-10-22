@@ -1,0 +1,6 @@
+// The exe's own icon: what Explorer shows for the file, and what a pinned taskbar
+// shortcut keeps. Rasterised from icons/app.svg at 16/24/32/48/64/128/256; the live
+// window's icon is set in main.cpp from the same SVG.
+#include <windows.h>
+
+IDI_ICON1 ICON "icons\\app.ico"

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Film-strip frame: navy band with four sprocket holes on the left, a white body, and
+       a border that runs navy at the top-left into cyan at the bottom-right. Every number
+       is measured off the reference as a fraction of the 128x112 tile: band 0.287W, border
+       0.079W / 0.093H, holes x 0.057..0.161 and y 0.158/0.368/0.577/0.785 each 0.114H tall,
+       corner radius 0.088H, play mark from x 0.289 to the tip at 0.854, y 0.115..0.885. -->
+  <defs>
+    <linearGradient id="seam" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#002E7C"/>
+      <stop offset="0.60" stop-color="#002E7C"/>
+      <stop offset="0.72" stop-color="#05C6FF"/>
+      <stop offset="1" stop-color="#05C6FF"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect x="0" y="8" width="128" height="112" rx="10"/>
+    </clipPath>
+  </defs>
+  <rect x="0" y="8" width="128" height="112" rx="10" fill="#FFFFFF"/>
+  <!-- The ring goes under the band, not over it: drawn last, its left border ate 0.078W of
+       every sprocket hole (measured in the first render). -->
+  <rect x="5" y="13" width="118" height="102" rx="5" fill="none" stroke="url(#seam)" stroke-width="10"/>
+  <g clip-path="url(#tile)">
+    <path d="M0 8 H36.7 V110 L25.6 120 H0 Z" fill="#002E7C"/>
+    <g fill="#FFFFFF">
+      <rect x="7.3" y="25.7" width="13.3" height="12.8" rx="3.5"/>
+      <rect x="7.3" y="49.2" width="13.3" height="12.8" rx="3.5"/>
+      <rect x="7.3" y="72.6" width="13.3" height="12.8" rx="3.5"/>
+      <rect x="7.3" y="95.9" width="13.3" height="12.8" rx="3.5"/>
+    </g>
+  </g>
+  <!-- The mark is two triangles, not one outlined one: the reference's navy core is the
+       outer triangle scaled 0.5 about its centroid (measured: outer x 0.289..0.854, core
+       x 0.383..0.666 - a uniform stroke would have left the core 12 short of the tip, the
+       half-scale copy lands it to within 1%). Both are rounded with a round-join stroke of
+       their own paint, so the path is the shape inset by the corner radius. -->
+  <path d="M43 26.9 L103.3 64 L43 101.1 Z" fill="#05C6FF" stroke="#05C6FF" stroke-width="12"
+        stroke-linejoin="round"/>
+  <path d="M53.05 45.45 L83.15 64 L53.05 82.55 Z" fill="#002E7C" stroke="#002E7C" stroke-width="6"
+        stroke-linejoin="round"/>
+</svg>

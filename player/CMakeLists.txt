@@ -25,6 +25,15 @@ qt_add_executable(appPlayerui
     src/singleinstance.cpp
     src/thumbstrip.h
     src/thumbstrip.cpp
+    appPlayerui.rc
+)
+
+# The window icon, loaded in main.cpp as :/app/app.svg. The .ico that goes into the exe
+# is rasterised from this same file.
+qt_add_resources(appPlayerui "appicons"
+    PREFIX "/app"
+    BASE "icons"
+    FILES "icons/app.svg"
 )
 
 set(LIBMPV_DIR "${CMAKE_SOURCE_DIR}/../vendor/libmpv")

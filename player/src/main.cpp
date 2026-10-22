@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QImage>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -41,6 +42,9 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(u"Playerui"_qs);
     QGuiApplication::setOrganizationName(u"local"_qs);
+    // The taskbar and the alt-tab strip take this one. Explorer's file icon for the exe
+    // comes from appPlayerui.rc, and both are rasterised from icons/app.svg.
+    app.setWindowIcon(QIcon(u":/app/app.svg"_qs));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(u"player shell"_qs);
