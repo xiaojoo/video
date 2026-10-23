@@ -965,7 +965,9 @@ Window {
             // Mini is the narrowest layout there is, so it pins the tier rather than
             // competing with the width thresholds.
             miniTier: videoHost.mini ? 0 : -1
-            playing: !playerCore.paused
+            // Nothing loaded, mpv's `pause` is still false, so a bare `!paused`
+            // paints the pause glyph on an empty window.
+            playing: playerCore.hasMedia && !playerCore.paused
             volume: playerCore.volume
             rotateDeg: win.rotateSteps[win.rotateIdx]
             aspectLabel: win.aspectIdx === 0 ? "自动" : win.aspectSteps[win.aspectIdx]
