@@ -5,7 +5,7 @@
 #define MyAppName "Player"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "hxttxiao"
-#define MyAppExeName "appPlayerui.exe"
+#define MyAppExeName "Player.exe"
 #define RepoRoot "..\..\"
 #define StageDir "..\..\dist\Player-0.1.0-win64"
 

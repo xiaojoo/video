@@ -43,10 +43,10 @@ cmake --build player/build
 
 ```bat
 set PATH=D:\Program\Qt\6.11.2\msvc2022_64\bin;%PATH%
-player\build\appPlayerui.exe
+player\build\Player.exe
 
 rem 或者把 Qt 的 DLL 与 QML/插件一次性拷到 exe 旁边，之后双击即可
-D:\Program\Qt\6.11.2\msvc2022_64\bin\windeployqt.exe player\build\appPlayerui.exe
+D:\Program\Qt\6.11.2\msvc2022_64\bin\windeployqt.exe player\build\Player.exe
 ```
 
 ### 打成成品

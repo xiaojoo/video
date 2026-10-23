@@ -79,4 +79,6 @@ target_link_libraries(appPlayerui PRIVATE Qt6::Quick Qt6::Svg Qt6::QuickControls
 # Dev build: console subsystem so qml errors reach the terminal. Packaging
 # configures with -DSHIP_WIN32=ON so double-clicking does not open a console.
 option(SHIP_WIN32 "Build the windowed (no console) variant for packaging" OFF)
-set_target_properties(appPlayerui PROPERTIES WIN32_EXECUTABLE ${SHIP_WIN32})
+# The build target keeps its appPlayerui name (the QML module, the .rc and the
+# qmlcache files are all keyed on it); only the file on disk is Player.exe.
+set_target_properties(appPlayerui PROPERTIES WIN32_EXECUTABLE ${SHIP_WIN32} OUTPUT_NAME Player)
