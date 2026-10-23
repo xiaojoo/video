@@ -122,6 +122,11 @@ Item {
         // already in the database showed up as an empty grid.
         else if (library.lastScanMs === 0)
             library.scan();
+        // A film can have been watched and closed since the grid was last read, and
+        // that is the only thing that changes the "where you stopped" bar. One SELECT
+        // with a limit on entry, so the card does not wait for a scan.
+        else
+            libraryModel.reload();
     }
 
     FolderDialog {
@@ -214,6 +219,7 @@ Item {
             required property bool parsed
             required property string kind
             required property double duration
+            required property double pos
             required property string poster
             required property var mediaId
             // The rename is edited in place, on the card's own label - not in a dialog.
@@ -303,10 +309,33 @@ Item {
                     anchors.rightMargin: 6
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 4
-                    text: duration > 0 ? page.fmtDuration(duration) : ""
+                    text: duration > 0 ? page.fmtDuration(duration)
+                                        + (cell.pos > 0 ? " · " + Math.round(cell.pos / duration * 100) + "%" : "")
+                          : ""
                     color: Theme.textSecondary
                     font.pixelSize: page.height * 0.016
                     font.family: Theme.uiFont
+                }
+
+                // Where this one stopped, on the bottom edge of the still. Only a
+                // film that is partway through gets one: at 0 or at the end there is
+                // nothing to come back to, and a full-width bar would read as a
+                // second frame around the card.
+                Rectangle {
+                    visible: cell.pos > 0 && duration > 0
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 3
+                    color: Theme.track
+
+                    Rectangle {
+                        x: 0
+                        y: 0
+                        width: parent.width * Math.min(1, cell.pos / duration)
+                        height: parent.height
+                        color: Theme.accent
+                    }
                 }
             }
 

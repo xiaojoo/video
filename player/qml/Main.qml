@@ -16,7 +16,7 @@ Window {
     x: shellX
     y: shellY
     color: "#000000"
-    title: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Playerui"
+    title: playerCore.mediaTitle.length ? playerCore.mediaTitle : "Player"
     readonly property real vw: width
     readonly property real vh: height
     // The margin in from the window's left and right edges. Measured against the width
@@ -38,6 +38,11 @@ Window {
     // The header line's type size. He asked for "a bit bigger" than the bump box
     // without a number, so it is one stated factor off it: 1.25 x 11 = 13.75 px.
     readonly property real headerFont: caption.artSize * 1.25
+
+    // This run came back to a film and is holding on its breakpoint. The pill under
+    // the name is the way out of it, and it retires the moment anything starts
+    // playing - including the space bar, so a later pause cannot bring it back.
+    property bool resumeOffered: shellResumeAt >= 0
 
     function nearest(list, v) {
         for (let k = 0; k < list.length; ++k) {
@@ -814,8 +819,7 @@ Window {
                 width: titleCol.room
                 elide: Text.ElideRight
                 text: win.libraryTitle.length ? win.libraryTitle
-                      : (playerCore.mediaTitle.length ? playerCore.mediaTitle
-                                                      : "Oppenheimer (2023)")
+                      : (playerCore.mediaTitle.length ? playerCore.mediaTitle : "Player")
                 color: Theme.textPrimary
                 font.pixelSize: win.headerFont
                 font.family: Theme.uiFont
@@ -838,6 +842,40 @@ Window {
                 // too); otherwise this line ends up taller than the title above it.
                 font.pixelSize: win.headerFont * 0.85
                 font.family: Theme.uiFont
+            }
+
+            // Same plate and same hover as the three caption tiles, so this is not a
+            // fourth surface colour that has to be justified against them.
+            Rectangle {
+                id: resumePill
+                visible: win.resumeOffered && playerCore.paused
+                width: resumeLabel.width + 16
+                height: resumeLabel.height + 8
+                radius: 4
+                color: resumeHit.containsMouse ? Qt.rgba(1, 1, 1, 0.13) : "#B8131821"
+
+                Text {
+                    id: resumeLabel
+                    anchors.centerIn: parent
+                    text: "继续播放 · " + win.fmt(shellResumeAt)
+                          + " / " + win.fmt(playerCore.duration)
+                    color: Theme.textPrimary
+                    font.pixelSize: win.headerFont * 0.85
+                    font.family: Theme.uiFont
+                }
+
+                MouseArea {
+                    id: resumeHit
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: playerCore.togglePause()
+                }
+            }
+
+            Connections {
+                target: playerCore
+                function onPausedChanged() { if (!playerCore.paused) win.resumeOffered = false }
             }
         }
     }
@@ -885,7 +923,7 @@ Window {
             // gap to the buttons under it at any window size.
             height: shellHeight * 0.030
             y: Theme.barCenterRatio * shellHeight - height / 2 + (win.vh - shellHeight)
-            progress: playerCore.duration > 0 ? playerCore.position / playerCore.duration : 0.0431
+            progress: playerCore.duration > 0 ? playerCore.position / playerCore.duration : 0.0
             onScrubbed: (frac) => {
                 if (playerCore.duration > 0)
                     playerCore.seekTo(frac * playerCore.duration);

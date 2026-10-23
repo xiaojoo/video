@@ -4,7 +4,7 @@ import Playerui
 Item {
     id: bar
 
-    property real progress: 0.0431
+    property real progress: 0.0
     property real hoverPos: -1.0
     property bool hovering: false
     property bool scrubbing: false

@@ -49,6 +49,18 @@ rem 或者把 Qt 的 DLL 与 QML/插件一次性拷到 exe 旁边，之后双击
 D:\Program\Qt\6.11.2\msvc2022_64\bin\windeployqt.exe player\build\appPlayerui.exe
 ```
 
+### 打成成品
+
+发布那份构建要翻成 GUI 子系统（`-DSHIP_WIN32=ON`，双击不弹控制台）；开发构建照旧带控制台，qml 报错才落得到终端。
+
+```bat
+cmake -S player -B player/build-release -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+       -DSHIP_WIN32=ON -DCMAKE_PREFIX_PATH=D:\Program\Qt\6.11.2\msvc2022_64
+cmake --build player/build-release
+```
+
+把 exe 与 `libmpv-2.dll` 连同 README、LICENSE 放进 `dist\Player-<版本>\`，跑一次 `windeployqt --release --qmldir player\qml`，再补三颗 VC 运行库 DLL，然后用 Inno Setup 编 `player\packaging\playerui.iss` 就出 `Player-Setup-<版本>.exe`。装到 `%LOCALAPPDATA%\Programs\Player`，per-user，不要管理员。
+
 ## 命令行开关
 
 主要给量具和"指哪播哪"用，日常双击启动不需要任何参数。
@@ -77,6 +89,7 @@ D:\Program\Qt\6.11.2\msvc2022_64\bin\windeployqt.exe player\build\appPlayerui.ex
 - **画面**：倍速 8 档（0.5 / 0.75 / 1 / 1.25 / 1.5 / 1.75 / 2 / 3）、画面比例 5 档（自动 / 16:9 / 4:3 / 2.35:1 / 2.40:1）、旋转 4 档（0° / 90° / 180° / 270°）
 - **窗口**：全屏、置顶小窗（mini）、最大化/还原、四条边和右下角的自绘抓取带、自绘标题栏三颗按钮
 - **媒体库**：按根目录扫描入库、时长回填、缩略图、重命名、隐藏
+- **续播**：跑动中每 5 秒和关闭时记下看到哪，下次启动自动打开那部并停在断点，播放页标题下给一条"继续播放 · 12:34 / 40:00"；媒体库卡片底边画同一条进度并在角标上带百分比；播到片尾就把记录清掉，下次从头
 - **我的播单**：从媒体库或磁盘加入、排序、改名、删除、播完自动接下一条、片尾再点播放从头播
 - **右键菜单**：与控制条同源（菜单项直接从控制条的分档顺序生成，所以不会出现"菜单里有、控制条这档没有"的命令）
 - **蓝光**：读 `BDMV/PLAYLIST` 的 `.mpls` 配上 `BDMV/STREAM` 的 `.m2ts`，挑出主片段再交给 mpv
@@ -118,6 +131,8 @@ vendor/        libmpv（不入库）
 - **Qt 6**：开源版按 Qt 官方许可（LGPL v3 / GPL v2 / GPL v3），见 Qt 安装目录的 `Licenses/`
 - **mpv / libmpv**：上游 `mpv/Copyright` 写明整体默认 GPLv2+，只有在构建时不含 GPL-only 文件才是 LGPLv2.1+；本项目链接的是 `vendor/libmpv/` 里那颗预编译 DLL，其许可以其上游发布物为准（静态进去的 FFmpeg 等组件同理）
 - **SQLite**：公有领域
+- **Inno Setup**：只用于编安装包（`player/packaging/playerui.iss`），其运行时随安装程序分发，按 Inno Setup 自己的许可（版权声明保留在生成的 setup 里）
+- **简体中文向导文案**：`player/packaging/lang/ChineseSimplified.isl` 是社区翻译，MIT 许可，作者与条款见同目录 `LICENSE-ChineseSimplified.txt`
 
 ## 声明
 

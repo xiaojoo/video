@@ -59,6 +59,11 @@ void Library::ensureSchema()
         "CREATE TABLE IF NOT EXISTS playlist_items("
         " id INTEGER PRIMARY KEY, playlist_id INTEGER, path TEXT, ord INTEGER,"
         " UNIQUE(playlist_id, path))",
+        // Where the user stopped each file. Its own table, not a column on files:
+        // the walk rewrites those rows on every scan, and a path opened from disk
+        // without ever being scanned in still has to come back to its minute.
+        "CREATE TABLE IF NOT EXISTS resume("
+        " path TEXT PRIMARY KEY, pos REAL, dur REAL, upd INTEGER)",
     };
     for (const char *sql : ddl) {
         QSqlQuery q(m_db);
@@ -722,7 +727,9 @@ QList<MediaRow> Library::rows(int limit) const
     q.prepare(u"SELECT m.id, m.kind, m.title, m.year, m.parsed, m.poster, "
               "       (SELECT f.path FROM files f WHERE f.media_id=m.id LIMIT 1), "
               "       (SELECT f.size FROM files f WHERE f.media_id=m.id LIMIT 1), "
-              "       (SELECT f.duration FROM files f WHERE f.media_id=m.id LIMIT 1) "
+              "       (SELECT f.duration FROM files f WHERE f.media_id=m.id LIMIT 1), "
+              "       (SELECT rs.pos FROM files f3 JOIN resume rs ON rs.path = f3.path "
+              "         WHERE f3.media_id=m.id LIMIT 1) "
               "FROM media m WHERE COALESCE(m.hidden, 0) = 0 "
               "ORDER BY m.title COLLATE NOCASE LIMIT ?"_qs);
     q.addBindValue(limit);
@@ -738,6 +745,7 @@ QList<MediaRow> Library::rows(int limit) const
         r.path = q.value(6).toString();
         r.size = q.value(7).toLongLong();
         r.duration = q.value(8).toDouble();
+        r.pos = q.value(9).toDouble();
         out << r;
     }
     return out;
@@ -787,6 +795,45 @@ void Library::noteDuration(const QString &path, double seconds)
         qWarning("noteDuration failed: %s", qPrintable(q.lastError().text()));
     else if (q.numRowsAffected() > 0)
         emit rowChanged();
+}
+
+void Library::saveProgress(const QString &path, double pos, double dur)
+{
+    if (path.isEmpty() || dur <= 0.0 || pos <= 0.0)
+        return;
+    QSqlQuery q(m_db);
+    // The last minute of a film is not a place to come back to: the row goes away
+    // instead of sitting at 99.7%, which would put a bar on the card that is a lie
+    // about where the user stopped.
+    if (pos >= dur - 1.0) {
+        q.prepare(u"DELETE FROM resume WHERE path = ?"_qs);
+        q.addBindValue(path);
+        if (!q.exec())
+            qWarning("saveProgress clear failed: %s", qPrintable(q.lastError().text()));
+        return;
+    }
+    q.prepare(u"INSERT INTO resume(path, pos, dur, upd) VALUES(?, ?, ?, ?) "
+              "ON CONFLICT(path) DO UPDATE SET pos = excluded.pos, "
+              "dur = excluded.dur, upd = excluded.upd"_qs);
+    q.addBindValue(path);
+    q.addBindValue(pos);
+    q.addBindValue(dur);
+    q.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    if (!q.exec())
+        qWarning("saveProgress failed: %s", qPrintable(q.lastError().text()));
+}
+
+QVariantMap Library::lastPlayed() const
+{
+    QVariantMap out;
+    QSqlQuery q(m_db);
+    if (!q.exec(u"SELECT path, pos, dur FROM resume ORDER BY upd DESC LIMIT 1"_qs)
+        || !q.next())
+        return out;
+    out.insert(u"path"_qs, q.value(0).toString());
+    out.insert(u"pos"_qs, q.value(1).toDouble());
+    out.insert(u"dur"_qs, q.value(2).toDouble());
+    return out;
 }
 
 QStringList Library::pathsNeedingCover(int limit)
@@ -881,6 +928,7 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
     case DurationRole: return r.duration;
     case ParsedRole: return r.parsed;
     case PosterRole: return r.poster;
+    case PosRole: return r.pos;
     case IdRole: return QVariant::fromValue(r.id);
     }
     return {};
@@ -896,6 +944,7 @@ QHash<int, QByteArray> LibraryModel::roleNames() const
         { DurationRole, "duration" },
         { ParsedRole, "parsed" },
         { PosterRole, "poster" },
+        { PosRole, "pos" },
         { IdRole, "mediaId" },
     };
 }

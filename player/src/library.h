@@ -21,6 +21,8 @@ struct MediaRow {
     double duration = 0.0;
     bool parsed = false;
     QString poster;
+    // Where the user stopped this file, from the resume table. 0 when never played.
+    double pos = 0.0;
 };
 
 // Owns the SQLite catalogue and the directory walk. Deliberately offline: the
@@ -62,6 +64,13 @@ public:
     // A disc folder has no cheap header duration, so the catalogue learns it the
     // first time the disc is actually opened.
     Q_INVOKABLE void noteDuration(const QString &path, double seconds);
+
+    // Where the user stopped a file. Keyed by path rather than by the media row, so a
+    // film opened straight from disk - never scanned in - still comes back.
+    Q_INVOKABLE void saveProgress(const QString &path, double pos, double dur);
+    // The most recently stopped file as {path, pos, dur}, or empty when nothing has
+    // ever been played.
+    Q_INVOKABLE QVariantMap lastPlayed() const;
 
     // Video rows whose card still has no picture yet. Audio is left out: a track's
     // cover is its album art, which belongs to the music library.
@@ -163,6 +172,7 @@ public:
         DurationRole,
         ParsedRole,
         PosterRole,
+        PosRole,
         // The card menu acts on a row by its media id, not by its position: a
         // hidden card changes the numbering under the grid.
         IdRole,

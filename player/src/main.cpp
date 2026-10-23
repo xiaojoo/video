@@ -215,6 +215,52 @@ int main(int argc, char *argv[])
     // The film name goes into the system caption through Window.title in Main.qml -
     // there is only one window now, so Qt is the only writer.
 
+    // What to open on this run: the command line first, then wherever the user
+    // stopped last time. Resolved before the engine so QML can be told the number
+    // and draw the "continue" affordance from it.
+    QString startPath = parser.value(open);
+    double resumeAt = -1.0;
+    if (startPath.isEmpty() && parser.value(mode) == u"player"_qs) {
+        const QVariantMap last = library.lastPlayed();
+        const QString lp = last.value(u"path"_qs).toString();
+        if (!lp.isEmpty() && QFileInfo::exists(lp)) {
+            startPath = lp;
+            resumeAt = last.value(u"pos"_qs).toDouble();
+        }
+    }
+
+    // Where the user stopped, written per file: every 5 s while a film is running,
+    // again when it ends, and once on the way out. mpv reports a new position some
+    // 150 times a second, so this rides a timer that reads the current value rather
+    // than the change signal.
+    auto resumeKey = [&player] {
+        // PlayerCore already normalises what it was given, but a path typed with
+        // backslashes and the catalogue's forward-slash form are two different
+        // strings to SQLite, so the file system decides the shape. A disc (bd://)
+        // is not a file and has no row to come back to.
+        const QString p = player.mediaUrl();
+        return QFileInfo::exists(p) ? QFileInfo(p).absoluteFilePath() : QString();
+    };
+    auto writeProgress = [&player, &library, resumeKey] {
+        if (!player.hasMedia() || player.duration() <= 0.0)
+            return;
+        const QString p = resumeKey();
+        if (!p.isEmpty())
+            library.saveProgress(p, player.position(), player.duration());
+    };
+    QTimer progressTimer;
+    progressTimer.setInterval(5000);
+    QObject::connect(&progressTimer, &QTimer::timeout, &player, writeProgress);
+    progressTimer.start();
+    QObject::connect(&app, &QGuiApplication::aboutToQuit, &player, writeProgress);
+    // A film that ran to its last frame has nothing left to come back to: the row
+    // goes away rather than sitting one second short of the end.
+    QObject::connect(&player, &PlayerCore::endOfFile, &library, [&player, &library, resumeKey] {
+        const QString p = resumeKey();
+        if (!p.isEmpty() && player.duration() > 0.0)
+            library.saveProgress(p, player.duration(), player.duration());
+    });
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(u"playerCore"_qs, &player);
     engine.rootContext()->setContextProperty(u"videoHost"_qs, &host);
@@ -228,6 +274,9 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"shellKeepUi"_qs,
         qEnvironmentVariableIsSet("PLAYERUI_KEEPUI"));
     engine.rootContext()->setContextProperty(u"shellDiag"_qs, parser.isSet(diag));
+    // >= 0 means: this run came back to a film rather than being asked for one, and
+    // it is sitting at that second waiting for the user to say go.
+    engine.rootContext()->setContextProperty(u"shellResumeAt"_qs, resumeAt);
     engine.rootContext()->setContextProperty(u"shellWidth"_qs, w);
     engine.rootContext()->setContextProperty(u"shellHeight"_qs, h);
     engine.rootContext()->setContextProperty(u"shellX"_qs, atX);
@@ -283,14 +332,18 @@ int main(int argc, char *argv[])
     qInfo("HWND %lld", (qint64)(intptr_t)win->winId());
     win->requestActivate();
 
-    if (!parser.value(open).isEmpty()) {
-        if (parser.isSet(start))
+    if (!startPath.isEmpty()) {
+        if (resumeAt > 0.0)
+            player.setStartAt(resumeAt);
+        else if (parser.isSet(start))
             player.setStartAt(parser.value(start).toDouble());
         // Queued inside PlayerCore until VideoItem reports its render context.
-        player.load(QUrl::fromLocalFile(QFileInfo(parser.value(open)).absoluteFilePath()).toString());
+        player.load(QUrl::fromLocalFile(QFileInfo(startPath).absoluteFilePath()).toString());
         // Set after the request: the core honours it as the file comes up, so the
-        // frame under the chrome is the same one every time it is measured.
-        if (parser.isSet(paused))
+        // frame under the chrome is the same one every time it is measured. A resumed
+        // film waits on its breakpoint for the same reason the measuring path waits
+        // on its first frame.
+        if (resumeAt > 0.0 || parser.isSet(paused))
             player.setPropertyString("pause", "yes");
     }
 
