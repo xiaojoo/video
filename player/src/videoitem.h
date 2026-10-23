@@ -59,6 +59,11 @@ public:
     // Used for the resume cover: the ~300 ms a film takes to open would otherwise
     // show as a black window.
     Q_INVOKABLE void requestSnapshot(const QString &file);
+    // Hold the startup cover until the film's own picture is in the texture. Counting
+    // render passes is not enough: measured on the 2160p film, the cover came off at
+    // 320 ms and the first real frame landed at ~650 ms, so the black came back in the
+    // middle. This samples a box in the middle of the frame once per pass.
+    Q_INVOKABLE void watchForPicture();
 
 signals:
     void coreChanged();
@@ -74,11 +79,9 @@ signals:
     void presented(int w, int h, int n);
     // Out of the render thread once the copy behind requestSnapshot() is on disk.
     void snapshotSaved(const QString &file, bool ok);
-    // How many frames mpv itself has pushed into the texture since the context was
-    // built. The startup cover waits for the second one: presented() counts passes of
-    // whatever is in the texture, including the empty one before the film decodes, and
-    // uncovering on that showed a black frame at ~200 ms on the installed build.
-    void filmFrame(int n);
+    // The sampled box has held a real picture on two passes in a row: the startup
+    // cover can come off now.
+    void pictureSeen();
 
 protected:
     void componentComplete() override;
@@ -92,6 +95,7 @@ private:
     void renderFrame();
     void ensureTexture(int w, int h);
     void takeSnapshot();        // render thread
+    void probePicture();        // render thread
     static void onUpdate(void *ctx);
 
     PlayerCore *m_core = nullptr;
@@ -138,5 +142,10 @@ private:
     QString m_snapFile;
     ID3D11Texture2D *m_stage = nullptr;
     int m_stageW = 0, m_stageH = 0;
-    int m_mpFrames = 0;         // frames mpv pushed, counted on the render thread
+    // The picture probe: a small CPU-readable box off the middle of the frame, plus
+    // how many passes in a row have looked non-empty.
+    QAtomicInteger<bool> m_probeWanted { false };
+    ID3D11Texture2D *m_probe = nullptr;
+    int m_probeW = 0, m_probeH = 0;
+    int m_probeOk = 0;
 };

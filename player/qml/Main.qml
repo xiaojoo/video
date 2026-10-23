@@ -39,12 +39,8 @@ Window {
     // without a number, so it is one stated factor off it: 1.25 x 11 = 13.75 px.
     readonly property real headerFont: caption.artSize * 1.25
 
-    // This run came back to a film and is holding on its breakpoint. The pill under
-    // the name is the way out of it, and it retires the moment anything starts
-    // playing - including the space bar, so a later pause cannot bring it back.
-    property bool resumeOffered: shellResumeAt >= 0
-    // True from the moment the window opens until the film's own second frame has
-    // gone over; while it holds, the resume still covers the picture area.
+    // True from the moment the window opens until the film's own picture reaches the
+    // texture; while it holds, the resume still covers the picture area.
     property bool coverOn: shellResumeShot.toString().length > 0
     // A slide or an edge-drag in progress. The drag waits behind whichever render pass
     // is running, and a resume cover costs 6-8 ms of that pass, so the cover is not
@@ -408,9 +404,8 @@ Window {
         // size other than the one before the geometry write, so the freeze is only as
         // long as the surface re-allocation and the compositor catching up with it.
         onPresented: (w, h, n) => videoHost.notePresented(w, h, n)
-        // The film's own second frame is on screen: uncover then, not on the second
-        // pass of the render loop.
-        onFilmFrame: (n) => { if (n >= 2) win.coverOn = false }
+        // The film's own picture is in the texture: uncover now, not on a frame count.
+        onPictureSeen: win.coverOn = false
     }
 
     // The first ~320 ms of a resumed film: the window is up and the picture area is
@@ -428,6 +423,20 @@ Window {
         source: shellResumeShot
         cache: false
         onStatusChanged: if (status === Image.Error) win.coverOn = false
+        Component.onCompleted: {
+            if (!win.coverOn)
+                return
+            video.watchForPicture()
+            coverCap.start()
+        }
+    }
+
+    // A file that never shows a picture (broken, or a codec this build cannot open)
+    // must not leave the cover up forever: after this the window is handed back.
+    Timer {
+        id: coverCap
+        interval: 3000
+        onTriggered: win.coverOn = false
     }
 
     // One copy of the current frame every second while the film is running. The copy
@@ -464,6 +473,14 @@ Window {
             if (playerCore.duration > 0 && playerCore.mediaUrl.length > 0)
                 library.saveProgress(playerCore.mediaUrl, playerCore.duration,
                                      playerCore.duration, "")
+        }
+        // A film held at a breakpoint never runs the tick (it only runs while playing),
+        // so the cover would be whatever was current a second before he paused. Take
+        // one on the pause itself: that frame is what the next launch shows.
+        function onPausedChanged() {
+            if (playerCore.paused && playerCore.hasMedia && playerCore.duration > 0
+                && playerCore.mediaUrl.length > 0)
+                video.requestSnapshot(library.resumeShotPath(playerCore.mediaUrl))
         }
     }
 
@@ -915,40 +932,6 @@ Window {
                 // too); otherwise this line ends up taller than the title above it.
                 font.pixelSize: win.headerFont * 0.85
                 font.family: Theme.uiFont
-            }
-
-            // Same plate and same hover as the three caption tiles, so this is not a
-            // fourth surface colour that has to be justified against them.
-            Rectangle {
-                id: resumePill
-                visible: win.resumeOffered && playerCore.paused
-                width: resumeLabel.width + 16
-                height: resumeLabel.height + 8
-                radius: 4
-                color: resumeHit.containsMouse ? Qt.rgba(1, 1, 1, 0.13) : "#B8131821"
-
-                Text {
-                    id: resumeLabel
-                    anchors.centerIn: parent
-                    text: "继续播放 · " + win.fmt(shellResumeAt)
-                          + " / " + win.fmt(playerCore.duration)
-                    color: Theme.textPrimary
-                    font.pixelSize: win.headerFont * 0.85
-                    font.family: Theme.uiFont
-                }
-
-                MouseArea {
-                    id: resumeHit
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: playerCore.togglePause()
-                }
-            }
-
-            Connections {
-                target: playerCore
-                function onPausedChanged() { if (!playerCore.paused) win.resumeOffered = false }
             }
         }
     }

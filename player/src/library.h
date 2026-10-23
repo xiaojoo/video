@@ -76,6 +76,8 @@ public:
     // Where the resume cover for this file lives: beside the catalogue, named after
     // the path the same way the cover stills are.
     Q_INVOKABLE QString resumeShotPath(const QString &path) const;
+    // Resolve what the `shot` column holds into an existing file, or an empty string.
+    QString resumeShotRead(const QString &stored) const;
 
     // Video rows whose card still has no picture yet. Audio is left out: a track's
     // cover is its album art, which belongs to the music library.

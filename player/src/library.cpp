@@ -834,7 +834,7 @@ void Library::saveProgress(const QString &path, double pos, double dur, const QS
         q.prepare(u"SELECT shot FROM resume WHERE path = ?"_qs);
         q.addBindValue(key);
         if (q.exec() && q.next()) {
-            const QString old = q.value(0).toString();
+            const QString old = resumeShotRead(q.value(0).toString());
             if (!old.isEmpty())
                 QFile::remove(old);
         }
@@ -852,8 +852,9 @@ void Library::saveProgress(const QString &path, double pos, double dur, const QS
     q.addBindValue(dur);
     q.addBindValue(QDateTime::currentMSecsSinceEpoch());
     // A row may only point at a still that is actually there: the copy is written by
-    // the render thread, and a close can beat it.
-    q.addBindValue(QFileInfo::exists(shot) ? shot : QString());
+    // the render thread, and a close can beat it. Only the name is stored - see
+    // resumeShotRead().
+    q.addBindValue(QFileInfo::exists(shot) ? QFileInfo(shot).fileName() : QString());
     if (!q.exec())
         qWarning("saveProgress failed: %s", qPrintable(q.lastError().text()));
 }
@@ -869,7 +870,7 @@ QVariantMap Library::lastPlayed() const
     out.insert(u"path"_qs, q.value(0).toString());
     out.insert(u"pos"_qs, q.value(1).toDouble());
     out.insert(u"dur"_qs, q.value(2).toDouble());
-    out.insert(u"shot"_qs, q.value(3).toString());
+    out.insert(u"shot"_qs, resumeShotRead(q.value(3).toString()));
     return out;
 }
 
@@ -880,6 +881,19 @@ QString Library::resumeShotPath(const QString &path) const
     const QByteArray h = QCryptographicHash::hash(key.toUtf8(),
                                                   QCryptographicHash::Md5).toHex().left(16);
     return m_dir + u"/resume/"_qs + QString::fromLatin1(h) + u".jpg"_qs;
+}
+
+QString Library::resumeShotRead(const QString &stored) const
+{
+    // Rows written before this stored a full path; new rows keep just the name, so
+    // moving or copying the catalogue takes its covers along instead of turning them
+    // into "the file does not exist, drop the cover".
+    if (stored.isEmpty())
+        return QString();
+    if (stored.contains(QLatin1Char('/')) || stored.contains(QLatin1Char('\\')))
+        return QFileInfo::exists(stored) ? stored : QString();
+    const QString p = m_dir + u"/resume/"_qs + stored;
+    return QFileInfo::exists(p) ? p : QString();
 }
 
 QStringList Library::pathsNeedingCover(int limit)

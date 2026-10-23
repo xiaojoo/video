@@ -269,14 +269,89 @@ void VideoItem::renderFrame()
         { MPV_RENDER_PARAM_INVALID, nullptr },
     };
     mpv_render_context_render(m_rc, p);
-    // Getting here means mpv had a new frame for us: the update callback is what sets
-    // the pending flag. Capped at three so this is not 60 signals a second.
-    if (++m_mpFrames <= 3)
-        emit filmFrame(m_mpFrames);
+    if (m_probeWanted.loadAcquire())
+        probePicture();
     // The copy is taken off the frame we just drew, so what lands on disk is the
     // frame that is about to be on screen.
     if (m_snapWanted.testAndSetOrdered(true, false))
         takeSnapshot();
+}
+
+void VideoItem::watchForPicture()
+{
+    m_probeOk = 0;
+    m_probeWanted.storeRelease(true);
+}
+
+void VideoItem::probePicture()
+{
+    const int bw = qMin(256, m_texW), bh = qMin(144, m_texH);
+    if (bw <= 0 || bh <= 0 || !m_dev || !m_ctx) {
+        // No texture yet: that is the normal state on the first passes after the
+        // window is created, and uncovering here is what made the cover vanish at
+        // once. Keep waiting; the QML-side cap is what hands the screen back if the
+        // picture never comes.
+        return;
+    }
+    if (!m_probe || m_probeW != bw || m_probeH != bh) {
+        if (m_probe) {
+            m_probe->Release();
+            m_probe = nullptr;
+        }
+        D3D11_TEXTURE2D_DESC d {};
+        d.Width = UINT(bw);
+        d.Height = UINT(bh);
+        d.MipLevels = 1;
+        d.ArraySize = 1;
+        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_STAGING;
+        d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(m_dev->CreateTexture2D(&d, nullptr, &m_probe))) {
+            // No probe: let the cover go rather than hold it forever.
+            m_probe = nullptr;
+            m_probeW = m_probeH = 0;
+            m_probeWanted.storeRelease(false);
+            emit pictureSeen();
+            return;
+        }
+        m_probeW = bw;
+        m_probeH = bh;
+    }
+    D3D11_BOX box {};
+    box.left = UINT((m_texW - bw) / 2);
+    box.top = UINT((m_texH - bh) / 2);
+    box.front = 0;
+    box.right = box.left + UINT(bw);
+    box.bottom = box.top + UINT(bh);
+    box.back = 1;
+    m_ctx->CopySubresourceRegion(m_probe, 0, 0, 0, 0, m_tex, 0, &box);
+    D3D11_MAPPED_SUBRESOURCE mp {};
+    if (FAILED(m_ctx->Map(m_probe, 0, D3D11_MAP_READ, 0, &mp))) {
+        m_ctx->Unmap(m_probe, 0);
+        return;
+    }
+    int peak = 0;
+    const auto *src = static_cast<const uchar *>(mp.pData);
+    for (int y = 0; y < bh && peak <= 12; ++y) {
+        const uchar *row = src + size_t(y) * mp.RowPitch;
+        for (int x = 0; x < bw; x += 4) {
+            const int v = (row[size_t(x) * 4] + row[size_t(x) * 4 + 1]
+                           + row[size_t(x) * 4 + 2]) / 3;
+            if (v > peak)
+                peak = v;
+        }
+    }
+    m_ctx->Unmap(m_probe, 0);
+    // Two passes in a row, so a single stray bright pixel cannot uncover onto black.
+    if (peak > 12) {
+        if (++m_probeOk >= 2) {
+            m_probeWanted.storeRelease(false);
+            emit pictureSeen();
+        }
+    } else {
+        m_probeOk = 0;
+    }
 }
 
 void VideoItem::requestSnapshot(const QString &file)
@@ -465,6 +540,11 @@ void VideoItem::releaseContext()
         m_stage = nullptr;
     }
     m_stageW = m_stageH = 0;
+    if (m_probe) {
+        m_probe->Release();
+        m_probe = nullptr;
+    }
+    m_probeW = m_probeH = 0;
     m_ctxTried = false;
     // Nothing cached may outlive the RHI it came from.
     m_rhi = nullptr;
