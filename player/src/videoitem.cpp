@@ -8,9 +8,11 @@
 #include <QtQuick/qsgtexture_platform.h>
 
 #include <QDebug>
+#include <QImage>
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
@@ -267,6 +269,71 @@ void VideoItem::renderFrame()
         { MPV_RENDER_PARAM_INVALID, nullptr },
     };
     mpv_render_context_render(m_rc, p);
+    // Getting here means mpv had a new frame for us: the update callback is what sets
+    // the pending flag. Capped at three so this is not 60 signals a second.
+    if (++m_mpFrames <= 3)
+        emit filmFrame(m_mpFrames);
+    // The copy is taken off the frame we just drew, so what lands on disk is the
+    // frame that is about to be on screen.
+    if (m_snapWanted.testAndSetOrdered(true, false))
+        takeSnapshot();
+}
+
+void VideoItem::requestSnapshot(const QString &file)
+{
+    m_snapFile = file;
+    m_snapWanted.storeRelease(true);
+}
+
+// Render thread. The picture texture is default-usage (GPU only), so the copy goes
+// through a CPU-readable staging texture of the same size, reused across calls.
+void VideoItem::takeSnapshot()
+{
+    const QString file = m_snapFile;
+    if (!m_tex || !m_dev || !m_ctx || m_texW <= 0 || m_texH <= 0) {
+        emit snapshotSaved(file, false);
+        return;
+    }
+    if (!m_stage || m_stageW != m_texW || m_stageH != m_texH) {
+        if (m_stage) {
+            m_stage->Release();
+            m_stage = nullptr;
+        }
+        D3D11_TEXTURE2D_DESC d {};
+        d.Width = UINT(m_texW);
+        d.Height = UINT(m_texH);
+        d.MipLevels = 1;
+        d.ArraySize = 1;
+        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_STAGING;
+        d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(m_dev->CreateTexture2D(&d, nullptr, &m_stage))) {
+            m_stage = nullptr;
+            emit snapshotSaved(file, false);
+            return;
+        }
+        m_stageW = m_texW;
+        m_stageH = m_texH;
+    }
+    m_ctx->CopyResource(m_stage, m_tex);
+    D3D11_MAPPED_SUBRESOURCE mp {};
+    if (FAILED(m_ctx->Map(m_stage, 0, D3D11_MAP_READ, 0, &mp))) {
+        m_ctx->Unmap(m_stage, 0);
+        emit snapshotSaved(file, false);
+        return;
+    }
+    QImage img(m_texW, m_texH, QImage::Format_RGBA8888);
+    const auto *src = static_cast<const uchar *>(mp.pData);
+    for (int y = 0; y < m_texH; ++y)
+        memcpy(img.scanLine(y), src + size_t(y) * mp.RowPitch, size_t(m_texW) * 4);
+    m_ctx->Unmap(m_stage, 0);
+    QElapsedTimer cost;
+    cost.start();
+    const bool ok = img.save(file, "JPG", 82);
+    qInfo("SHOT %dx%d copy+encode %lld ms -> %s", m_texW, m_texH, cost.elapsed(),
+          ok ? qPrintable(file) : "FAILED");
+    emit snapshotSaved(file, ok);
 }
 
 QSGNode *VideoItem::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
@@ -392,6 +459,12 @@ void VideoItem::releaseContext()
         m_tex = nullptr;
     }
     m_texW = m_texH = 0;
+    // The staging copy belongs to the same device as the picture texture.
+    if (m_stage) {
+        m_stage->Release();
+        m_stage = nullptr;
+    }
+    m_stageW = m_stageH = 0;
     m_ctxTried = false;
     // Nothing cached may outlive the RHI it came from.
     m_rhi = nullptr;

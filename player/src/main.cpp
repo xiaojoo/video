@@ -54,6 +54,9 @@ int main(int argc, char *argv[])
     parser.setApplicationDescription(u"player shell"_qs);
     parser.addHelpOption();
     QCommandLineOption shot(u"shot"_qs, u"grab the chrome to FILE then exit"_qs, u"file"_qs);
+    QCommandLineOption shotAt(u"shot-at"_qs, u"grab N milliseconds after the window is up "
+                                          u"(for the startup frames: who is painted first)"_qs,
+                              u"ms"_qs);
     QCommandLineOption size(u"size"_qs, u"WxH"_qs, u"wh"_qs, u"1282x723"_qs);
     QCommandLineOption at(u"at"_qs, u"screen X,Y of the video window (default: centred on "
                                   u"the work area)"_qs, u"xy"_qs, u""_qs);
@@ -71,6 +74,7 @@ int main(int argc, char *argv[])
     QCommandLineOption durOf(u"duration-of"_qs, u"print the container duration of FILE and exit"_qs,
                              u"path"_qs);
     parser.addOption(shot);
+    parser.addOption(shotAt);
     parser.addOption(size);
     parser.addOption(at);
     parser.addOption(bg);
@@ -220,46 +224,20 @@ int main(int argc, char *argv[])
     // and draw the "continue" affordance from it.
     QString startPath = parser.value(open);
     double resumeAt = -1.0;
+    QString resumeShot;
     if (startPath.isEmpty() && parser.value(mode) == u"player"_qs) {
         const QVariantMap last = library.lastPlayed();
         const QString lp = last.value(u"path"_qs).toString();
         if (!lp.isEmpty() && QFileInfo::exists(lp)) {
             startPath = lp;
             resumeAt = last.value(u"pos"_qs).toDouble();
+            resumeShot = last.value(u"shot"_qs).toString();
         }
     }
 
-    // Where the user stopped, written per file: every 5 s while a film is running,
-    // again when it ends, and once on the way out. mpv reports a new position some
-    // 150 times a second, so this rides a timer that reads the current value rather
-    // than the change signal.
-    auto resumeKey = [&player] {
-        // PlayerCore already normalises what it was given, but a path typed with
-        // backslashes and the catalogue's forward-slash form are two different
-        // strings to SQLite, so the file system decides the shape. A disc (bd://)
-        // is not a file and has no row to come back to.
-        const QString p = player.mediaUrl();
-        return QFileInfo::exists(p) ? QFileInfo(p).absoluteFilePath() : QString();
-    };
-    auto writeProgress = [&player, &library, resumeKey] {
-        if (!player.hasMedia() || player.duration() <= 0.0)
-            return;
-        const QString p = resumeKey();
-        if (!p.isEmpty())
-            library.saveProgress(p, player.position(), player.duration());
-    };
-    QTimer progressTimer;
-    progressTimer.setInterval(5000);
-    QObject::connect(&progressTimer, &QTimer::timeout, &player, writeProgress);
-    progressTimer.start();
-    QObject::connect(&app, &QGuiApplication::aboutToQuit, &player, writeProgress);
-    // A film that ran to its last frame has nothing left to come back to: the row
-    // goes away rather than sitting one second short of the end.
-    QObject::connect(&player, &PlayerCore::endOfFile, &library, [&player, &library, resumeKey] {
-        const QString p = resumeKey();
-        if (!p.isEmpty() && player.duration() > 0.0)
-            library.saveProgress(p, player.duration(), player.duration());
-    });
+    // Writing the record back is QML's job, not this one's: the frame that has to
+    // become the cover lives in VideoItem's texture, and the write only belongs once
+    // that copy is on disk. See the timer and the snapshot handler in Main.qml.
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(u"playerCore"_qs, &player);
@@ -277,6 +255,12 @@ int main(int argc, char *argv[])
     // >= 0 means: this run came back to a film rather than being asked for one, and
     // it is sitting at that second waiting for the user to say go.
     engine.rootContext()->setContextProperty(u"shellResumeAt"_qs, resumeAt);
+    // The still of the frame they left on, if one was saved. Painted over the picture
+    // until the film's own first frame reaches the screen: measured, the window is up
+    // for 320 ms before anything is drawn there.
+    engine.rootContext()->setContextProperty(u"shellResumeShot"_qs,
+        (resumeAt > 0.0 && QFileInfo::exists(resumeShot))
+            ? QUrl::fromLocalFile(QFileInfo(resumeShot).absoluteFilePath()) : QUrl());
     engine.rootContext()->setContextProperty(u"shellWidth"_qs, w);
     engine.rootContext()->setContextProperty(u"shellHeight"_qs, h);
     engine.rootContext()->setContextProperty(u"shellX"_qs, atX);
@@ -348,7 +332,8 @@ int main(int argc, char *argv[])
     }
 
     if (parser.isSet(shot)) {
-        const int hold = parser.isSet(open) ? 4000 : 1200;
+        const int hold = parser.isSet(shotAt) ? parser.value(shotAt).toInt()
+                             : (parser.isSet(open) ? 4000 : 1200);
         QTimer::singleShot(hold, win, [win, out = parser.value(shot)] {
             // One window, so this now captures the picture *and* the chrome - the
             // old grab could only see the chrome floating over mpv's surface.

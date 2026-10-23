@@ -54,6 +54,12 @@ public:
     // True while the push owns the picture.
     bool transitioning() const { return m_transition.loadRelaxed(); }
 
+    // Copy the frame that is on screen right now to `file`. The copy happens on the
+    // render thread at the next present, so this returns before the file exists.
+    // Used for the resume cover: the ~300 ms a film takes to open would otherwise
+    // show as a black window.
+    Q_INVOKABLE void requestSnapshot(const QString &file);
+
 signals:
     void coreChanged();
     void ready();
@@ -66,6 +72,13 @@ signals:
     // vsync-locked, so the third present means the first one has been on screen for a
     // frame - which is what the host waits for.
     void presented(int w, int h, int n);
+    // Out of the render thread once the copy behind requestSnapshot() is on disk.
+    void snapshotSaved(const QString &file, bool ok);
+    // How many frames mpv itself has pushed into the texture since the context was
+    // built. The startup cover waits for the second one: presented() counts passes of
+    // whatever is in the texture, including the empty one before the film decodes, and
+    // uncovering on that showed a black frame at ~200 ms on the installed build.
+    void filmFrame(int n);
 
 protected:
     void componentComplete() override;
@@ -78,6 +91,7 @@ private:
     void releaseContext();
     void renderFrame();
     void ensureTexture(int w, int h);
+    void takeSnapshot();        // render thread
     static void onUpdate(void *ctx);
 
     PlayerCore *m_core = nullptr;
@@ -117,4 +131,12 @@ private:
     bool m_pushSized = false;
     QTimer *m_ramp = nullptr;
     int m_pushFrames = 0;
+
+    // The resume cover. The flag is published after the path is written and cleared
+    // before the copy starts, so the render thread never reads a half-set request.
+    QAtomicInteger<bool> m_snapWanted { false };
+    QString m_snapFile;
+    ID3D11Texture2D *m_stage = nullptr;
+    int m_stageW = 0, m_stageH = 0;
+    int m_mpFrames = 0;         // frames mpv pushed, counted on the render thread
 };

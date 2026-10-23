@@ -43,6 +43,13 @@ Window {
     // the name is the way out of it, and it retires the moment anything starts
     // playing - including the space bar, so a later pause cannot bring it back.
     property bool resumeOffered: shellResumeAt >= 0
+    // True from the moment the window opens until the film's own second frame has
+    // gone over; while it holds, the resume still covers the picture area.
+    property bool coverOn: shellResumeShot.toString().length > 0
+    // A slide or an edge-drag in progress. The drag waits behind whichever render pass
+    // is running, and a resume cover costs 6-8 ms of that pass, so the cover is not
+    // taken while the pointer is down on the frame.
+    property bool frameDrag: false
 
     function nearest(list, v) {
         for (let k = 0; k < list.length; ++k) {
@@ -401,6 +408,72 @@ Window {
         // size other than the one before the geometry write, so the freeze is only as
         // long as the surface re-allocation and the compositor catching up with it.
         onPresented: (w, h, n) => videoHost.notePresented(w, h, n)
+        // The film's own second frame is on screen: uncover then, not on the second
+        // pass of the render loop.
+        onFilmFrame: (n) => { if (n >= 2) win.coverOn = false }
+    }
+
+    // The first ~320 ms of a resumed film: the window is up and the picture area is
+    // pure black, because nothing has been decoded yet. What goes there instead is
+    // the frame the user left on - copied off this same texture when the position was
+    // written - so the window opens on a paused frame and the real one replaces it
+    // without a visible step.
+    Image {
+        id: resumeCover
+        x: 0
+        y: 0
+        width: win.stageW
+        height: win.height
+        visible: win.coverOn
+        source: shellResumeShot
+        cache: false
+        onStatusChanged: if (status === Image.Error) win.coverOn = false
+    }
+
+    // One copy of the current frame every second while the film is running. The copy
+    // costs 6-8 ms of the render thread (measured, 1282x721: "SHOT" in the log), so
+    // the cover is at most a second off the frame the resume seek then lands on; the
+    // row is written by the callback, so the catalogue never points at a still that
+    // is not on disk yet.
+    Timer {
+        interval: 1000
+        running: playerCore.hasMedia && !playerCore.paused && !win.frameDrag
+        repeat: true
+        triggeredOnStart: false
+        onTriggered: {
+            if (playerCore.duration > 0 && playerCore.mediaUrl.length > 0)
+                video.requestSnapshot(library.resumeShotPath(playerCore.mediaUrl))
+        }
+    }
+
+    Connections {
+        target: video
+        function onSnapshotSaved(file, ok) {
+            if (!ok || !playerCore.hasMedia || playerCore.duration <= 0)
+                return
+            library.saveProgress(playerCore.mediaUrl, playerCore.position,
+                                 playerCore.duration, file)
+        }
+    }
+
+    Connections {
+        target: playerCore
+        // Nothing to come back to once the last frame has passed: the row goes, and
+        // the still with it.
+        function onEndOfFile() {
+            if (playerCore.duration > 0 && playerCore.mediaUrl.length > 0)
+                library.saveProgress(playerCore.mediaUrl, playerCore.duration,
+                                     playerCore.duration, "")
+        }
+    }
+
+    // The way out of a session that is not a crash: write where it stands, with the
+    // newest still that exists for this file (Library drops the path if it does not).
+    onClosing: {
+        if (playerCore.hasMedia && playerCore.duration > 0 && playerCore.mediaUrl.length > 0)
+            library.saveProgress(playerCore.mediaUrl, playerCore.position,
+                                 playerCore.duration,
+                                 library.resumeShotPath(playerCore.mediaUrl))
     }
 
     Image {
@@ -1219,8 +1292,8 @@ Window {
         // screen and the second is the shell's own size.
         enabled: !videoHost.fullscreen && !videoHost.zoomed
         hoverEnabled: true
-        onPressed: videoHost.startDrag(edges)
-        onReleased: videoHost.endDrag()
+        onPressed: { win.frameDrag = true; videoHost.startDrag(edges) }
+        onReleased: { win.frameDrag = false; videoHost.endDrag() }
     }
 
     // cursorShape is set at each use site: MouseArea applies it on enter and
@@ -1248,8 +1321,8 @@ Window {
         // Not QWindow::startSystemMove: measured on a real 1080p film, the shell's move
         // loop starves our presentation path - the picture stops changing entirely while
         // the window glides, and comes back in one jump on release.
-        onPressed: videoHost.startDrag(0)
-        onReleased: videoHost.endDrag()
+        onPressed: { win.frameDrag = true; videoHost.startDrag(0) }
+        onReleased: { win.frameDrag = false; videoHost.endDrag() }
     }
 
     Text {

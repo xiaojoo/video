@@ -4,6 +4,7 @@
 #include "duration.h"
 
 #include <QDateTime>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -31,11 +32,15 @@ bool Library::open(const QString &dbPath)
 {
     m_db = QSqlDatabase::addDatabase(u"QSQLITE"_qs, u"library"_qs);
     m_db.setDatabaseName(dbPath);
+    m_dir = QFileInfo(dbPath).absolutePath();
     if (!m_db.open()) {
         qWarning("library db open failed: %s", qPrintable(m_db.lastError().text()));
         return false;
     }
     ensureSchema();
+    // Where the resume covers go. QImage::save makes no directories, and the first
+    // snapshot of a session is taken before anything else has written here.
+    QDir().mkpath(m_dir + u"/resume"_qs);
     return true;
 }
 
@@ -63,7 +68,7 @@ void Library::ensureSchema()
         // the walk rewrites those rows on every scan, and a path opened from disk
         // without ever being scanned in still has to come back to its minute.
         "CREATE TABLE IF NOT EXISTS resume("
-        " path TEXT PRIMARY KEY, pos REAL, dur REAL, upd INTEGER)",
+        " path TEXT PRIMARY KEY, pos REAL, dur REAL, upd INTEGER, shot TEXT)",
     };
     for (const char *sql : ddl) {
         QSqlQuery q(m_db);
@@ -102,6 +107,22 @@ void Library::ensureSchema()
         if (!have.contains(u"custom"_qs)
             && !alter.exec(u"ALTER TABLE media ADD COLUMN custom INTEGER NOT NULL DEFAULT 0"_qs))
             qWarning("ddl alter media.custom failed: %s", qPrintable(alter.lastError().text()));
+    }
+
+    // Catalogues that already played something today have the resume table without
+    // the cover column; the still only exists from here on.
+    QSqlQuery rinfo(m_db);
+    if (rinfo.exec(u"PRAGMA table_info(resume)"_qs)) {
+        bool hasShot = false;
+        while (rinfo.next()) {
+            if (rinfo.value(1).toString().compare(u"shot"_qs, Qt::CaseInsensitive) == 0)
+                hasShot = true;
+        }
+        if (!hasShot) {
+            QSqlQuery alter(m_db);
+            if (!alter.exec(u"ALTER TABLE resume ADD COLUMN shot TEXT"_qs))
+                qWarning("ddl alter resume.shot failed: %s", qPrintable(alter.lastError().text()));
+        }
     }
 }
 
@@ -797,28 +818,42 @@ void Library::noteDuration(const QString &path, double seconds)
         emit rowChanged();
 }
 
-void Library::saveProgress(const QString &path, double pos, double dur)
+void Library::saveProgress(const QString &path, double pos, double dur, const QString &shot)
 {
     if (path.isEmpty() || dur <= 0.0 || pos <= 0.0)
         return;
+    // The catalogue stores forward slashes; a path typed with backslashes is the same
+    // file but a different string to SQLite, so both sides settle on the file system's
+    // own absolute form.
+    const QString key = QFileInfo::exists(path) ? QFileInfo(path).absoluteFilePath() : path;
     QSqlQuery q(m_db);
     // The last minute of a film is not a place to come back to: the row goes away
     // instead of sitting at 99.7%, which would put a bar on the card that is a lie
-    // about where the user stopped.
+    // about where the user stopped. The cover still goes with it.
     if (pos >= dur - 1.0) {
+        q.prepare(u"SELECT shot FROM resume WHERE path = ?"_qs);
+        q.addBindValue(key);
+        if (q.exec() && q.next()) {
+            const QString old = q.value(0).toString();
+            if (!old.isEmpty())
+                QFile::remove(old);
+        }
         q.prepare(u"DELETE FROM resume WHERE path = ?"_qs);
-        q.addBindValue(path);
+        q.addBindValue(key);
         if (!q.exec())
             qWarning("saveProgress clear failed: %s", qPrintable(q.lastError().text()));
         return;
     }
-    q.prepare(u"INSERT INTO resume(path, pos, dur, upd) VALUES(?, ?, ?, ?) "
+    q.prepare(u"INSERT INTO resume(path, pos, dur, upd, shot) VALUES(?, ?, ?, ?, ?) "
               "ON CONFLICT(path) DO UPDATE SET pos = excluded.pos, "
-              "dur = excluded.dur, upd = excluded.upd"_qs);
-    q.addBindValue(path);
+              "dur = excluded.dur, upd = excluded.upd, shot = excluded.shot"_qs);
+    q.addBindValue(key);
     q.addBindValue(pos);
     q.addBindValue(dur);
     q.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    // A row may only point at a still that is actually there: the copy is written by
+    // the render thread, and a close can beat it.
+    q.addBindValue(QFileInfo::exists(shot) ? shot : QString());
     if (!q.exec())
         qWarning("saveProgress failed: %s", qPrintable(q.lastError().text()));
 }
@@ -827,13 +862,24 @@ QVariantMap Library::lastPlayed() const
 {
     QVariantMap out;
     QSqlQuery q(m_db);
-    if (!q.exec(u"SELECT path, pos, dur FROM resume ORDER BY upd DESC LIMIT 1"_qs)
+    if (!q.exec(u"SELECT path, pos, dur, COALESCE(shot, '') FROM resume "
+                u"ORDER BY upd DESC LIMIT 1"_qs)
         || !q.next())
         return out;
     out.insert(u"path"_qs, q.value(0).toString());
     out.insert(u"pos"_qs, q.value(1).toDouble());
     out.insert(u"dur"_qs, q.value(2).toDouble());
+    out.insert(u"shot"_qs, q.value(3).toString());
     return out;
+}
+
+QString Library::resumeShotPath(const QString &path) const
+{
+    // Same normalisation the row is keyed by, so the file and the row cannot disagree.
+    const QString key = QFileInfo::exists(path) ? QFileInfo(path).absoluteFilePath() : path;
+    const QByteArray h = QCryptographicHash::hash(key.toUtf8(),
+                                                  QCryptographicHash::Md5).toHex().left(16);
+    return m_dir + u"/resume/"_qs + QString::fromLatin1(h) + u".jpg"_qs;
 }
 
 QStringList Library::pathsNeedingCover(int limit)

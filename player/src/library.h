@@ -65,12 +65,17 @@ public:
     // first time the disc is actually opened.
     Q_INVOKABLE void noteDuration(const QString &path, double seconds);
 
-    // Where the user stopped a file. Keyed by path rather than by the media row, so a
-    // film opened straight from disk - never scanned in - still comes back.
-    Q_INVOKABLE void saveProgress(const QString &path, double pos, double dur);
-    // The most recently stopped file as {path, pos, dur}, or empty when nothing has
-    // ever been played.
+    // Where the user stopped a file, and the still of the frame they saw there.
+    // Keyed by path rather than by the media row, so a film opened straight from
+    // disk - never scanned in - still comes back to its minute.
+    Q_INVOKABLE void saveProgress(const QString &path, double pos, double dur,
+                                  const QString &shot = QString());
+    // The most recently stopped file as {path, pos, dur, shot}, or empty when
+    // nothing has ever been played.
     Q_INVOKABLE QVariantMap lastPlayed() const;
+    // Where the resume cover for this file lives: beside the catalogue, named after
+    // the path the same way the cover stills are.
+    Q_INVOKABLE QString resumeShotPath(const QString &path) const;
 
     // Video rows whose card still has no picture yet. Audio is left out: a track's
     // cover is its album art, which belongs to the music library.
@@ -145,6 +150,7 @@ private:
     void setDuration(const QString &path, double seconds);
 
     QSqlDatabase m_db;
+    QString m_dir;      // where the catalogue file lives: the resume covers go beside it
     QStringList m_roots;
     QSet<QString> m_videoExt;
     QSet<QString> m_audioExt;
