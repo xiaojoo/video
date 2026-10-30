@@ -73,13 +73,225 @@ Item {
                && (cur === s.url || cur.startsWith(s.url.replace(/\/+$/, "") + "/"));
     }
 
+    // ---- one screen page, however many posters that turns out to be ----
+    // The site hands out a fixed 20 per page. A page here is instead however many posters
+    // the wall holds - columns across times the rows that fit down to the pager, and never
+    // fewer than 12 - and the site's pages are only how they get fetched: a screen page
+    // starts wherever the last one ended, which is usually mid-site-page, and may run over
+    // its end. Rows that do not fit are not a void: they stay on the page and the wall
+    // scrolls to them, because a half row of posters is still content. Only the end of the
+    // source's list may leave space, and `total` is what says so.
+    readonly property int minPer: 12
+    // ceil, not floor: the row that only half fits is still half a row of posters that
+    // exist, and leaving 158 px of page background under it (measured at 2400 x 1350) is
+    // the void he asked against. It is shown and reached with the bar instead.
+    readonly property int per: Math.max(page.minPer, wall.columns
+                                        * Math.max(1, Math.ceil(wall.height / wall.cellHeight)))
+    readonly property int total: page.siteSize * page.siteLast
+    readonly property int pages: Math.max(1, Math.ceil(page.total / page.per))
+    // The poster the wall starts on, as an absolute index into the source's list. Keeping
+    // the index rather than the page number is what lets a resize keep the same poster on
+    // screen instead of jumping off to wherever the new page 3 begins.
+    property int first: 0
+    readonly property int cur: page.per > 0 ? Math.floor(page.first / page.per) : 0
+
+    property var sitePages: ({})   // site page number -> the items it brought
+    property int siteSize: 0       // the site's own page size, read off the first page
+    property int siteLast: 0       // the last site page its own paginator admits to
+    property string rootUrl: ""    // the url of site page 1 for this list
+    property string pageTpl: ""    // a site page url with \u0001 where its number goes
+    // Every page number the site itself published a link for, kept across landings: the
+    // paginator around page 7 tells us the url of 6 and 8, and those are the site's own
+    // words rather than something guessed from a pattern.
+    property var numUrl: ({})
+    property var shown: []         // the posters of the current screen page
+    // Which url was asked for on behalf of which site page. Keying the answer by the url,
+    // not by "the last thing I asked for", is what keeps two fetches in flight from filing
+    // one page's posters under another's number.
+    property var reqUrl: ({})
+
+    // What the paginator of the page that just landed is telling us: which numbers have
+    // which urls, and how far the list goes.
+    function notePager() {
+        for (const p of online.pager) {
+            if (p.url.length === 0 || !/^[0-9]+$/.test(p.label))
+                continue;
+            page.numUrl[p.label] = p.url;
+            page.siteLast = Math.max(page.siteLast, parseInt(p.label));
+        }
+        page.buildTpl();
+    }
+
+    // The number's place in a url, found by comparing the site's own links for two
+    // different numbers: what differs between those two is the number, so everything
+    // before the first difference and after the last one is template. Deriving it beats
+    // assuming `?page=`.
+    //
+    // Any two numbers will do. Requiring specifically "2" and "3" was the bug: the page you
+    // are standing on is drawn as the active span with no link at all, so the landing on
+    // site page 2 has no "2" to read - and used to write an empty template over the good
+    // one page 1 had just handed over. From then on every screen page that needed a third
+    // site page had no way to ask for one, which is the empty bottom of a big window.
+    function buildTpl() {
+        if (page.pageTpl.length > 0)
+            return;
+        const nums = Object.keys(page.numUrl).map(Number).sort((a, b) => a - b);
+        for (let i = 1; i < nums.length && page.pageTpl.length === 0; ++i) {
+            const t = page.splitTpl(nums[i - 1], page.numUrl[String(nums[i - 1])],
+                                   nums[i], page.numUrl[String(nums[i])]);
+            if (t.length > 0)
+                page.pageTpl = t;
+        }
+    }
+
+    function splitTpl(n1, u1, n2, u2) {
+        let a = 0;
+        while (a < u1.length && a < u2.length && u1[a] === u2[a])
+            ++a;
+        let b = 0;
+        while (b < u1.length - a && b < u2.length - a
+               && u1[u1.length - 1 - b] === u2[u2.length - 1 - b])
+            ++b;
+        const t = u1.slice(0, a) + "\u0001" + u1.slice(u1.length - b);
+        // Only a template that puts the printed url back together when the number is
+        // substituted counts as one. 2 and 2204 differ by three characters, and the scan
+        // above finds no gap between them at all; without this check that partial
+        // difference would be kept as the pattern and every page built from it would miss.
+        return t.replace("\u0001", String(n1)) === u1 ? t : "";
+    }
+
+    function urlFor(n) {
+        if (n <= 1)
+            return page.rootUrl;
+        const known = page.numUrl[String(n)];
+        if (known !== undefined)
+            return known;
+        return page.pageTpl.length > 0 ? page.pageTpl.replace("\u0001", String(n)) : "";
+    }
+
+    // A pill, a tab or a source row is a new list: the cache and the position go with the
+    // one it replaces.
+    function goto(url) {
+        page.rootUrl = url;
+        page.sitePages = {};
+        page.siteSize = 0;
+        page.siteLast = 0;
+        page.pageTpl = "";
+        page.numUrl = {};
+        page.shown = [];
+        page.first = 0;
+        page.reqUrl = {};
+        page.reqUrl[url] = 1;
+        page.hopToTop();
+        online.open(url);
+    }
+
+    // Assemble the screen page from the cached site pages, fetching whichever is missing.
+    // One fetch at a time: the model answers with a single `items` list, so two in flight
+    // could not be told apart. When a page lands, this runs again and either finishes or
+    // asks for the next one.
+    function fill() {
+        if (page.siteSize <= 0)
+            return;
+        const per = page.per;
+        const lastIdx = Math.min(page.first + per, page.total) - 1;
+        const out = [];
+        let idx = page.first;
+        // Both halves matter: the page is full when `out` reaches `per`, and `lastIdx` is
+        // what stops a short tail (the last screen page) from running off the list.
+        while (idx <= lastIdx && out.length < per) {
+            const sp = Math.floor(idx / page.siteSize) + 1;
+            const got = page.sitePages[sp];
+            if (got === undefined) {
+                const u = page.urlFor(sp);
+                if (u.length === 0 || page.reqUrl[u] !== undefined)
+                    break;          // no way to ask, or it is already on its way
+                page.reqUrl[u] = sp;
+                online.open(u);
+                return;             // fill() runs again when the answer lands
+            }
+            let j = idx - (sp - 1) * page.siteSize;
+            while (j < got.length && out.length < per && idx <= lastIdx) {
+                out.push(got[j]);
+                ++j;
+                ++idx;
+            }
+            if (j >= got.length && idx <= lastIdx)
+                idx = (sp) * page.siteSize;   // step to the first poster of the next site page
+        }
+        page.shown = out;
+    }
+
+    function jumpTo(k) {
+        page.first = Math.max(0, Math.min(k, page.pages - 1)) * page.per;
+        page.hopToTop();
+        page.fill();
+    }
+
+    // The chips: the two ends, then the pages that matter - the first, the last, and the
+    // current one's neighbours. The shape the site's own paginator uses.
+    readonly property var chips: {
+        const n = page.pages, c = page.cur + 1;
+        const nums = [];
+        const add = v => { if (v >= 1 && v <= n && nums.indexOf(v) < 0) nums.push(v); };
+        add(1); add(c - 1); add(c); add(c + 1); add(n);
+        nums.sort((a, b) => a - b);
+        const out = [{ kind: "prev", label: "上一页", live: c > 1, on: false, to: c - 2 }];
+        for (const v of nums)
+            out.push({ kind: "page", label: String(v), live: v !== c, on: v === c, to: v - 1 });
+        out.push({ kind: "next", label: "下一页", live: c < n, on: false, to: c });
+        return out;
+    }
+
+    // A resize changes how many posters fit, so the page boundary moves under the wall.
+    // Snap back to the start of the page the old index fell in - the same posters stay
+    // one page apart, rather than the first row being a slice of two.
+    onPerChanged: {
+        page.first = Math.floor(page.first / page.per) * page.per;
+        page.fill();
+    }
+
     Component.onCompleted: {
         online.loadSources();
         // Read off the engine rather than off `liveSources`: this runs in the same tick as
         // the load, and a binding asked for before the list exists keeps that answer.
         const live = online.sources.filter(s => s.enabled);
         if (live.length > 0)
-            online.open(live[0].url);
+            page.goto(live[0].url);
+    }
+
+    Connections {
+        target: online
+        // `listReady`, not `itemsChanged`: open() also emits itemsChanged - before its
+        // request goes out, to clear the category row of the site being left - so the only
+        // moment that reliably means "the posters for this url are in hand" is this one.
+        function onListReady(url, ok) {
+            const sp = page.reqUrl[url];
+            if (sp === undefined)
+                return;
+            delete page.reqUrl[url];
+            if (!ok)
+                return;   // see the note in fill(): a failed page is retried by the next
+                          // click or resize, not by a loop against a site that is refusing
+            // A detached copy, not the property read. `online.items` is a live view of the
+            // model's own list: caching it meant every later fetch rewrote *every* cached
+            // page to the posters that had just arrived. Measured on a 2400 x 1350 window -
+            // site page 1 answered with 130096 first and page 2 with 126424, and both cache
+            // slots ended up holding 126424, so 13 of the 33 posters on the wall were
+            // repeats and the site's order was gone.
+            const items = [];
+            for (const o of online.items)
+                items.push({ title: o.title, poster: o.poster, href: o.href });
+            if (items.length === 0)
+                return;
+            page.sitePages[sp] = items;
+            if (page.siteSize === 0) {
+                page.siteSize = items.length;
+                page.rootUrl = url;
+            }
+            page.notePager();
+            page.fill();
+        }
     }
 
     Connections {
@@ -109,10 +321,9 @@ Item {
                     continue;
                 if (s.enabled)
                     return;
-                page.hopToTop();
                 for (const live of online.sources)
                     if (live.enabled) {
-                        online.open(live.url);
+                        page.goto(live.url);
                         break;
                     }
                 return;
@@ -169,10 +380,7 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            page.hopToTop();
-                            online.open(modelData.url);
-                        }
+                        onClicked: page.goto(modelData.url)
                     }
                 }
             }
@@ -232,10 +440,7 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        page.hopToTop();
-                        online.open(modelData.url);
-                    }
+                    onClicked: page.goto(modelData.url)
                 }
             }
         }
@@ -264,6 +469,7 @@ Item {
                     return "上面还没有可用的在线源，点窗口右上角的齿轮加一个。";
                 return "";
             }
+        
         }
 
         GridView {
@@ -295,7 +501,8 @@ Item {
             // gap was 18.
             cellHeight: Math.round((cellWidth - 2 * page.inset) * 1.72) + page.labelBlock
             boundsBehavior: Flickable.StopAtBounds
-            model: online.items
+            // The screen page, not the site's: `page.shown` holds exactly `per` posters.
+            model: page.shown
 
             delegate: Item {
                 required property var modelData
@@ -462,26 +669,27 @@ Item {
             height: wall.height
         }
 
-        // ---- the page hop: the source's own pagination, along the bottom ----
+        // ---- the page hop: this wall's own pages, along the bottom ----
+        // The chips are the same shape the site's paginator was drawn with; what changed is
+        // what a page is. Its numbers count screen pages (`page.per` posters each), so the
+        // row appears only when the list is longer than one screen.
         Row {
             id: pager
             x: Math.max(page.pad, (parent.width - width) / 2)
             y: parent.height - height - page.pad
             spacing: Math.round(page.gap / 2)
             height: Math.round(shellHeight * 0.05)
-            visible: page.liveSources.length > 0
-                     && online.pager.length > 0
+            visible: page.liveSources.length > 0 && page.pages > 1
 
             Repeater {
-                model: online.pager
+                model: page.chips
 
                 delegate: Rectangle {
                     id: hop
                     required property var modelData
-                    // A hop with no url is the one the site marked disabled - the first
-                    // page's 上一页 - and stays visible so the row does not shift.
-                    readonly property bool live: modelData.url.length > 0
-                                                 && !modelData.active
+                    // 上一页 on the first page is greyed rather than gone, so the row does
+                    // not shift when it is clicked.
+                    readonly property bool live: modelData.live === true
                     // A page number is one or two glyphs: at the row's own padding it would
                     // come out a stubby 24 x 36, so a chip is never narrower than it is
                     // tall. 上一页 and 2202 are already wider than that and keep their width.
@@ -491,13 +699,13 @@ Item {
                     radius: Theme.controlRadius
                     color: hopMouse.containsMouse && hop.live ? "#2A2A2E" : "#1B1B1F"
                     border.width: 1
-                    border.color: modelData.active ? Theme.accent : "#3A3A40"
+                    border.color: modelData.on ? Theme.accent : "#3A3A40"
 
                     Text {
                         id: hopText
                         anchors.centerIn: parent
                         text: modelData.label
-                        color: modelData.active ? Theme.accent
+                        color: modelData.on ? Theme.accent
                                : (hop.live ? Theme.textPrimary : "#4A4A4E")
                         font.pixelSize: page.smallFs
                         font.family: Theme.uiFont
@@ -507,10 +715,8 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: hop.live ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: if (hop.live) {
-                            page.hopToTop();
-                            online.open(modelData.url);
-                        }
+                        onClicked: if (hop.live)
+                            page.jumpTo(modelData.to)
                     }
                 }
             }

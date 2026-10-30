@@ -360,9 +360,12 @@ void Online::open(const QString &url)
         emit itemsChanged();
     }
     m_requested = url;
-    get(url, [this](const QString &finalUrl, const QByteArray &bytes, const QString &err) {
-        if (!err.isEmpty())
+    const QString asked = url;
+    get(url, [this, asked](const QString &finalUrl, const QByteArray &bytes, const QString &err) {
+        if (!err.isEmpty()) {
+            emit listReady(asked, false);   // whoever is waiting on this url may stop
             return;   // get() already put it in m_error
+        }
         const QString html = QString::fromUtf8(bytes);
         m_error.clear();
         m_final = finalUrl;
@@ -373,6 +376,7 @@ void Online::open(const QString &url)
         if (m_items.isEmpty())
             m_error = tr("这一页上没有解析到海报（站点可能换了结构）");
         emit itemsChanged();
+        emit listReady(asked, true);
     });
 }
 

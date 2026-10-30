@@ -70,6 +70,11 @@ signals:
     void busyChanged();
     void sourcesChanged();
     void magnetsReady(const QString &url, const QJsonArray &links, const QString &note);
+    // A list page has been fetched and parsed, and `url` names which one. `ok` is false
+    // when the transfer failed, so whoever asked can stop waiting for it.
+    // `itemsChanged` cannot be used for this: open() emits it before the request even goes
+    // out, to clear the category row of the site being left.
+    void listReady(const QString &url, bool ok);
 
 private:
     // `then` runs for every reply, successful or not: a hop that comes back 429 has
