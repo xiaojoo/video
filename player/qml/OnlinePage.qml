@@ -360,6 +360,7 @@ Item {
                         magPopup.note = "";
                         magPopup.waiting = true;
                         page.detail = modelData;
+                        magPopup.open();
                         online.magnets(modelData.href);
                     }
                 }
@@ -553,8 +554,15 @@ Item {
         y: ovl ? Math.round((ovl.height - maxH) / 2) : 0
         width: Math.round(page.width * 0.5)
         padding: magPad
-        visible: page.detail !== null
+        // Opened by the poster's click rather than bound to `page.detail`. The binding
+        // survived the dismiss - `close()` is a C++ write, which does not break a QML
+        // binding - but it only re-evaluates when detail's *value* changes. Clicking the
+        // same poster hands back the very same model object, so nothing recomputed and the
+        // card stayed shut; a different poster changed the value and opened it again. That
+        // is the "must click another card first" he reported. Reproduced: dismiss, click
+        // the same poster, no card.
         closePolicy: Popup.CloseOnPressOutside
+        onClosed: page.detail = null
 
         readonly property real magPad: Math.round(shellHeight * 0.028)
         readonly property real magGap: Math.round(shellHeight * 0.019)
