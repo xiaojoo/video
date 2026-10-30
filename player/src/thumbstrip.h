@@ -34,6 +34,9 @@ public:
     // One cover still per library path, queued behind whatever the scrub bar needs.
     // A path that already has a file in the cache never costs a load.
     Q_INVOKABLE void covers(const QStringList &paths);
+    // The cover still for a path, if the cache already holds one; empty otherwise. The
+    // download rows ask for a first frame without waiting on a signal to route it.
+    Q_INVOKABLE QString coverFor(const QString &path) const;
     Q_INVOKABLE void clear();
 
 signals:

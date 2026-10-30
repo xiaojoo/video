@@ -234,7 +234,6 @@ Rectangle {
         enabled: visible
         boundsBehavior: Flickable.StopAtBounds
         model: pl.items
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         // Both empty cases say what is missing rather than showing a blank column: a
         // file that is not from a folder (a disc), and a folder with nothing else.
@@ -342,7 +341,6 @@ Rectangle {
         enabled: visible
         boundsBehavior: Flickable.StopAtBounds
         model: pl.edges
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Text {
             visible: pl.edges.length === 0
@@ -438,7 +436,6 @@ Rectangle {
         enabled: visible
         boundsBehavior: Flickable.StopAtBounds
         model: pl.listRows
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Text {
             visible: pl.lists.length === 0
@@ -703,6 +700,17 @@ Rectangle {
                 }
             }
         }
+    }
+
+    // One bar for the three tabs' lists - only one of them is on screen at a time. The
+    // style's own would put a white groove down the side of the dock, so this is the
+    // app's: a mark over a transparent track.
+    ThinScrollBar {
+        target: pl.tab === "chapters" ? chapList
+              : (pl.tab === "lists" ? listList : fileList)
+        x: parent.width - width
+        y: tabs.y + tabs.height
+        height: target ? target.height : 0
     }
 
     // The blank strip under the rows. The list's own flickable takes a press there, so

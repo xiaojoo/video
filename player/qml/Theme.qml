@@ -13,10 +13,13 @@ QtObject {
     readonly property color textSecondary: "#B8B8B8"
     readonly property color glyph: "#E6E6E6"
 
-    // One token for the whole chrome: the reference is set in SF Pro, which
-    // cannot be shipped. Segoe UI Variable Display is the closest family this
-    // OS actually has; swap this one line if a font file ever gets bundled.
-    readonly property string uiFont: "Segoe UI Variable Display"
+    // One token for the whole chrome. The reference is set in SF Pro, which cannot be
+    // shipped, so this is the closest family the OS has. It was the Display optical
+    // size, which is cut for 24 px and up: at the download row's 13 px it sets
+    // "33.1 MiB / 3.08 GiB mpv 0" 142 px wide against Text's 148 and Segoe UI's 150,
+    // and the smaller counters are what read as cramped. Every size the chrome uses
+    // now is 21 px or under, so the body optical size is the one that fits.
+    readonly property string uiFont: "Segoe UI Variable Text"
 
     // Ratios of window height, measured on the 1282x723 reference.
     readonly property real controlRowHeightRatio: 0.084
@@ -56,6 +59,16 @@ QtObject {
     // 0.0507 x 1298 = 65.8 px = 0.0863 x 762.
     readonly property real leftGroupPitchHRatio: 0.0599
     readonly property real centerPitchHRatio: 0.0863
+    // What the player's control row actually leaves between two neighbours' ink: the
+    // cells step by the pitch and are `iconRatio` wide, so the gap is the difference.
+    // Derived rather than typed, so a row that changes its pitch moves every surface
+    // that says "the same gap as the play buttons" with it.
+    readonly property real controlGapRatio: leftGroupPitchHRatio - iconRatio
+    // The corner on every chrome button. The chip he pointed at is 36 px tall with about
+    // 4 px turned - fitted from its corner profile: 2 px inset on the first row, 1 on the
+    // second, none by the third. 4 is also what the text fields, the cards and the row
+    // plates already use; the pills were the last thing still fully round.
+    readonly property real controlRadius: 4
     readonly property real volWidthHRatio: 0.1124
     readonly property real volGapHRatio: 0.0205
     // The gap between the time at the end of the bar and the bar itself: 28 px on the

@@ -1,11 +1,16 @@
+#include "downloads.h"
 #include "duration.h"
 #include "library.h"
+#include "online.h"
 #include "playercore.h"
 #include "singleinstance.h"
 #include "thumbstrip.h"
 #include "videohost.h"
 
 #include <QCommandLineParser>
+#include <QEventLoop>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -27,11 +32,28 @@
 #include <QSurfaceFormat>
 
 #include <clocale>
+#include <cstdio>
 #include <cmath>
 
 // Above this, a mismatch between the window and the film is a real letterbox and
 // must stay; at or below it, it is a rounding hairline we can snap away.
 constexpr int kHairlineMaxPx = 2;
+
+// `--open` takes a path or a url. A url has to reach the core unchanged, because
+// that is how anything that is not already a file on disk gets played; a bare path
+// still has to go through QUrl, since the catalogue and the resume table key on it.
+static bool isRemoteTarget(const QString &value)
+{
+    return value.contains(u"://"_qs) || value.startsWith(u"magnet:"_qs);
+}
+
+// Raw bytes, so the console code page cannot mangle what the parser produced.
+static void writeJson(const QByteArray &j)
+{
+    fwrite(j.constData(), 1, j.size(), stdout);
+    fputc(10, stdout);   // newline, written as a number rather than an escape
+    fflush(stdout);
+}
 
 int main(int argc, char *argv[])
 {
@@ -42,6 +64,14 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(u"Playerui"_qs);
     QGuiApplication::setOrganizationName(u"local"_qs);
+    // Text on the pixel grid. Qt Quick's default renderer places every glyph at its
+    // exact fractional x and paints the coverage it works out there; measured on this
+    // machine at 13 px (the download rows' status line) that spreads the ink over 1356
+    // pixels where the native rasteriser needs 1062 - 22% more - and only 8.8% of those
+    // pixels reach the glyph's own colour, against 37% when the glyph falls on the grid.
+    // The chrome never scales or rotates its text (the zoom and the film are separate
+    // surfaces), so the native renderer's inability to do either costs nothing here.
+    QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
     // The taskbar and the alt-tab strip take this one, and it is the same .ico that
     // appPlayerui.rc puts into the exe, so the two surfaces cannot disagree: every size is
     // a frame of its own, 16 and 24 from the simplified figure (four 13-unit holes land on
@@ -73,6 +103,12 @@ int main(int argc, char *argv[])
     QCommandLineOption rootsFile(u"roots-file"_qs, u"UTF-8 file, one media root per line"_qs, u"path"_qs);
     QCommandLineOption durOf(u"duration-of"_qs, u"print the container duration of FILE and exit"_qs,
                              u"path"_qs);
+    QCommandLineOption dlDir(u"dl-dir"_qs, u"where download jobs land (probes and demos)"_qs,
+                             u"path"_qs);
+    QCommandLineOption onlineProbe(u"online-probe"_qs,
+                                   u"parse a source list page and print it as json"_qs, u"url"_qs);
+    QCommandLineOption onlineMagnets(u"online-magnets"_qs,
+                                     u"follow a detail page down to its magnets"_qs, u"url"_qs);
     parser.addOption(shot);
     parser.addOption(shotAt);
     parser.addOption(size);
@@ -89,7 +125,47 @@ int main(int argc, char *argv[])
     parser.addOption(mode);
     parser.addOption(rootsFile);
     parser.addOption(durOf);
+    parser.addOption(dlDir);
+    parser.addOption(onlineProbe);
+    parser.addOption(onlineMagnets);
     parser.process(app);
+
+    // The scraper, on its own: what it found is printed as json and the process is
+    // done. The wall is only worth building once this answers correctly against the
+    // live site, and it is far cheaper to read json than to judge a screenshot.
+    if (parser.isSet(onlineProbe) || parser.isSet(onlineMagnets)) {
+        const bool listMode = parser.isSet(onlineProbe);
+        const QString url = listMode ? parser.value(onlineProbe) : parser.value(onlineMagnets);
+        Online online;
+        QEventLoop loop;
+        int rc = 1;
+        QObject::connect(&online, &Online::itemsChanged, &loop, [&] {
+            if (listMode && !online.items().isEmpty()) {
+                QJsonObject out;
+                out.insert(u"final"_qs, online.finalUrl());
+                out.insert(u"nav"_qs, online.nav());
+                out.insert(u"pager"_qs, online.pager());
+                out.insert(u"items"_qs, online.items());
+                // Raw bytes to stdout: Qt's own log channel re-encodes through the
+                // console code page, which turned every Chinese title into U+FFFD.
+                writeJson(QJsonDocument(out).toJson(QJsonDocument::Compact));
+                rc = 0;
+                loop.quit();
+            } else if (!listMode && !online.busy() && !online.error().isEmpty()) {
+                qWarning("probe: %s", qPrintable(online.error()));
+            }
+        });
+        QObject::connect(&online, &Online::magnetsReady, &loop,
+                         [&](const QString &, const QJsonArray &links) {
+                             writeJson(QJsonDocument(links).toJson(QJsonDocument::Compact));
+                             rc = links.isEmpty() ? 1 : 0;
+                             loop.quit();
+                         });
+        QTimer::singleShot(45000, &loop, [&] { qWarning("probe: timed out"); loop.quit(); });
+        listMode ? online.open(url) : online.magnets(url);
+        loop.exec();
+        return rc;
+    }
 
     // Standalone so the reader can be cross-checked against ffprobe per file.
     if (parser.isSet(durOf)) {
@@ -101,7 +177,9 @@ int main(int argc, char *argv[])
     // and quits. Dev paths opt out - a probe or a --scan-only run is meant to be
     // its own process, and --db means "this is a different catalogue on purpose".
     const QString openArg = parser.isSet(open)
-        ? QFileInfo(parser.value(open)).absoluteFilePath() : QString();
+        ? (isRemoteTarget(parser.value(open)) ? parser.value(open)
+           : QFileInfo(parser.value(open)).absoluteFilePath())
+        : QString();
     const bool allowMulti = qEnvironmentVariableIsSet("PLAYERUI_MULTI")
             || parser.isSet(scanOnly) || parser.isSet(db);
     SingleInstance single;
@@ -173,10 +251,21 @@ int main(int argc, char *argv[])
     for (const QString &r : rootList)
         library.addRoot(QUrl::fromLocalFile(QFileInfo(r).absoluteFilePath()));
 
+    // Where the window lands can differ from --mode: a resume target that turns out
+    // to be a half-downloaded file sends the launch to the library instead.
+    QString startMode = parser.value(mode);
+
+    Online online;
+    Downloads downloads;
+    downloads.setDatabase(library.database());
+    if (parser.isSet(dlDir))
+        downloads.setOverrideDir(QFileInfo(parser.value(dlDir)).absoluteFilePath());
+    DownloadsModel downloadsModel(&downloads);
+
     // Any library-mode start walks the stored roots. Gating this on a
     // command-line root left the page empty for everyone whose roots came from
     // the folder picker instead.
-    if (parser.value(mode) == u"library"_qs)
+    if (startMode == u"library"_qs)
         library.scan();
 
     if (parser.isSet(scanOnly)) {
@@ -225,13 +314,26 @@ int main(int argc, char *argv[])
     QString startPath = parser.value(open);
     double resumeAt = -1.0;
     QString resumeShot;
-    if (startPath.isEmpty() && parser.value(mode) == u"player"_qs) {
+    if (startPath.isEmpty() && startMode == u"player"_qs) {
         const QVariantMap last = library.lastPlayed();
         const QString lp = last.value(u"path"_qs).toString();
-        if (!lp.isEmpty() && QFileInfo::exists(lp)) {
+        // The catalogue can remember a file that is not one yet: the download folder
+        // is a library root, so a job still filling shows up as a film, and half an
+        // mp4 has no index to seek with. Measured, resuming it held the window black
+        // and silent for minutes, chrome and all.
+        if (!lp.isEmpty() && QFileInfo::exists(lp) && !downloads.isUnfinished(lp)) {
             startPath = lp;
             resumeAt = last.value(u"pos"_qs).toDouble();
             resumeShot = last.value(u"shot"_qs).toString();
+        } else {
+            // Nothing to play - never played, the file is gone, or it is still coming
+            // down. A player page with no film is a black window with nothing on it to
+            // click, so the launch lands where the films are instead.
+            if (!lp.isEmpty())
+                qInfo("RESUME skip %s (%s)", qPrintable(lp),
+                      downloads.isUnfinished(lp) ? "still downloading" : "no such file");
+            startMode = u"library"_qs;
+            library.scan();
         }
     }
 
@@ -245,8 +347,11 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"thumbs"_qs, &thumbs);
     engine.rootContext()->setContextProperty(u"library"_qs, &library);
     engine.rootContext()->setContextProperty(u"libraryModel"_qs, &libraryModel);
+    engine.rootContext()->setContextProperty(u"online"_qs, &online);
+    engine.rootContext()->setContextProperty(u"downloads"_qs, &downloads);
+    engine.rootContext()->setContextProperty(u"downloadsModel"_qs, &downloadsModel);
     engine.rootContext()->setContextProperty(u"single"_qs, &single);
-    engine.rootContext()->setContextProperty(u"shellMode"_qs, parser.value(mode));
+    engine.rootContext()->setContextProperty(u"shellMode"_qs, startMode);
     engine.rootContext()->setContextProperty(u"shellAutoPick"_qs,
         qEnvironmentVariableIsSet("PLAYERUI_AUTOPICK"));
     engine.rootContext()->setContextProperty(u"shellKeepUi"_qs,
@@ -322,7 +427,8 @@ int main(int argc, char *argv[])
         else if (parser.isSet(start))
             player.setStartAt(parser.value(start).toDouble());
         // Queued inside PlayerCore until VideoItem reports its render context.
-        player.load(QUrl::fromLocalFile(QFileInfo(startPath).absoluteFilePath()).toString());
+        player.load(isRemoteTarget(startPath) ? startPath
+              : QUrl::fromLocalFile(QFileInfo(startPath).absoluteFilePath()).toString());
         // Set after the request: the core honours it as the file comes up, so the
         // frame under the chrome is the same one every time it is measured. A resumed
         // film waits on its breakpoint for the same reason the measuring path waits

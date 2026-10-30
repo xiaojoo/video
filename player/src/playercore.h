@@ -59,7 +59,13 @@ public:
     int chapter() const { return m_chapter; }
     QString chapterTitle() const { return m_chapterTitle; }
     QVariantList chapterStarts() const { return m_chapterStarts; }
-    QStringList chapterTitlesList() const { return m_chapterTitles; }    QString mediaTitle() const { return m_discTitle.isEmpty() ? m_mediaTitle : m_discTitle; }
+    QStringList chapterTitlesList() const { return m_chapterTitles; }
+    // A loopback http url has no name of its own to carry: libmpv titles such a
+    // stream after its last path segment, so the download page's /file/0 came up
+    // as "0". The loader that knows what the job is called passes the name in and
+    // it outranks both mpv's guess and the disc title.
+    QString mediaTitle() const { return !m_titleOverride.isEmpty() ? m_titleOverride
+                                  : (m_discTitle.isEmpty() ? m_mediaTitle : m_discTitle); }
     QString mediaUrl() const { return m_mediaUrl; }
     double volume() const { return m_volume; }
     double speed() const { return m_speed; }
@@ -70,6 +76,8 @@ public:
     QString voDriven() const { return m_voDriven; }
 
     Q_INVOKABLE void load(const QString &url);
+    // load() with a name for the header. An empty title is a plain load.
+    Q_INVOKABLE void loadTitled(const QString &url, const QString &title);
     Q_INVOKABLE void setStartAt(double seconds);
     Q_INVOKABLE void togglePause();
     Q_INVOKABLE void seekTo(double seconds);
@@ -130,6 +138,7 @@ private:
     QString m_chapterTitle;
     QVariantList m_chapterStarts;
     QString m_mediaTitle;
+    QString m_titleOverride;
     QString m_mediaUrl;
     // A disc folder is titled by its own name, not by whichever clip mpv ended
     // up opening.
@@ -149,5 +158,6 @@ private:
     bool m_fsActive = false;
     bool m_renderReady = false;
     QString m_pendingUrl;
+    QString m_pendingTitle;
     void *m_guard = nullptr;
 };

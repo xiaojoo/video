@@ -227,6 +227,17 @@ void ThumbStrip::build(const QString &url, double duration, int count)
     startStrip(job);
 }
 
+QString ThumbStrip::coverFor(const QString &path) const
+{
+    // The same naming covers() writes under, so a still the library already took for
+    // this file serves the download row too.
+    const QString source = resolveSource(path);
+    if (source.isEmpty() || !QFileInfo::exists(source))
+        return {};
+    const QString file = slotPath(cacheDirFor(source, "covers"), 0);
+    return QFileInfo(file).size() > 0 ? QUrl::fromLocalFile(file).toString() : QString();
+}
+
 void ThumbStrip::covers(const QStringList &paths)
 {
     int queued = 0, fromCache = 0, unreadable = 0, duplicate = 0;

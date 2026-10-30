@@ -6,10 +6,28 @@ import Playerui
 Item {
     id: page
 
-    readonly property real colW: Math.max(120, page.width * 0.13)
-    // 横屏: a card is a frame off the film, so the box keeps the frame's own 16:9
-    // and the still fills it instead of being sliced into a poster.
-    readonly property real artH: colW * 9 / 16
+    // Two numbers, both taken from the player's control row: `gutter` is what its glyphs
+    // sit in from the window's edge, `gap` the distance between two neighbours' ink. The
+    // four outer sides all use the first, so the cards line up with the title above them
+    // and with the window's bottom; the inner spacing uses the second, like the row of
+    // buttons under the film.
+    readonly property real gutter: Math.round(shellWidth * Theme.sideInsetWRatio)
+    readonly property real gap: Math.round(shellHeight * Theme.controlGapRatio)
+    // Half the gap per side, so two neighbours sit one gap apart and the outermost cards
+    // still land on the gutter itself.
+    readonly property real cardInset: Math.round(gap / 2)
+    readonly property int perRow: 7
+    // A card is a frame off the film, so the box keeps the frame's own 16:9 and the still
+    // fills it instead of being sliced into a poster. The width is the row divided by
+    // seven, plus the card's own inset on each side, so the first card starts where the
+    // title starts and the last ends where the pill ends - and seven always fit.
+    readonly property real colW: Math.max(120, (page.width - 2 * gutter
+                                                + 2 * cardInset) / perRow - 0.01)
+    // 16:9 of the *card*, not of the cell: the card sits `cardInset` in from each side of
+    // its cell, and taking the ratio off the cell made the box 1.75:1 at 1100 px wide and
+    // 1.87:1 at 1920 - the still stretched as the window grew, which is what reads as the
+    // cards "not keeping their proportion" while dragging.
+    readonly property real artH: (colW - 2 * cardInset) * 9 / 16
 
     function fmtDuration(sec) {
         const s = Math.round(sec)
@@ -52,66 +70,112 @@ Item {
         id: titleMetric
         visible: false
         text: "M\nM"
-        font.pixelSize: page.height * 0.021
+        font.pixelSize: shellHeight * 0.021
         font.family: Theme.uiFont
     }
     Text {
         id: yearMetric
         visible: false
         text: "M"
-        font.pixelSize: page.height * 0.019
+        font.pixelSize: shellHeight * 0.019
         font.family: Theme.uiFont
     }
-    readonly property real textBlock: 9 + titleMetric.height + yearMetric.height + 6
+    readonly property real textBlock: page.cardInset + titleMetric.height
+                                       + yearMetric.height + page.cardInset
+    // Which of the two things this page is: the local catalogue, or the online
+    // wall. The caller owns it, the same way it owns the playlist dock's tab.
+    property string mode: "local"
 
-    Column {
-        id: header
-        x: page.width * 0.02
-        y: page.height * 0.035
-        spacing: page.height * 0.006
+    // Passed straight up to Main.qml, which owns the one bubble.
+    signal tipFor(var item, string text, string keys)
+    signal tipOff(var item)
+    // The folder picker lives in Main.qml; this page is a component, so it cannot reach
+    // that id and hands the ask up instead. The 设置 card is reachable from here only
+    // through the window's own gear, which is on screen everywhere.
+    signal dirRequested()
+    // Where a job from the wall or the 新建 dialog lands. Main.qml owns it (it is the
+    // window that stores the choice), so it arrives as a plain value like every other
+    // piece of chrome geometry on this page.
+    property string saveDir: ""
+    // A card's play, the tab row's 返回播放: both leave this page for the player, and
+    // the page object cannot touch the window's `page` property itself.
+    signal playerRequested()
 
-        Text {
-            text: "媒体库"
-            color: Theme.textPrimary
-            font.pixelSize: Theme.titleFontRatio * page.height
-            font.family: Theme.uiFont
+    // The page's chrome line, at the left where the page title used to be: the tab pair
+    // and the way back to the player. The library's own row sits under it.
+    readonly property real rowY: page.gutter
+
+    // The library's own row: the two actions, then what they last produced. Left aligned on
+    // the page's gutter, because that is the slot the 在线媒体 tab uses for its source row.
+    Row {
+        id: libRow
+        x: page.gutter
+        y: page.rowY + height + page.gutter
+        spacing: page.gap
+        visible: page.mode === "local"
+        readonly property real pillH: rescanText.height + shellHeight * 0.018
+
+        Rectangle {
+            id: pick
+            width: pickText.implicitWidth + shellHeight * 0.028
+            height: libRow.pillH
+            radius: Theme.controlRadius
+            color: pickOver.containsMouse ? "#2A2A2E" : "#1B1B1F"
+            border.color: "#3A3A40"
+            border.width: 1
+
+            Text {
+                id: pickText
+                anchors.centerIn: parent
+                text: "选择文件夹"
+                color: Theme.textPrimary
+                font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                font.family: Theme.uiFont
+            }
+            MouseArea {
+                id: pickOver
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: folderPick.open()
+            }
         }
+
+        Rectangle {
+            id: rescan
+            width: rescanText.implicitWidth + shellHeight * 0.028
+            height: libRow.pillH
+            radius: Theme.controlRadius
+            color: over.containsMouse ? "#2A2A2E" : "#1B1B1F"
+            border.color: "#3A3A40"
+            border.width: 1
+
+            Text {
+                id: rescanText
+                anchors.centerIn: parent
+                text: "重新扫描"
+                color: Theme.textPrimary
+                font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                font.family: Theme.uiFont
+            }
+            MouseArea {
+                id: over
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: library.scan()
+            }
+        }
+
         Text {
+            id: stats
+            anchors.verticalCenter: parent.verticalCenter
             text: library.mediaCount + " 部 · " + library.fileCount + " 个文件 · 时长 "
                   + library.durationCount + "/" + library.fileCount + " · 未解析 "
                   + library.unparsedCount + " · 上次扫描 " + library.lastScanMs + " ms"
             color: Theme.textSecondary
-            font.pixelSize: Theme.subtitleFontRatio * page.height
+            font.pixelSize: Theme.subtitleFontRatio * shellHeight
             font.family: Theme.uiFont
-        }
-    }
-
-    Rectangle {
-        id: rescan
-        anchors.right: parent.right
-        anchors.rightMargin: page.width * 0.02
-        y: header.y + header.height * 0.15
-        width: rescanText.implicitWidth + page.width * 0.02
-        height: rescanText.height + page.height * 0.018
-        radius: height / 2
-        color: over.containsMouse ? "#2A2A2E" : "#1B1B1F"
-        border.color: "#3A3A40"
-        border.width: 1
-
-        Text {
-            id: rescanText
-            anchors.centerIn: parent
-            text: "重新扫描"
-            color: Theme.textPrimary
-            font.pixelSize: Theme.subtitleFontRatio * page.height
-            font.family: Theme.uiFont
-        }
-        MouseArea {
-            id: over
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: library.scan()
         }
     }
 
@@ -138,78 +202,140 @@ Item {
         }
     }
 
-    Rectangle {
-        id: pick
-        anchors.right: rescan.left
-        anchors.rightMargin: page.width * 0.012
-        y: rescan.y
-        width: pickText.implicitWidth + page.width * 0.02
-        height: rescan.height
-        radius: height / 2
-        color: pickOver.containsMouse ? "#2A2A2E" : "#1B1B1F"
-        border.color: "#3A3A40"
-        border.width: 1
+    // 本地 / 在线媒体: the chrome line opens at the page's gutter, where the page title used
+    // to be. 返回播放 rides along at the right end of it - the library covers the whole
+    // window and hides the transport row, so this page owns its own exit, and an empty
+    // library has no card to click.
+    Row {
+        id: modeTabs
+        x: page.gutter
+        y: page.rowY
+        height: libRow.pillH
+        spacing: page.gap
 
-        Text {
-            id: pickText
-            anchors.centerIn: parent
-            text: "选择文件夹"
-            color: Theme.textPrimary
-            font.pixelSize: Theme.subtitleFontRatio * page.height
-            font.family: Theme.uiFont
+        Repeater {
+            // The download list is the third page, not a view inside the online one: the
+            // tab sits in the chrome line with the other two, so a job is one click away
+            // from anywhere. Its count is the row's own badge and only appears when there
+            // is something to count.
+            model: [{ key: "local", text: "本地媒体库" },
+                    { key: "online", text: "在线媒体" },
+                    { key: "jobs", text: jobsPage.jobs.length > 0
+                                   ? "下载中 " + jobsPage.jobs.length : "下载中" }]
+            delegate: Rectangle {
+                required property var modelData
+                width: mt.implicitWidth + shellHeight * 0.028
+                height: parent.height
+                radius: Theme.controlRadius
+                color: page.mode === modelData.key ? Theme.accent
+                       : (mth.containsMouse ? "#2A2A2E" : "#1B1B1F")
+                border.color: "#3A3A40"
+                border.width: 1
+                Text {
+                    id: mt
+                    anchors.centerIn: parent
+                    text: modelData.text
+                    color: page.mode === modelData.key ? "#15151A" : Theme.textPrimary
+                    font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                    font.family: Theme.uiFont
+                }
+                MouseArea {
+                    id: mth
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.mode = modelData.key
+                }
+            }
         }
-        MouseArea {
-            id: pickOver
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: folderPick.open()
+
+        Rectangle {
+            id: backToPlayer
+            width: backText.implicitWidth + shellHeight * 0.028
+            height: modeTabs.height
+            radius: Theme.controlRadius
+            color: backOver.containsMouse ? "#2A2A2E" : "#1B1B1F"
+            border.color: "#3A3A40"
+            border.width: 1
+
+            Text {
+                id: backText
+                anchors.centerIn: parent
+                text: "返回播放"
+                color: Theme.textPrimary
+                font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                font.family: Theme.uiFont
+            }
+            MouseArea {
+                id: backOver
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: page.playerRequested()
+            }
         }
     }
 
-    // The library covers the whole window and hides the transport row, so this
-    // page owns its own exit — an empty library has no card to click.
-    Rectangle {
-        id: backToPlayer
-        anchors.right: pick.left
-        anchors.rightMargin: page.width * 0.012
-        y: pick.y
-        width: backText.implicitWidth + page.width * 0.02
-        height: pick.height
-        radius: height / 2
-        color: backOver.containsMouse ? "#2A2A2E" : "#1B1B1F"
-        border.color: "#3A3A40"
-        border.width: 1
+    OnlinePage {
+        x: 0
+        // Up by its own pad, so the page's first row of pills lands on the same line the
+        // library's row occupies: the two tabs share their second line instead of one of
+        // them carrying an empty band.
+        y: libRow.y - page.gutter
+        width: page.width
+        // Down to the window's own bottom: this page keeps its own gutter on all four
+        // sides, and stopping where the grid stops would charge for it twice - the bottom
+        // margin measured 26 px instead of 13.
+        height: page.height - y
+        visible: page.mode === "online"
+        // The same gutter, so the posters and the pills above them start on one line
+        // rather than on two ratios of two different heights.
+        pad: page.gutter
+        gap: page.gap
+        saveDir: page.saveDir
+        onTipFor: (item, text, keys) => page.tipFor(item, text, keys)
+        onTipOff: (item) => page.tipOff(item)
+        // A poster's menu joined a download; the list it lands in is the page beside this
+        // one, so the host does the switching.
+        onJobsRequested: page.mode = "jobs"
+    }
 
-        Text {
-            id: backText
-            anchors.centerIn: parent
-            text: "返回播放"
-            color: Theme.textPrimary
-            font.pixelSize: Theme.subtitleFontRatio * page.height
-            font.family: Theme.uiFont
-        }
-        MouseArea {
-            id: backOver
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: win.page = "player"
-        }
+    DownloadsPage {
+        id: jobsPage
+        x: 0
+        // One gutter under the tab row. This page has no second row of its own - the
+        // sources belong to the online page - so its list starts where the library's grid
+        // would start, one gutter below the row above it.
+        y: modeTabs.y + modeTabs.height + page.gutter
+        width: page.width
+        height: page.height - y - page.gutter
+        visible: page.mode === "jobs"
+        enabled: visible
+        saveDir: page.saveDir
+        onDirRequested: page.dirRequested()
+        onPlayerRequested: page.playerRequested()
+        onTipFor: (item, text, keys) => page.tipFor(item, text, keys)
+        onTipOff: (item) => page.tipOff(item)
     }
 
     GridView {
         id: grid
-        x: page.width * 0.02
-        y: header.y + header.height + page.height * 0.03
-        width: page.width - 2 * page.width * 0.02
-        height: page.height - y - page.height * 0.03
+        visible: page.mode === "local"
+        enabled: visible
+        // -4: a card's art is inset 4 px inside its cell, and it is the art's edges
+        // that should line up with the two pill rows above, not the invisible cell.
+        x: page.gutter - page.cardInset
+        // The card's own inset comes back out of the margin, so what is 13 px from the row
+        // above is the art's edge - the same reading the 在线媒体 tab gives between its two
+        // pill rows and its first poster.
+        y: libRow.y + libRow.height + page.gutter - page.cardInset
+        width: page.width - 2 * (page.gutter - page.cardInset)
+        height: page.height - y - page.gutter
         clip: true
         cellWidth: page.colW
         cellHeight: page.artH + page.textBlock
         boundsBehavior: Flickable.StopAtBounds
         model: libraryModel
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         delegate: Item {
             id: cell
@@ -224,12 +350,11 @@ Item {
             required property var mediaId
             // The rename is edited in place, on the card's own label - not in a dialog.
             property bool renaming: false
-            // One "the pointer is on this card" for everything the card shows. Qt hands a
-            // mouse-over to exactly one item, so while the corner ✕ is hovered the card's
-            // own area reports false - and the ✕ used to be shown *by* that flag, which
-            // meant moving onto it hid it, which gave the hover back, which showed it
-            // again. Measured: the plate's colour never changed under the pointer.
-            readonly property bool hovered: mouse.containsMouse || hideHit.containsMouse
+            // One "the pointer is on this card" for everything the card shows. It used to
+            // also watch the corner ✕, because Qt hands a mouse-over to exactly one item
+            // and hovering that ✕ took the card's own flag away - which hid the ✕, which
+            // gave the flag back. The mark is gone, so there is nothing left to keep lit.
+            readonly property bool hovered: mouse.containsMouse
 
             function startRename() {
                 renameField.text = cell.title
@@ -251,14 +376,14 @@ Item {
 
             Rectangle {
                 id: art
-                x: 4
-                y: 4
-                width: parent.width - 8
+                x: page.cardInset
+                y: page.cardInset
+                width: parent.width - 2 * page.cardInset
                 height: page.artH
                 radius: 4
                 color: "#17171B"
-                border.width: cell.hovered ? 2 : 1
-                border.color: cell.hovered ? Theme.accent : "#2C2C31"
+                border.width: 1
+                border.color: "#2C2C31"
 
                 // The first frame, cropped to the card by the box it fills. Two
                 // pixels inside the card: at one pixel the image's square corner
@@ -337,6 +462,25 @@ Item {
                         color: Theme.accent
                     }
                 }
+
+                // The hover frame, three sides. The fourth would have lain on top of the
+                // resume bar that lives on this card's bottom edge - two accent lines, one
+                // above the other. A Rectangle can only border all four sides, so the ring
+                // is drawn 4 px taller than the card and cut back to it: its bottom band
+                // falls under the cut, and the top corners keep the card's own 4 px arc.
+                Item {
+                    anchors.fill: parent
+                    visible: cell.hovered
+                    clip: true
+                    Rectangle {
+                        width: parent.width
+                        height: parent.height + 4
+                        radius: 4
+                        color: "transparent"
+                        border.width: 2
+                        border.color: Theme.accent
+                    }
+                }
             }
 
             Text {
@@ -350,7 +494,7 @@ Item {
                 maximumLineCount: 2
                 wrapMode: Text.WordWrap
                 color: Theme.textPrimary
-                font.pixelSize: page.height * 0.021
+                font.pixelSize: shellHeight * 0.021
                 font.family: Theme.uiFont
             }
             // Year gets its own line: sharing one item let a long title push it out.
@@ -359,7 +503,7 @@ Item {
                 y: nameText.y + nameText.height + 1
                 text: year > 0 ? String(year) : " "
                 color: Theme.textSecondary
-                font.pixelSize: page.height * 0.019
+                font.pixelSize: shellHeight * 0.019
                 font.family: Theme.uiFont
             }
 
@@ -378,54 +522,7 @@ Item {
                         cardMenu.showAt(at.x, at.y, page.cardItems(), cell);
                         return;
                     }
-                    playerCore.load(path); win.page = "player";
-                }
-            }
-
-            // Remove from the library. Only on hover, and only clickable while shown:
-            // an affordance nobody can see must not be a hit target. Declared after the
-            // card's own MouseArea so it is the one that gets the click.
-            //
-            // A plate, not a loose glyph: the card is a frame off the film, and the
-            // ✕ used to sit directly on it - white on hover over a bright frame read as
-            // nothing at all. The plate is wider than the glyph so the mark that can be
-            // hit is the mark that is drawn.
-            Rectangle {
-                id: hideBadge
-                z: 2
-                anchors.top: art.top
-                anchors.right: art.right
-                anchors.margins: 8
-                width: hideGlyph.width + hideGlyph.height * 1.1
-                height: hideGlyph.height * 1.5
-                radius: 4
-                color: hideHit.containsMouse ? "#F2000000" : "#B3000000"
-                visible: cell.hovered && !cell.renaming
-
-                Text {
-                    id: hideGlyph
-                    anchors.centerIn: parent
-                    // The plate is sized and placed off the glyph's *line box*, and the
-                    // ✕'s ink does not sit in the middle of that box - measured on the
-                    // plate over a white part of the frame (its edges are a hard
-                    // transition there): plate rows 111..142, ink rows 123..133, so the
-                    // mark lay 1.5 px below the plate's centre at a 17.35 px font.
-                    // Centring the box cannot fix that, so the box goes up by the same
-                    // 0.086 of the type size, which keeps the mark centred at every
-                    // window size.
-                    anchors.verticalCenterOffset: -font.pixelSize * 0.086
-                    text: "✕"
-                    color: hideHit.containsMouse ? Theme.textPrimary : Theme.glyph
-                    font.pixelSize: page.height * 0.024
-                    font.family: Theme.uiFont
-                }
-                MouseArea {
-                    id: hideHit
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    enabled: hideBadge.visible
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: library.hideMedia(cell.mediaId)
+                    playerCore.load(path); page.playerRequested();
                 }
             }
 
@@ -464,6 +561,16 @@ Item {
                 }
             }
         }
+    }
+
+    // The grid's bar, beside the grid rather than inside it: a Flickable adopts its
+    // children into the scrolling content, and this must not scroll.
+    ThinScrollBar {
+        target: grid
+        wantVisible: grid.visible
+        x: 0 + grid.width - width + 2
+        y: grid.y
+        height: grid.height
     }
 
     // The card's menu, and the layer that dismisses it. Both above the grid: with a menu

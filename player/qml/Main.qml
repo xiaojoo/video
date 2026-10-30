@@ -1,4 +1,5 @@
 import QtQuick
+import QtCore
 import QtQuick.Dialogs
 import Playerui
 
@@ -516,6 +517,21 @@ Window {
     // window cannot grow (the maximised, fullscreen or mini state, or a screen edge
     // closer than the panel is wide) `plExtra` stays 0 and the dock stands over the
     // right of the picture instead; the film never shrinks because the dock opened.
+    // Where new download jobs land, until the user picks somewhere else. Read
+    // through the dock's own line so the two can never disagree.
+    //
+    // Three sources, in that order: --dl-dir (a probe run, which must not touch the
+    // folder the user chose), the choice stored by the settings card, and the OS's
+    // Movies folder. `prefs` is the QtCore Settings wrapper - the write happens in
+    // `chooseDir`, so the binding stays a binding instead of being assigned over.
+    property string dlDir: downloads.dirOverridden() ? downloads.defaultDir()
+                                                     : (prefs.dir.length > 0 ? prefs.dir
+                                                                             : downloads.defaultDir())
+    function chooseDir(path) {
+        if (path.length === 0)
+            return
+        prefs.dir = path
+    }
     property bool plOpen: false
     // Which of the dock's two lists is showing. Only the labels inside the dock change
     // it; the cell and `P` just open and close the column, and it reopens on whichever
@@ -776,8 +792,12 @@ Window {
         id: poke
         interval: 3000
         // While the film is stopped there is nothing for the chrome to get out of
-        // the way of, so the bar and the menus stay up until it runs again.
-        onTriggered: if (!win.keepUi && !playerCore.paused) win.uiVisible = false
+        // the way of, so the bar and the menus stay up until it runs again. The same
+        // holds for a window that never got a film at all: a file that cannot open
+        // left a black rectangle with no caption and no controls, and Alt+F4 was the
+        // only way out (measured: the chrome went at 3 s and never came back).
+        onTriggered: if (!win.keepUi && playerCore.hasMedia && !playerCore.paused)
+                         win.uiVisible = false
     }
 
     // The scrub preview is built once the length is known: the strip is spread
@@ -795,6 +815,13 @@ Window {
             }
         }
         function onEndOfFile() { win.plAdvance() }
+        // The countdown runs from the last touch, and a film that was still opening
+        // when it expired left the chrome up for the rest of the session: start it
+        // over once there is something on screen to get out of the way of.
+        function onHasMediaChanged() {
+            if (playerCore.hasMedia)
+                win.touch();
+        }
         // Pausing brings the chrome up - there is nothing to hide it for - and
         // playing again re-arms the countdown, which nothing else would do.
         function onPausedChanged() {
@@ -866,19 +893,27 @@ Window {
         // dock's own header and its ✕.
         anchors.rightMargin: win.plExtra
         height: caption.height
-        // Above `ui`: the click-outside layer that dismisses a dropdown or the drawer
-        // covers the whole window, and the window's own close/min/max must not be eaten
-        // by it - measured, a click on the maximise tile with the drawer out only closed
-        // the drawer.
-        z: 1
+        // Also above `ui`: the click-outside layer that dismisses a dropdown or the drawer
+        // covers the whole window, and the window's own close/min/max must not be eaten by
+        // it - measured, a click on the maximise tile with the drawer out only closed the
+        // drawer.
+        //
+        // And above the library page's Loader (z 10). It was 1, which put the whole caption
+        // under that page's own background: on the library page the three tiles - and now
+        // the gear, which is where sources are added - were not in the picture at all and
+        // nothing there could be hit. Measured, that strip was the page's flat colour until
+        // this moved.
+        z: 11
 
         CaptionButtons {
             id: caption
             anchors.top: parent.top
             anchors.right: parent.right
             fullscreen: videoHost.fullscreen
+            settingsOn: settings.visible
             onPicked: (what) => {
-                if (what === "close") win.close();
+                if (what === "settings") settings.open();
+                else if (what === "close") win.close();
                 else if (what === "max") videoHost.toggleMaximized();
                 else videoHost.minimize();   // the host owns the taskbar entry
             }
@@ -894,13 +929,14 @@ Window {
             readonly property real room: Math.max(0, topRow.width - 2 * caption.gap - caption.width)
             width: room
             // Centred on the *name line*, not on the two-line block. Measured off the
-            // screen: the three glyphs' ink lies on row 18.5 of this row (the tiles run
-            // 6..34, so the ink sits 1.5 px above the tile centre), and the name's ink band
-            // sits 2 px below the middle of its own line box - so the box goes in at
+            // screen: the glyphs' ink sat 1.5 px above the tile centre, and the name's ink
+            // band sits 2 px below the middle of its own line box - so the box goes in at
             // tile centre -3.5 and the two ink bands meet. Centring the block instead left
             // the name 8.5 px above the glyphs, and because the line gap is a ratio of the
             // window height it also slid the name up and down as the window changed shape.
-            readonly property real rowMid: caption.gap + caption.tileH / 2 - 3.5
+            // The tiles start on the page's inset now, not on their own 6 px gap, so this
+            // follows `edge` and the name stays on their line.
+            readonly property real rowMid: caption.edge + caption.tileH / 2 - 3.5
             y: Math.max(0, rowMid - mediaTitle.height / 2)
             spacing: Theme.titleLineGapRatio * win.vh
 
@@ -1039,14 +1075,6 @@ Window {
             onTipOff: (item) => tip.hideFor(item)
         }
 
-        // One bubble for the whole chrome: the transport cells and the caption
-        // buttons both hand it their item, and it places itself above or below
-        // them without ever leaving the window.
-        Tip {
-            id: tip
-            z: 30
-            refH: shellHeight
-        }
 
         // Click outside an open dropdown closes it. This sits *under*
         // the chrome (the gesture layer is below it, the controls above): a click on
@@ -1203,6 +1231,16 @@ Window {
     // hold things that are not in the library, and a folder scan would either copy or
     // catalogue them. Neither happens - the dialog's urls are handed to the database as
     // paths, and only paths.
+    FolderDialog {
+        id: dirPick
+        title: "下载存到哪个文件夹"
+        // QML has no QUrl here, and a url-typed property takes a string, so the two
+        // directions are done by hand: a Windows path to a file:/// url and back.
+        currentFolder: "file:///" + win.dlDir.replace(/\\/g, "/")
+        onAccepted: win.chooseDir(decodeURIComponent(selectedFolder.toString()
+                    .replace(/^file:\/\/\/?/, "")).replace(/\//g, "\\"))
+    }
+
     FileDialog {
         id: filePick
         title: "添加到播单"
@@ -1247,7 +1285,16 @@ Window {
         // the item under the pointer for every point on the player page came back as this
         // Loader, so nothing below it was ever reached.
         visible: page === "library"
-        sourceComponent: LibraryPage { }
+        sourceComponent: LibraryPage {
+            saveDir: win.dlDir
+            onTipFor: (item, text, keys) => tip.show(item, text, keys, "above")
+            onTipOff: (item) => tip.hideFor(item)
+            // The folder picker is the window's, and the library page is a component of
+            // its own: ids do not cross that boundary, so the ask comes back up as a
+            // signal instead of reaching for `dirPick` from there.
+            onDirRequested: dirPick.open()
+            onPlayerRequested: win.page = "player"
+        }
     }
 
     // --- frame gestures ---------------------------------------------------
@@ -1289,7 +1336,14 @@ Window {
 
     MouseArea {
         id: topStrip
-        z: 21
+        // Under the library page (z 10), not over it. The strip is 34 px tall - the height
+        // of the caption - and that is taller than the page's first row of pills, so while
+        // it sat above that page it ate the whole top half of every pill there: measured,
+        // a click at y=20 on 在线媒体 did nothing and the same click at y=40 switched the
+        // page. Underneath, a press on a pill is consumed by the pill and a press on the
+        // empty part of the strip still falls through to here, because the page's own
+        // items do not take the mouse.
+        z: 9
         x: win.cornerGrab
         y: 0
         width: Math.max(0, win.stageW - 2 * win.cornerGrab - caption.width)
@@ -1300,7 +1354,10 @@ Window {
         // maximised rect around instead would read as broken.
         enabled: !videoHost.fullscreen && !videoHost.zoomed
         hoverEnabled: true
-        cursorShape: Qt.SizeAllCursor
+        // Arrow, not the four-way move cursor: this strip is a drag handle, but the
+        // cross of arrows on top of it read as a broken pointer. Dragging still works -
+        // the shape is only what MouseArea paints on enter, it gates nothing.
+        cursorShape: Qt.ArrowCursor
         // Not QWindow::startSystemMove: measured on a real 1080p film, the shell's move
         // loop starves our presentation path - the picture stops changing entirely while
         // the window glides, and comes back in one jump on release.
@@ -1319,4 +1376,32 @@ Window {
               + "  chapters=" + playerCore.chapterStarts.length
               + "  vol=" + Math.round(playerCore.volume) + "  fs=" + playerCore.fullscreen + " fsActive=" + playerCore.fullscreenActive
     }
+    // One bubble for the whole chrome - and for the download rows on the library page.
+    // It is a child of the window rather than of `ui`, because `ui` is hidden while the
+    // library is up and a bubble inside it would never be drawn there.
+    Tip {
+        id: tip
+        z: 60
+        refH: shellHeight
+    }
+
+    // 设置, opened from the caption. It is the window's, not the online page's, for the
+    // same reason the caption is: the gear has to work while the player is on screen too,
+    // and the card is the only place a source can be added, switched off or removed.
+    SourceSettings {
+        id: settings
+        refWidth: win.width
+        dlDir: win.dlDir
+        onDirRequested: dirPick.open()
+    }
+
+    // The one thing the settings card stores that outlives the process. `QtCore.Settings`
+    // writes on assignment; the window never assigns `dlDir` itself, so the chain
+    // --dl-dir > stored > Movies folds into one binding instead of an if-tree in JS.
+    Settings {
+        id: prefs
+        category: "downloads"
+        property string dir: ""
+    }
+
 }

@@ -49,6 +49,10 @@ public:
     qint64 lastScanMs() const { return m_scanMs; }
 
     Q_INVOKABLE bool open(const QString &dbPath);
+    // The catalogue's own connection, shared with the download table so one file
+    // holds both: --db and the migration above stay the only place a data path is
+    // ever decided.
+    QSqlDatabase database() const { return m_db; }
     // The folder picker answers with a url and Qt 6.11 has no toLocalFile() on that
     // type in QML, so a url is the one accepted shape here.
     Q_INVOKABLE void addRoot(const QUrl &folder);

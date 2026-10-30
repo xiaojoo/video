@@ -52,6 +52,13 @@ Item {
         "prevChapter":  { d: "M6 5.5v13M19 6l-9 6 9 6z", filled: true },
         "nextChapter":  { d: "M18 5.5v13M5 6l9 6-9 6z", filled: true },
         "play":         { d: "M8 5l12 7-12 7z", filled: true },
+        // The two pull modes of a download job. They had been the words 全下 / 边看, which
+        // read as a label rather than a control; these are the same 24-unit space as the
+        // transport glyphs, and the bubble over each one says the word.
+        "downloadAll":  { d: "M12 3.6v10.2M7.4 9.6L12 14.2l4.6-4.6M4.6 19.6h14.8",
+                          filled: false },
+        "watchNow":     { d: "M12 3.6a8.4 8.4 0 1 0 0.01 16.8A8.4 8.4 0 0 0 12 3.6zM9.9 8.3l6.1 3.7-6.1 3.7z",
+                          filled: false },
         "pause":        { d: "M8.5 5.5h3.2v13H8.5zM14.3 5.5h3.2v13h-3.2z", filled: true },
         "back10":       { d: "M12 5a7 7 0 1 0 6.9 8.4", filled: false, cap: head(18.9, 13.4, 0.199, -0.98, 3.2, 2.0, 1.0) },
         "fwd10":        { d: "M12 5a7 7 0 1 1-6.9 8.4", filled: false, cap: head(5.1, 13.4, -0.199, -0.98, 3.2, 2.0, 1.0) },
@@ -81,6 +88,17 @@ Item {
         "speed":        { d: "M4 17a8 8 0 1 1 16 0M12 17L16.2 11.4", filled: false,
                           cap: "M10.5 17a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z" },
         "info":         { d: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 11v5.5M12 7.6v.9", filled: false },
+        // The download row's own marks: a folder, a bin, a panel. Same grid,
+        // same 1.6 stroke, so they sit beside the transport glyphs at 18 px without
+        // looking thinner.
+        "folder":       { d: "M3.4 8a1.8 1.8 0 0 1 1.8-1.8h3.9l1.9 2h7.8A1.8 1.8 0 0 1 20.6 8v7.2a1.8 1.8 0 0 1-1.8 1.8H5.2a1.8 1.8 0 0 1-1.8-1.8z", filled: false },
+        // The settings card's own two: the cloud that stands for an online source, and the
+        // chain that stands for a URL.
+        "cloudDown":    { d: "M6.9 18.4a3.5 3.5 0 0 1-.2-7 5.3 5.3 0 0 1 10.3-1.3 3.6 3.6 0 0 1 .7 7.1l-.4.2"
+                             + "M12 10.1v4.2M10.2 12.5l1.8 1.8 1.8-1.8", filled: false },
+        "link":         { d: "M10.2 13.8a3.7 3.7 0 0 0 5.2 0l2.4-2.4a3.7 3.7 0 0 0-5.2-5.2l-1.2 1.2"
+                             + "M13.8 10.2a3.7 3.7 0 0 0-5.2 0l-2.4 2.4a3.7 3.7 0 0 0 5.2 5.2l1.2-1.2", filled: false },
+        "trash":        { d: "M4.2 7.2h15.6M9.6 7.2V5.4h4.8v1.8M6.6 7.2l.9 11.4h9l.9-11.4M10.2 10.6v5M13.8 10.6v5", filled: false },
         "collapse":     { d: "M9 9L4 4M4 9V4h5M15 9l5-5M20 9V4h-5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5", filled: false },
         "min":          { d: "M4 12h16", filled: false },
         "max":          { d: "M5 5h14v14H5z", filled: false },
@@ -105,7 +123,16 @@ Item {
         preferredRendererType: Shape.CurveRenderer
 
         ShapePath {
-            strokeWidth: root.spec.filled ? 1.2 : root.weight
+            // A stroke under about one device pixel never reaches the glyph's own
+            // colour - the renderer spreads it over the neighbours instead. Measured
+            // on the download page's marks: at 12 px (0.8 device px) the brightest
+            // pixel was 204 of 230, at 13 px 224, at 14 px 209; at 15 px and up it
+            // was 230. Holding the stroke at >= 1.25 device px lifts those three to
+            // 229/230/226 and costs 4%, 58% and 15% more ink on glyphs that were
+            // drawing *less* ink than the smaller size above them. From 18 px up the
+            // floor is below the shipped weight, so nothing changes there.
+            strokeWidth: root.spec.filled ? 1.2
+                                          : Math.max(root.weight, 1.25 * 24 / Math.max(1, root.width))
             strokeColor: root.color
             fillColor: root.spec.filled ? root.color : "transparent"
             strokeStyle: ShapePath.SolidLine

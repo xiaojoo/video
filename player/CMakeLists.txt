@@ -4,7 +4,7 @@ project(Playerui VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Svg Sql QuickDialogs2)
+find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Svg Sql QuickDialogs2 Network)
 qt_standard_project_setup(REQUIRES 6.8)
 
 qt_add_executable(appPlayerui
@@ -17,6 +17,10 @@ qt_add_executable(appPlayerui
     src/videoitem.cpp
     src/library.h
     src/library.cpp
+    src/downloads.h
+    src/downloads.cpp
+    src/online.h
+    src/online.cpp
     src/bluray.h
     src/bluray.cpp
     src/duration.h
@@ -72,9 +76,17 @@ qt_add_qml_module(appPlayerui
         qml/LibraryPage.qml
         qml/ContextMenu.qml
         qml/Playlist.qml
+        qml/OnlinePage.qml
+        qml/DownloadsPage.qml
+        qml/AddLinksDialog.qml
+        qml/DownloadsPanel.qml
+        qml/MyField.qml
+        qml/SourceSettings.qml
+        qml/ThinScrollBar.qml
 )
 
-target_link_libraries(appPlayerui PRIVATE Qt6::Quick Qt6::Svg Qt6::QuickControls2 Qt6::Sql Qt6::QuickDialogs2 user32 gdi32 dwmapi d3d11 comctl32 shell32)
+target_link_libraries(appPlayerui PRIVATE Qt6::Quick Qt6::Svg Qt6::QuickControls2 Qt6::Sql
+    Qt6::QuickDialogs2 Qt6::Network user32 gdi32 dwmapi d3d11 comctl32 shell32)
 
 # Dev build: console subsystem so qml errors reach the terminal. Packaging
 # configures with -DSHIP_WIN32=ON so double-clicking does not open a console.

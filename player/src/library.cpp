@@ -822,6 +822,11 @@ void Library::saveProgress(const QString &path, double pos, double dur, const QS
 {
     if (path.isEmpty() || dur <= 0.0 || pos <= 0.0)
         return;
+    // A film watched off a running job is a loopback URL that dies with the job. As a
+    // resume row it is always the newest one, and the launch after it finds no file
+    // behind it: measured, the window opened on nothing and went black.
+    if (QUrl(path).scheme().startsWith(u"http"_qs))
+        return;
     // The catalogue stores forward slashes; a path typed with backslashes is the same
     // file but a different string to SQLite, so both sides settle on the file system's
     // own absolute form.

@@ -376,13 +376,24 @@ void PlayerCore::selectTrack(const QString &kind, int id)
 
 void PlayerCore::load(const QString &url)
 {
+    loadTitled(url, QString());
+}
+
+void PlayerCore::loadTitled(const QString &url, const QString &title)
+{
     if (!m_mpv)
         return;
+    // Set before the render-ready gate so a remembered load replays with its name.
+    if (m_titleOverride != title) {
+        m_titleOverride = title;
+        emit mediaTitleChanged();
+    }
     // The libmpv VO cannot come up without a render context - it answers
     // "No render context set" and leaves the window black - so a load issued
     // before VideoItem is ready is remembered and replayed instead.
     if (!m_renderReady) {
         m_pendingUrl = url;
+        m_pendingTitle = title;
         return;
     }
     // The scrub preview keys its cache on this, so it has to be the exact url
@@ -449,8 +460,10 @@ void PlayerCore::markRenderReady()
     if (m_pendingUrl.isEmpty())
         return;
     const QString u = m_pendingUrl;
+    const QString t = m_pendingTitle;
     m_pendingUrl.clear();
-    load(u);
+    m_pendingTitle.clear();
+    loadTitled(u, t);
 }
 
 void PlayerCore::setStartAt(double seconds)
