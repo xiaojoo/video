@@ -24,6 +24,11 @@ Item {
     enabled: visible
 
 
+    // The mark's own travel, and the range it drives. Both the thumb's position and the
+    // drag are read off this pair, so the mark is where the pointer put it.
+    readonly property real travel: Math.max(1, height - thumb.height)
+    readonly property real scrollable: target ? Math.max(1, target.contentHeight - target.height) : 1
+
     Rectangle {
         id: thumb
 
@@ -35,10 +40,10 @@ Item {
         // property and does not read from outside the flickable, so this is the same
         // fraction taken from contentY/contentHeight.
         readonly property real span: bar.target ? Math.max(1, bar.target.contentHeight) : 1
-        y: bar.target ? Math.min(bar.height - height,
-                                 bar.target.contentY / span * bar.height) : 0
+        y: bar.target ? Math.round(bar.target.contentY / bar.scrollable * bar.travel) : 0
         height: bar.target
-                ? Math.max(28, Math.min(bar.height, bar.height / span * bar.height)) : 0
+                ? Math.round(Math.max(28, Math.min(bar.height,
+                                                   bar.height / span * bar.height))) : 0
     }
 
     MouseArea {
@@ -47,23 +52,27 @@ Item {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onPressed: (mouse) => bar.moveTo(at(mouse.y))
-        onPositionChanged: (mouse) => { if (pressed) bar.moveTo(at(mouse.y)); }
-
-        // Where along the track a pointer position is. This cannot be a property binding:
-        // `mouse` only exists inside the signal handlers, and a binding that names it
-        // throws ReferenceError every time the item repaints.
-        function at(y) {
-            return height > 0 ? Math.max(0, Math.min(1, y / height)) : 0;
+        // How far below the thumb's top the press landed. Holding on to it is what keeps
+        // the mark under the pointer; the mapping before this one put the *middle of the
+        // viewport* under the cursor instead, so grabbing the top edge of the 368 px thumb
+        // of the magnet list (11 seeds, 432 px of track, 74 px scrollable) moved the
+        // content by 185 px of thumb travel in one step - the list lurched, and after that
+        // the mark and the pointer never agreed again.
+        property int grab: 0
+        onPressed: (mouse) => {
+            grab = Math.max(0, Math.min(thumb.height, mouse.y - thumb.y));
+            bar.setFromTrack(mouse.y - grab);
         }
+        onPositionChanged: (mouse) => { if (pressed) bar.setFromTrack(mouse.y - grab); }
     }
 
-    // Put the clicked point of the track under the middle of the viewport.
-    function moveTo(f) {
+    // A whole pixel: a fractional contentY leaves every row between two device rows, and
+    // the separators and the text resample as the drag moves.
+    function setFromTrack(trackY) {
         const t = target;
         if (!t)
             return;
-        const last = Math.max(0, t.contentHeight - t.height);
-        t.contentY = Math.max(0, Math.min(last, f * t.contentHeight - t.height / 2));
+        const f = Math.max(0, Math.min(1, trackY / travel));
+        t.contentY = Math.round(f * scrollable);
     }
 }

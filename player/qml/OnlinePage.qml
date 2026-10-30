@@ -357,6 +357,8 @@ Item {
                     // downloaded until one of them is chosen.
                     onClicked: {
                         magPopup.links = [];
+                        magPopup.note = "";
+                        magPopup.waiting = true;
                         page.detail = modelData;
                         online.magnets(modelData.href);
                     }
@@ -522,8 +524,33 @@ Item {
     Popup {
         id: magPopup
         property var links: []
+        // Why the list is empty, in the dialog's own words. It used to be written into
+        // online.error, which is the posters' line: the 429 showed up across the page
+        // while this dialog was already listing seeds.
+        property string note: ""
+        // The dialog's own wait: the wall's busy flag is not set by a magnet fetch
+        // anymore, so nothing else would say "not yet, hold on".
+        property bool waiting: false
         modal: true
-        anchors.centerIn: Overlay.overlay
+        // No dim: the posters behind are the context of the choice, and the wall should
+        // not go grey every time one of them is clicked.
+        Overlay.modal: Item { }
+        // Whole pixels, not `anchors.centerIn`: the overlay is 723 px tall and this card
+        // comes out an even height, so centring lands the whole layer on y=159.5. Measured
+        // on his own title: the 1 px border was drawn as two columns of (39,39,44) instead
+        // of one column of (58,58,64) like the settings card, and every glyph in the list
+        // was resampled at that half offset - which is the text shimmering while the bar
+        // is dragged, the bar itself having been fixed already.
+        readonly property Item ovl: Overlay.overlay
+        // The top edge sits where the tallest this panel can get would be centred, and the
+        // card only ever grows downward from there. Centring on the *current* height made
+        // the whole card jump upward the moment the links landed - measured on 坠落2:
+        // waiting 132 px tall with its top at y=342, nine rows 485 px tall with its top at
+        // y=165, i.e. 177 px of lurch on every first open. That was the "首次抖", not the
+        // text.
+        readonly property real maxH: Math.round(page.height * 0.72)
+        x: ovl ? Math.round((ovl.width - magPopup.width) / 2) : 0
+        y: ovl ? Math.round((ovl.height - maxH) / 2) : 0
         width: Math.round(page.width * 0.5)
         padding: magPad
         visible: page.detail !== null
@@ -533,12 +560,13 @@ Item {
         readonly property real magGap: Math.round(shellHeight * 0.019)
         readonly property real magRow: Math.round(shellHeight * 0.064)
         readonly property real titleH: Math.round(page.titleFs * 1.35)
-        readonly property real noteH: (online.busy || links.length === 0)
-                                      ? Math.round(page.smallFs * 1.35) + magGap : 0
-        // The header is counted arithmetically rather than off the Column's implicitHeight:
-        // the list's height comes out of the popup's, so a content-driven popup height would
-        // be a ring with no solution.
-        readonly property real headH: titleH + noteH + 2 * magGap + 1
+        // The header is the title and the rule, nothing else. The one line that answers
+        // the click ("正在取磁力…", "站点回了 429…") used to sit here, which made it look
+        // like part of the heading; it belongs to the list under the rule, because that
+        // empty area is what it is talking about. headH is counted arithmetically rather
+        // than off the Column's implicitHeight: the list's height comes out of the
+        // popup's, so a content-driven popup height would be a ring with no solution.
+        readonly property real headH: titleH + 2 * magGap + 1
         height: Math.min(2 * magPad + headH + Math.max(1, links.length) * magRow,
                          Math.round(page.height * 0.72))
 
@@ -562,15 +590,6 @@ Item {
                 font.pixelSize: page.titleFs
                 font.family: Theme.uiFont
             }
-            Text {
-                width: parent.width
-                visible: magPopup.noteH > 0
-                text: online.busy ? "正在取磁力…"
-                    : (magPopup.links.length === 0 ? "这一页没有可用的磁力链接" : "")
-                color: online.busy ? Theme.textSecondary : Theme.accent
-                font.pixelSize: page.smallFs
-                font.family: Theme.uiFont
-            }
             Item { width: 1; height: magPopup.magGap }
             Rectangle { width: parent.width; height: 1; color: "#26262A" }
             Item { width: 1; height: magPopup.magGap }
@@ -585,6 +604,7 @@ Item {
                 boundsBehavior: Flickable.StopAtBounds
 
                 delegate: Item {
+                    id: row
                     required property var modelData
                     required property int index
                     width: ListView.view.width
@@ -603,35 +623,40 @@ Item {
                         anchors.fill: parent
                         color: mh.containsMouse ? "#1B1B1F" : "transparent"
                     }
-                    Row {
-                        anchors.fill: parent
-                        anchors.leftMargin: 2
-                        anchors.rightMargin: 2
-                        spacing: 12
-                        Text {
-                            width: parent.width - 70 - 12 - 64 - 24
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: modelData.label
-                            elide: Text.ElideMiddle
-                            color: Theme.textPrimary
-                            font.pixelSize: page.smallFs
-                            font.family: Theme.uiFont
-                        }
-                        Text {
-                            width: 70
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: modelData.size
-                            color: Theme.textSecondary
-                            font.pixelSize: page.smallFs
-                            font.family: Theme.uiFont
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "加入下载"
-                            color: Theme.accent
-                            font.pixelSize: page.smallFs
-                            font.family: Theme.uiFont
-                        }
+                    // Each line is placed on a whole pixel rather than centred: the row is
+                    // 46 px and a 13 px line box is 19 px tall, so centring leaves every
+                    // glyph at y+13.5 and the text is resampled half a pixel off its own
+                    // raster - which is what shimmers when the list moves. The three
+                    // columns are laid out by hand for the same reason: a Row centres its
+                    // children and would put the half pixel straight back.
+                    readonly property real nameW: width - 4 - 48 - 56 - 24
+                    Text {
+                        x: 2
+                        width: row.nameW
+                        y: Math.round((parent.height - implicitHeight) / 2)
+                        text: modelData.label
+                        elide: Text.ElideMiddle
+                        color: Theme.textPrimary
+                        font.pixelSize: page.smallFs
+                        font.family: Theme.uiFont
+                    }
+                    Text {
+                        x: 2 + row.nameW + 12
+                        width: 48
+                        y: Math.round((parent.height - implicitHeight) / 2)
+                        text: modelData.size
+                        color: Theme.textSecondary
+                        font.pixelSize: page.smallFs
+                        font.family: Theme.uiFont
+                    }
+                    Text {
+                        x: 2 + row.nameW + 12 + 48 + 12
+                        width: 56
+                        y: Math.round((parent.height - implicitHeight) / 2)
+                        text: "加入下载"
+                        color: Theme.accent
+                        font.pixelSize: page.smallFs
+                        font.family: Theme.uiFont
                     }
                     MouseArea {
                         id: mh
@@ -651,12 +676,31 @@ Item {
             }
         }
 
+        // The answer to the click, in the list's own area and on the title's left edge:
+        // it speaks for the empty space under the rule, not for the heading above it.
+        // A sibling of the Column rather than a row of it, so the list keeps its height.
+        Text {
+            x: 0
+            y: magList.y + magPopup.magGap
+            width: magList.width
+            visible: magPopup.waiting || magPopup.links.length === 0
+            elide: Text.ElideRight
+            text: magPopup.waiting ? "正在取磁力…"
+                : (magPopup.note.length > 0 ? magPopup.note : "这一页没有可用的磁力链接")
+            color: magPopup.waiting ? Theme.textSecondary : Theme.accent
+            font.pixelSize: page.smallFs
+            font.family: Theme.uiFont
+        }
+
         // The list's bar, as a sibling of the Column so the Column does not lay it out
         // as one more row. The Column sits at the popup's origin, so the list's own
         // offsets are already in this coordinate system.
+        //
+        // Out in the padding, not over the rows: its right edge is 2 px off the card's
+        // own border, and the 14 px it needs comes out of the gutter the list never used.
         ThinScrollBar {
             target: magList
-            x: magList.width - width + 2
+            x: magPopup.width - magPopup.magPad - 2 - width
             y: magList.y
             height: magList.height
         }
@@ -664,10 +708,15 @@ Item {
         Connections {
             target: online
             // The hops answer asynchronously; an empty list would otherwise read as
-            // "this poster has nothing", which is not the same as "not yet".
-            function onMagnetsReady(url, links) {
-                if (page.detail && page.detail.href === url)
-                    magPopup.links = links;
+            // "this poster has nothing", which is not the same as "not yet". A reply for
+            // a poster that is no longer the one open is dropped - the guard is the href,
+            // because clicking another card while this one is in flight is normal.
+            function onMagnetsReady(url, links, note) {
+                if (!page.detail || page.detail.href !== url)
+                    return;
+                magPopup.waiting = false;
+                magPopup.links = links;
+                magPopup.note = note;
             }
         }
     }

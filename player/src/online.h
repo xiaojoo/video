@@ -69,13 +69,16 @@ signals:
     void itemsChanged();
     void busyChanged();
     void sourcesChanged();
-    void magnetsReady(const QString &url, const QJsonArray &links);
+    void magnetsReady(const QString &url, const QJsonArray &links, const QString &note);
 
 private:
     // `then` runs for every reply, successful or not: a hop that comes back 429 has
     // to be counted, or a caller waiting on N of them never answers at all.
+    // `pageLevel` is the wall's own request: it is the one that drives the skeleton
+    // (busy) and the page's error line. A magnet fetch is not - see magnets().
     void get(const QString &url,
-             const std::function<void(const QString &, const QByteArray &, const QString &)> &then);
+             const std::function<void(const QString &, const QByteArray &, const QString &)> &then,
+             bool pageLevel = true);
     void setBusy(bool b);
     QString settingsPath() const;
     // One place writes the file: a row's enabled flag has to survive every other edit, and

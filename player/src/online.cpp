@@ -167,24 +167,36 @@ void Online::setBusy(bool b)
 }
 
 void Online::get(const QString &url,
-                 const std::function<void(const QString &, const QByteArray &, const QString &)> &then)
+                 const std::function<void(const QString &, const QByteArray &, const QString &)> &then,
+                 bool pageLevel)
 {
     QNetworkRequest req{QUrl(url)};
     req.setHeader(QNetworkRequest::KnownHeaders::UserAgentHeader,
                   QString::fromLatin1(kUserAgent));
     req.setRawHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6");
-    ++m_pending;
-    setBusy(true);
+    if (pageLevel) {
+        ++m_pending;
+        setBusy(true);
+    }
     QNetworkReply *rep = m_nam->get(req);
     // The connection is scoped to this object, so the lambda cannot outlive it.
-    connect(rep, &QNetworkReply::finished, this, [this, rep, then]() {
+    connect(rep, &QNetworkReply::finished, this, [this, rep, then, pageLevel]() {
         QString err;
         if (rep->error() != QNetworkReply::NoError) {
             err = QStringLiteral("%1 (%2)").arg(rep->errorString())
                       .arg(rep->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());
-            m_error = err;
+            // Only the wall's own requests may say anything on the page. A magnet hop
+            // that comes back 429 belongs to the dialog that asked for it; writing it
+            // here replaced the posters' error line with a transfer message while the
+            // dialog was showing a perfectly good list.
+            if (pageLevel)
+                m_error = err;
         }
         then(rep->url().toString(), rep->readAll(), err);
+        if (!pageLevel) {
+            rep->deleteLater();
+            return;
+        }
         --m_pending;
         setBusy(m_pending > 0);
         if (!m_error.isEmpty())
@@ -364,17 +376,32 @@ void Online::open(const QString &url)
     });
 }
 
+// What a failed transfer says in the magnet dialog. The raw QNetworkReply text names the
+// whole url, which is 90 characters of noise inside a 620 px box; the status code is the
+// only part worth reading, and 429 ("you asked too often") is the one that actually
+// happens on these sites.
+static QString magnetFailure(const QString &err)
+{
+    const int code = err.section(QLatin1Char('('), -1).remove(QLatin1Char(')')).toInt();
+    if (code >= 400)
+        return QStringLiteral("站点回了 %1，稍等几秒再点一次").arg(code);
+    if (code > 0)
+        return QStringLiteral("连不上站点（%1）").arg(code);
+    return QStringLiteral("连不上站点");
+}
+
 void Online::magnets(const QString &url)
 {
+    // Nothing here may touch the wall's busy flag or its error line: this request is
+    // answered inside the dialog that asked for it.
     get(url, [this, url](const QString &finalUrl, const QByteArray &bytes, const QString &err) {
         if (!err.isEmpty()) {
-            emit magnetsReady(url, QJsonArray{});
+            emit magnetsReady(url, QJsonArray{}, magnetFailure(err));
             return;
         }
         const QJsonArray seeds = parseSeeds(QString::fromUtf8(bytes), finalUrl);
         if (seeds.isEmpty()) {
-            m_error = tr("这一页上没有磁力链接");
-            emit magnetsReady(url, QJsonArray{});
+            emit magnetsReady(url, QJsonArray{}, tr("这一页上没有磁力链接"));
             return;
         }
         // One request per seed's hop; the answer is emitted when the last one lands.
@@ -394,11 +421,11 @@ void Online::magnets(const QString &url)
                         for (const QJsonValue &v : *got)
                             if (!v.toObject().value(QStringLiteral("magnet")).toString().isEmpty())
                                 out.append(v);
-                        if (out.isEmpty())
-                            m_error = tr("跳页里解不出磁力（编码方式可能改了）");
-                        emit magnetsReady(url, out);
+                        emit magnetsReady(url, out, out.isEmpty()
+                                ? tr("跳页里解不出磁力（编码方式可能改了）") : QString());
                     }
-                });
+                },
+                false);
         }
-    });
+    }, false);
 }
