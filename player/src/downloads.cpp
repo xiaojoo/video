@@ -37,9 +37,26 @@ QString canonicalKey(int role)
         {DownloadsModel::WantRole, "jobWant"}, {DownloadsModel::ResumeRole, "jobResume"},
         {DownloadsModel::ResumeMsRole, "jobResumeMs"}, {DownloadsModel::CompleteRole, "jobComplete"},
         {DownloadsModel::RunningRole, "jobRunning"}, {DownloadsModel::PathRole, "jobPath"},
-        {DownloadsModel::ErrorRole, "jobError"},
+        {DownloadsModel::ErrorRole, "jobError"}, {DownloadsModel::KindRole, "jobKind"},
     };
     return QString::fromLatin1(names.value(role));
+}
+
+bool isHttpSource(const QString &src)
+{
+    return src.startsWith(u"http://"_qs, Qt::CaseInsensitive)
+        || src.startsWith(u"https://"_qs, Qt::CaseInsensitive);
+}
+
+// The last segment of the url is what the file will be called; a url without one gets
+// the host, because "download" as a name tells the row nothing it did not already say.
+QString nameFromUrl(const QString &src)
+{
+    const QUrl u(src);
+    QString base = u.fileName();
+    if (base.isEmpty())
+        base = u.host();
+    return base.isEmpty() ? u"下载"_qs : base;
 }
 }
 
@@ -104,6 +121,10 @@ void Downloads::ensureSchema()
     if (!q.exec(u"ALTER TABLE downloads ADD COLUMN poster TEXT"_qs)
         && !q.lastError().text().contains(u"duplicate column name"_qs, Qt::CaseInsensitive))
         qWarning("downloads migration failed: %s", qPrintable(q.lastError().text()));
+    // Same story for the engine kind: rows written before it existed are torrents.
+    if (!q.exec(u"ALTER TABLE downloads ADD COLUMN kind TEXT"_qs)
+        && !q.lastError().text().contains(u"duplicate column name"_qs, Qt::CaseInsensitive))
+        qWarning("downloads kind migration failed: %s", qPrintable(q.lastError().text()));
 }
 
 void Downloads::setDatabase(const QSqlDatabase &db)
@@ -136,12 +157,17 @@ QString Downloads::stateDirFor(qint64 id) const
         .filePath(u"downloads/%1"_qs.arg(id));
 }
 
+QString Downloads::headersPathFor(qint64 id) const
+{
+    return QDir(stateDirFor(id)).filePath(u"headers.txt"_qs);
+}
+
 void Downloads::load()
 {
     m_rows.clear();
     QSqlQuery q(m_db);
     if (!q.exec(u"SELECT id, src, name, dir, total, completed, want, state, path, err,"
-                " poster FROM downloads ORDER BY added DESC, id DESC"_qs)) {
+                " poster, kind FROM downloads ORDER BY added DESC, id DESC"_qs)) {
         qWarning("downloads select failed: %s", qPrintable(q.lastError().text()));
         return;
     }
@@ -158,6 +184,8 @@ void Downloads::load()
         r.path = q.value(8).toString();
         r.error = q.value(9).toString();
         r.poster = q.value(10).toString();
+        const QString kind = q.value(11).toString();
+        r.kind = kind.isEmpty() ? u"torrent"_qs : kind;
         m_rows.append(r);
     }
     emit countChanged();
@@ -167,7 +195,7 @@ void Downloads::persist(const DownloadRow &row)
 {
     QSqlQuery q(m_db);
     q.prepare(u"UPDATE downloads SET name=?, dir=?, total=?, completed=?, want=?,"
-              " state=?, path=?, err=?, poster=? WHERE id=?"_qs);
+              " state=?, path=?, err=?, poster=?, kind=? WHERE id=?"_qs);
     q.addBindValue(row.name);
     q.addBindValue(row.dir);
     q.addBindValue(row.total);
@@ -177,6 +205,7 @@ void Downloads::persist(const DownloadRow &row)
     q.addBindValue(row.path);
     q.addBindValue(row.error);
     q.addBindValue(row.poster);
+    q.addBindValue(row.kind);
     q.addBindValue(row.id);
     if (!q.exec())
         qWarning("downloads update failed: %s", qPrintable(q.lastError().text()));
@@ -190,25 +219,32 @@ DownloadRow *Downloads::find(qint64 id)
     return nullptr;
 }
 
-qint64 Downloads::add(const QString &source, const QString &dir, const QString &poster)
+qint64 Downloads::add(const QString &source, const QString &dir, const QString &poster,
+                      const QString &headers)
 {
     const QString src = source.trimmed();
     const bool isMagnet = src.startsWith(u"magnet:"_qs);
+    const bool isHttp = isHttpSource(src);
     const QFileInfo fi(src);
-    if (src.isEmpty() || (!isMagnet && !(fi.exists() && fi.isFile())))
+    if (src.isEmpty() || (!isMagnet && !isHttp && !(fi.exists() && fi.isFile())))
         return -1;
+
+    const QString kind = isHttp ? u"http"_qs : u"torrent"_qs;
+    const QString initialName = isHttp ? nameFromUrl(src)
+                             : (isMagnet ? tr("正在取种子信息") : fi.completeBaseName());
 
     QSqlQuery q(m_db);
     q.prepare(u"INSERT OR IGNORE INTO downloads(src, name, dir, total, completed, want,"
-              " state, added, poster) VALUES(?,?,?,?,?,?,?,strftime('%s','now'),?)"_qs);
+              " state, added, poster, kind) VALUES(?,?,?,?,?,?,?,strftime('%s','now'),?,?)"_qs);
     q.addBindValue(src);
-    q.addBindValue(isMagnet ? tr("正在取种子信息") : fi.completeBaseName());
+    q.addBindValue(initialName);
     q.addBindValue(dir.isEmpty() ? defaultDir() : dir);
     q.addBindValue(0);
     q.addBindValue(0);
     q.addBindValue(u"all"_qs);
     q.addBindValue(u"stopped"_qs);
     q.addBindValue(poster.trimmed());
+    q.addBindValue(kind);
     if (!q.exec()) {
         qWarning("downloads insert failed: %s", qPrintable(q.lastError().text()));
         return -1;
@@ -231,6 +267,10 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
                     persist(*r);
                     emit rowChanged(again);
                 }
+            // A retried url may arrive with a fresh signature, so the headers that came
+            // with it replace the ones the first attempt stored.
+            if (!headers.trimmed().isEmpty())
+                writeHeaders(again, headers);
             start(again);
             return again;
         }
@@ -240,9 +280,12 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
     DownloadRow r;
     r.id = id;
     r.src = src;
-    r.name = isMagnet ? tr("正在取种子信息") : fi.completeBaseName();
+    r.kind = kind;
+    r.name = initialName;
     r.dir = dir.isEmpty() ? defaultDir() : dir;
     r.poster = poster.trimmed();
+    if (!headers.trimmed().isEmpty())
+        writeHeaders(id, headers);
     // The action is called 加入下载, so the job has to download. "stream" pulls nothing
     // until a reader asks, which made a freshly added row read "0 KiB / 2.78 GiB" forever
     // and look exactly like a broken download. The row's own chip flips it to 边看 before
@@ -253,6 +296,18 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
     emit rowChanged(id);
     start(id);
     return id;
+}
+
+void Downloads::writeHeaders(qint64 id, const QString &headers)
+{
+    if (!QDir().mkpath(stateDirFor(id)))
+        return;
+    QFile f(headersPathFor(id));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning("downloads headers write failed: %s", qPrintable(f.errorString()));
+        return;
+    }
+    f.write(headers.toUtf8());
 }
 
 void Downloads::start(qint64 id)
@@ -278,27 +333,40 @@ void Downloads::spawn(DownloadRow &row)
     c.proc = new QProcess(this);
     c.proc->setProcessChannelMode(QProcess::SeparateChannels);
     connect(c.proc, &QProcess::readyReadStandardOutput, this, [this, id = row.id, proc = c.proc] {
-        while (proc->canReadLine()) {
-            const QString line = QString::fromUtf8(proc->readLine()).trimmed();
-            if (line.startsWith(u"LISTEN "_qs)) {
-                auto it = m_children.find(id);
-                if (it != m_children.end())
-                    it.value().base = line.mid(7).trimmed();
-            }
-        }
+        while (proc->canReadLine())
+            ingestLine(id, QString::fromUtf8(proc->readLine()).trimmed());
     });
-    connect(c.proc, &QProcess::finished, this, [this, id = row.id](int code) {
+    connect(c.proc, &QProcess::finished, this, [this, id = row.id, proc = c.proc](int code) {
+        // Whatever the pipe still holds is the end of the story, and it arrives here
+        // before `finished` does not: a small file can be complete long before the
+        // first /status poll, and only the DONE line says so.
+        for (const QString &line : QString::fromUtf8(proc->readAllStandardOutput()).split(u'\n'))
+            ingestLine(id, line.trimmed());
+        // An http job that dies before LISTEN leaves no row state at all, so the child's
+        // own sentence is the only thing that says why: 403, an expired link, a host that
+        // never answered. "下载进程退出（1）" is the message that makes people retry blindly.
+        // Only lines the engine marks as errors count; it also logs progress there.
+        QString lastErr;
+        for (const QString &line : QString::fromUtf8(proc->readAllStandardError()).split(u'\n')) {
+            const QString t = line.trimmed();
+            if (t.startsWith(u"ERROR "_qs))
+                lastErr = t.mid(6);
+        }
         DownloadRow *r = find(id);
         if (r) {
             r->running = false;
             if (!r->complete) {
+                if (!lastErr.isEmpty())
+                    r->error = lastErr;
                 // Two different failures read the same exit code. A job that never got
                 // its piece list died on the metadata wait, and "进程退出（1）" tells
                 // nobody that the answer is to point it at a seed that answers.
-                r->error = code == 0 ? QString()
-                         : (r->total <= 0
-                                ? tr("没连上做种：种子信息还没拿到，点播放重试")
-                                : tr("下载进程退出（%1）").arg(code));
+                else if (code != 0)
+                    r->error = r->kind == u"http"_qs
+                        ? tr("下载进程退出（%1）").arg(code)
+                        : (r->total <= 0
+                               ? tr("没连上做种：种子信息还没拿到，点播放重试")
+                               : tr("下载进程退出（%1）").arg(code));
             }
             persist(*r);
             emit rowChanged(id);
@@ -312,10 +380,21 @@ void Downloads::spawn(DownloadRow &row)
     // Extra engine flags, environment-only: a demo or a harness needs to point the
     // job at a swarm the user's machine can actually reach, and on this box the
     // public one answers 0 peers. Nothing in the UI reads or writes this.
-    QStringList args{u"-mode"_qs, u"download"_qs, u"-data"_qs, row.dir,
-                     u"-state"_qs, stateDirFor(row.id), u"-src"_qs, row.src,
-                     u"-http"_qs, u"127.0.0.1:0"_qs, u"-want"_qs, row.want,
-                     u"-interval"_qs, u"1s"_qs};
+    QStringList args;
+    if (row.kind == u"http"_qs) {
+        args << u"-mode"_qs << u"http"_qs << u"-data"_qs << row.dir
+             << u"-url"_qs << row.src << u"-out-name"_qs << row.name
+             << u"-conns"_qs << u"8"_qs << u"-chunk"_qs << u"8"_qs
+             << u"-http"_qs << u"127.0.0.1:0"_qs << u"-interval"_qs << u"1s"_qs;
+        // The path, not the text: a process list is readable by anything on the box.
+        if (QFileInfo::exists(headersPathFor(row.id)))
+            args << u"-headers"_qs << headersPathFor(row.id);
+    } else {
+        args << u"-mode"_qs << u"download"_qs << u"-data"_qs << row.dir
+             << u"-state"_qs << stateDirFor(row.id) << u"-src"_qs << row.src
+             << u"-http"_qs << u"127.0.0.1:0"_qs << u"-want"_qs << row.want
+             << u"-interval"_qs << u"1s"_qs;
+    }
     const QString extra = qEnvironmentVariable("PLAYERUI_DL_ARGS");
     if (!extra.isEmpty())
         args += extra.split(u' ', Qt::SkipEmptyParts);
@@ -325,6 +404,21 @@ void Downloads::spawn(DownloadRow &row)
     m_children.insert(row.id, c);
     persist(row);
     emit rowChanged(row.id);
+}
+
+void Downloads::ingestLine(qint64 id, const QString &line)
+{
+    if (line.startsWith(u"LISTEN "_qs)) {
+        auto it = m_children.find(id);
+        if (it != m_children.end())
+            it.value().base = line.mid(7).trimmed();
+        return;
+    }
+    if (!line.startsWith(u"DONE "_qs))
+        return;
+    const QVariantMap o = QJsonDocument::fromJson(line.mid(5).toUtf8()).object().toVariantMap();
+    if (o.value(u"complete"_qs).toBool())
+        applyStatus(id, o);
 }
 
 void Downloads::stop(qint64 id)
@@ -475,6 +569,7 @@ QVariantList Downloads::jobs() const
         QVariantMap m;
         m.insert(u"jobId"_qs, r.id);
         m.insert(u"jobName"_qs, r.name);
+        m.insert(u"jobKind"_qs, r.kind);
         m.insert(u"jobSrc"_qs, r.src);
         m.insert(u"jobDir"_qs, r.dir);
         m.insert(u"jobPoster"_qs, r.poster);
@@ -528,6 +623,7 @@ QHash<int, QByteArray> DownloadsModel::roleNames() const
         {PeersRole, "jobPeers"}, {SeedersRole, "jobSeeders"}, {WantRole, "jobWant"},
         {ResumeRole, "jobResume"}, {ResumeMsRole, "jobResumeMs"}, {CompleteRole, "jobComplete"},
         {RunningRole, "jobRunning"}, {PathRole, "jobPath"}, {ErrorRole, "jobError"},
+        {KindRole, "jobKind"},
     };
 }
 

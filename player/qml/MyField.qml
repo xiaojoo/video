@@ -29,6 +29,16 @@ Rectangle {
     property color hintColor: Theme.textSecondary
     property real corner: 4
     property real inset: 8
+    // What stands at the right end of the field - a clear mark - has to be paid for out of
+    // the text's own room, or a long value runs underneath it.
+    property real rightInset: box.inset
+
+    // A click on any other item does not move the caret: QML hands the focus to whatever
+    // item asks for it, and a plain MouseArea does not. A page that wants the field to go
+    // quiet when something else is clicked asks for it here.
+    function releaseFocus() {
+        input.focus = false;
+    }
 
     height: 32
     radius: box.corner
@@ -40,7 +50,7 @@ Rectangle {
         id: input
         anchors.fill: parent
         anchors.leftMargin: box.inset
-        anchors.rightMargin: box.inset
+        anchors.rightMargin: box.rightInset
         verticalAlignment: TextInput.AlignVCenter
         clip: true
         color: Theme.textPrimary

@@ -9,6 +9,7 @@
 
 #include <QCommandLineParser>
 #include <QEventLoop>
+#include <QFont>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDir>
@@ -72,6 +73,16 @@ int main(int argc, char *argv[])
     // The chrome never scales or rotates its text (the zoom and the film are separate
     // surfaces), so the native renderer's inability to do either costs nothing here.
     QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
+    // Chinese through 微软雅黑, Latin left to Segoe. QML's `font.family` carries one name
+    // and a comma list is ignored (measured: "Segoe UI Variable Text, Microsoft YaHei UI"
+    // renders the same 544 ink pixels / 15.8% subpixel as Segoe alone), and the run Qt
+    // picks by itself for Han is thin: 544 px of ink and 15.8% of them with a colour
+    // fringe, against 631 px (+15.9%) and 55.0% when the family is named outright - which
+    // is what Chromium (Qoder, VSCode) does per script. Substituting at the font engine
+    // keeps the Latin on Segoe (the "Aa 2026" prefix stays 159 px) while the Han run goes
+    // to YaHei UI.
+    QFont::insertSubstitutions(QStringLiteral("Segoe UI Variable Text"),
+                               { QStringLiteral("Microsoft YaHei UI") });
     // The taskbar and the alt-tab strip take this one, and it is the same .ico that
     // appPlayerui.rc puts into the exe, so the two surfaces cannot disagree: every size is
     // a frame of its own, 16 and 24 from the simplified figure (four 13-unit holes land on
@@ -156,8 +167,12 @@ int main(int argc, char *argv[])
             }
         });
         QObject::connect(&online, &Online::magnetsReady, &loop,
-                         [&](const QString &, const QJsonArray &links) {
-                             writeJson(QJsonDocument(links).toJson(QJsonDocument::Compact));
+                         [&](const QString &, const QJsonArray &links, const QString &,
+                             const QJsonObject &detail) {
+                             QJsonObject out;
+                             out.insert(u"detail"_qs, detail);
+                             out.insert(u"links"_qs, links);
+                             writeJson(QJsonDocument(out).toJson(QJsonDocument::Compact));
                              rc = links.isEmpty() ? 1 : 0;
                              loop.quit();
                          });

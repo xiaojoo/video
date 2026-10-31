@@ -11,23 +11,35 @@ Item {
     // four outer sides all use the first, so the cards line up with the title above them
     // and with the window's bottom; the inner spacing uses the second, like the row of
     // buttons under the film.
-    readonly property real gutter: Math.round(shellWidth * Theme.sideInsetWRatio)
-    readonly property real gap: Math.round(shellHeight * Theme.controlGapRatio)
+    readonly property real gutter: Math.round(Theme.refW * Theme.sideInsetWRatio)
+    readonly property real gap: Math.round(Theme.refH * Theme.controlGapRatio)
     // Half the gap per side, so two neighbours sit one gap apart and the outermost cards
     // still land on the gutter itself.
     readonly property real cardInset: Math.round(gap / 2)
-    readonly property int perRow: 7
+    // The span the grid is laid out in, and the one card size that gets repeated across it.
+    readonly property real gridW: page.width - 2 * (gutter - cardInset)
     // A card is a frame off the film, so the box keeps the frame's own 16:9 and the still
-    // fills it instead of being sliced into a poster. The width is the row divided by
-    // seven, plus the card's own inset on each side, so the first card starts where the
-    // title starts and the last ends where the pill ends - and seven always fit.
-    readonly property real colW: Math.max(120, (page.width - 2 * gutter
-                                                + 2 * cardInset) / perRow - 0.01)
+    // fills it instead of being sliced into a poster. 194 px is the *minimum* card - the same
+    // box the online wall's posters use - and the window decides how many of them fit. What
+    // is left over at the end of a row is by definition not enough for one more card, so the
+    // cards now eat it instead of leaving an empty band: the row is divided by the column
+    // count that minimum produced. That bounds the growth at one card's worth - a six-column
+    // row gains at most (194+18)/6 = 35 px per card - and it falls back to exactly 194 the
+    // moment the next column fits. Dividing the row by a *fixed* column count is still wrong:
+    // that made every card grow with the window (194 px at 1282, 387 px at 2400).
+    readonly property real artW: 194
+    readonly property real colW: artW + 2 * cardInset
+    // Whole cards only: the row is divided by this count, so a column is counted when its
+    // own trailing inset is paid for (see the online wall's `columns`).
+    readonly property int perRow: Math.max(1, Math.floor(gridW / colW))
+    readonly property real cellW: Math.floor(gridW / perRow)
     // 16:9 of the *card*, not of the cell: the card sits `cardInset` in from each side of
     // its cell, and taking the ratio off the cell made the box 1.75:1 at 1100 px wide and
     // 1.87:1 at 1920 - the still stretched as the window grew, which is what reads as the
-    // cards "not keeping their proportion" while dragging.
-    readonly property real artH: (colW - 2 * cardInset) * 9 / 16
+    // cards "not keeping their proportion" while dragging. Rounded to whole pixels: 194's
+    // exact 9/16 is 109.125, and a fractional cell height puts every row on a quarter
+    // pixel, which resamples the title under it.
+    readonly property real artH: Math.round((cellW - 2 * cardInset) * 9 / 16)
 
     function fmtDuration(sec) {
         const s = Math.round(sec)
@@ -58,6 +70,16 @@ Item {
         return out;
     }
 
+    // The card under a point in page coordinates, asked to open its menu. A right-click
+    // while a menu is already up means that menu is on the wrong card: it is closed first,
+    // then the card under the pointer takes its place. itemAt() wants content coordinates,
+    // so the grid's own position and scroll come back out of the point.
+    function openCardMenuAt(px, py) {
+        const item = grid.itemAt(px - grid.x + grid.contentX, py - grid.y + grid.contentY)
+        if (item)
+            item.menuAt(px, py)
+    }
+
     Rectangle {
         anchors.fill: parent
         color: "#0A0A0C"
@@ -70,14 +92,14 @@ Item {
         id: titleMetric
         visible: false
         text: "M\nM"
-        font.pixelSize: shellHeight * 0.021
+        font.pixelSize: Math.round(Theme.refH * 0.021)
         font.family: Theme.uiFont
     }
     Text {
         id: yearMetric
         visible: false
         text: "M"
-        font.pixelSize: shellHeight * 0.019
+        font.pixelSize: Math.round(Theme.refH * 0.019)
         font.family: Theme.uiFont
     }
     readonly property real textBlock: page.cardInset + titleMetric.height
@@ -97,6 +119,12 @@ Item {
     // window that stores the choice), so it arrives as a plain value like every other
     // piece of chrome geometry on this page.
     property string saveDir: ""
+    // Which surface the online page's magnet board uses, and the ask to make the window
+    // give a column of its own to it. Both belong to the host: one is the stored setting,
+    // the other is the window's rect.
+    property bool magnetPanel: false
+    property bool magnetRight: false
+    signal magnetDockAsked(bool on)
     // A card's play, the tab row's 返回播放: both leave this page for the player, and
     // the page object cannot touch the window's `page` property itself.
     signal playerRequested()
@@ -113,11 +141,11 @@ Item {
         y: page.rowY + height + page.gutter
         spacing: page.gap
         visible: page.mode === "local"
-        readonly property real pillH: rescanText.height + shellHeight * 0.018
+        readonly property real pillH: rescanText.height + Theme.refH * 0.018
 
         Rectangle {
             id: pick
-            width: pickText.implicitWidth + shellHeight * 0.028
+            width: pickText.implicitWidth + Theme.refH * 0.028
             height: libRow.pillH
             radius: Theme.controlRadius
             color: pickOver.containsMouse ? "#2A2A2E" : "#1B1B1F"
@@ -129,7 +157,7 @@ Item {
                 anchors.centerIn: parent
                 text: "选择文件夹"
                 color: Theme.textPrimary
-                font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
                 font.family: Theme.uiFont
             }
             MouseArea {
@@ -143,7 +171,7 @@ Item {
 
         Rectangle {
             id: rescan
-            width: rescanText.implicitWidth + shellHeight * 0.028
+            width: rescanText.implicitWidth + Theme.refH * 0.028
             height: libRow.pillH
             radius: Theme.controlRadius
             color: over.containsMouse ? "#2A2A2E" : "#1B1B1F"
@@ -155,7 +183,7 @@ Item {
                 anchors.centerIn: parent
                 text: "重新扫描"
                 color: Theme.textPrimary
-                font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
                 font.family: Theme.uiFont
             }
             MouseArea {
@@ -174,7 +202,7 @@ Item {
                   + library.durationCount + "/" + library.fileCount + " · 未解析 "
                   + library.unparsedCount + " · 上次扫描 " + library.lastScanMs + " ms"
             color: Theme.textSecondary
-            font.pixelSize: Theme.subtitleFontRatio * shellHeight
+            font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
             font.family: Theme.uiFont
         }
     }
@@ -224,7 +252,7 @@ Item {
                                    ? "下载中 " + jobsPage.jobs.length : "下载中" }]
             delegate: Rectangle {
                 required property var modelData
-                width: mt.implicitWidth + shellHeight * 0.028
+                width: mt.implicitWidth + Theme.refH * 0.028
                 height: parent.height
                 radius: Theme.controlRadius
                 color: page.mode === modelData.key ? Theme.accent
@@ -236,7 +264,7 @@ Item {
                     anchors.centerIn: parent
                     text: modelData.text
                     color: page.mode === modelData.key ? "#15151A" : Theme.textPrimary
-                    font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                    font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
                     font.family: Theme.uiFont
                 }
                 MouseArea {
@@ -251,7 +279,7 @@ Item {
 
         Rectangle {
             id: backToPlayer
-            width: backText.implicitWidth + shellHeight * 0.028
+            width: backText.implicitWidth + Theme.refH * 0.028
             height: modeTabs.height
             radius: Theme.controlRadius
             color: backOver.containsMouse ? "#2A2A2E" : "#1B1B1F"
@@ -263,7 +291,7 @@ Item {
                 anchors.centerIn: parent
                 text: "返回播放"
                 color: Theme.textPrimary
-                font.pixelSize: Theme.subtitleFontRatio * shellHeight
+                font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
                 font.family: Theme.uiFont
             }
             MouseArea {
@@ -293,6 +321,9 @@ Item {
         pad: page.gutter
         gap: page.gap
         saveDir: page.saveDir
+        magnetPanel: page.magnetPanel
+        magnetRight: page.magnetRight
+        onMagnetDockAsked: (on) => page.magnetDockAsked(on)
         onTipFor: (item, text, keys) => page.tipFor(item, text, keys)
         onTipOff: (item) => page.tipOff(item)
         // A poster's menu joined a download; the list it lands in is the page beside this
@@ -329,10 +360,10 @@ Item {
         // above is the art's edge - the same reading the 在线媒体 tab gives between its two
         // pill rows and its first poster.
         y: libRow.y + libRow.height + page.gutter - page.cardInset
-        width: page.width - 2 * (page.gutter - page.cardInset)
+        width: page.gridW
         height: page.height - y - page.gutter
         clip: true
-        cellWidth: page.colW
+        cellWidth: page.cellW
         cellHeight: page.artH + page.textBlock
         boundsBehavior: Flickable.StopAtBounds
         model: libraryModel
@@ -371,44 +402,132 @@ Item {
             function cancel() {
                 cell.renaming = false
             }
+            // Opens the card's menu at a point in page coordinates. A function rather than
+            // the code inline in the mouse handler, because the page has to open the menu
+            // for the card *under the pointer* when a right-click lands while another
+            // card's menu is up.
+            function menuAt(px, py) {
+                cardMenu.showAt(px, py, page.cardItems(), cell)
+            }
             width: grid.cellWidth
             height: grid.cellHeight
 
-            Rectangle {
+            // The card's chrome, taken from the reference he sent: a chamfered luminous
+            // frame, the still set into it, three cut bars at the top-right corner, and a
+            // black band along the bottom carrying the progress and the times. The
+            // reference's two cards differ in nothing but the frame colour - one blue, one
+            // amber - so blue is the resting state and the app's accent is the hover.
+            Item {
                 id: art
                 x: page.cardInset
                 y: page.cardInset
                 width: parent.width - 2 * page.cardInset
                 height: page.artH
-                radius: 4
-                color: "#17171B"
-                border.width: 1
-                border.color: "#2C2C31"
+                clip: true
 
-                // The first frame, cropped to the card by the box it fills. Two
-                // pixels inside the card: at one pixel the image's square corner
-                // still sticks 1 px outside the card's 4 px arc, and an image is
-                // a plain quad that no radius reaches.
+                // Measured on the reference and cut down to this card's 194 px: its frame
+                // clips the corner at 26 px of 741 (0.035), its still at 68 (0.092), and
+                // the black gap between the line and the still is 4-5 px (0.006 - one and
+                // a half pixels here, so the gap is 2).
+                readonly property real chamfer: 7
+                readonly property real cut: 17
+                // The line plus that gap: the still's window starts this far inside.
+                readonly property real inset: 2
+                // The band holding the progress bar and the two times. The reference's
+                // strip is 45 px of 363 (0.124); 16 keeps a 10 px line of type inside it.
+                readonly property real bandH: 16
+                // The line itself is a tinted near-white on both reference cards - (212,
+                // 242, 255) on the blue one, (233, 215, 189) on the amber - and the card's
+                // colour lives in the corner bars and the percentage, not in the line.
+                readonly property color stroke: cell.hovered ? "#F0DCC0" : "#D2ECFF"
+                readonly property color ink: cell.hovered ? Theme.accent : Theme.cool
+                readonly property color plate: "#0E0E11"
+
+                Rectangle {
+                    anchors.fill: art
+                    color: art.plate
+                }
+
+                // The first frame, cropped to the 190 x 105 window it is given. Its four
+                // square corners are covered by the canvas above, which is what turns
+                // them into the reference's diagonals.
                 Image {
                     id: cover
-                    anchors.fill: parent
-                    anchors.margins: 2
+                    x: art.inset
+                    y: art.inset
+                    width: art.width - 2 * art.inset
+                    height: art.height - 2 * art.inset
                     source: poster
                     fillMode: Image.PreserveAspectCrop
                     visible: status === Image.Ready
                 }
 
-                // The badge and the 未识别 tag read off this, not off the still:
-                // a white opening frame drops #B8B8B8 text to 1.9:1 on its own.
-                Rectangle {
-                    anchors.bottom: parent.bottom
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    height: parent.height * 0.30
-                    visible: poster.length > 0
-                    gradient: Gradient {
-                        GradientStop { position: 0.0; color: "#000A0A0C" }
-                        GradientStop { position: 1.0; color: "#E60A0A0C" }
+                // Everything the reference draws *over* the picture - the four corner
+                // cuts, the band, the line and the three bars - in one painter, so the
+                // corners cannot get out of step with the line that joins them.
+                Canvas {
+                    id: chrome
+                    readonly property color stroke: art.stroke
+                    readonly property color ink: art.ink
+                    anchors.fill: art
+                    onWidthChanged: requestPaint()
+                    onHeightChanged: requestPaint()
+                    onStrokeChanged: requestPaint()
+                    onInkChanged: requestPaint()
+                    onPaint: {
+                        const g = getContext("2d");
+                        g.reset();
+                        const w = width, h = height;
+                        const c = art.chamfer, cut = art.cut, d = art.inset;
+
+                        g.fillStyle = art.plate;
+                        g.fillRect(d, h - d - art.bandH, w - 2 * d, art.bandH);
+
+                        // Four triangles in the plate's colour: the still's cut corner and
+                        // the black gap between it and the frame line.
+                        g.beginPath();
+                        g.moveTo(0, 0); g.lineTo(cut, 0); g.lineTo(0, cut); g.closePath();
+                        g.moveTo(w, 0); g.lineTo(w - cut, 0); g.lineTo(w, cut); g.closePath();
+                        g.moveTo(0, h); g.lineTo(cut, h); g.lineTo(0, h - cut); g.closePath();
+                        g.moveTo(w, h); g.lineTo(w - cut, h); g.lineTo(w, h - cut); g.closePath();
+                        g.fill();
+
+                        // The frame: a 3 px halo of the card's colour, then the near-white
+                        // line over it. One stroke of each, so the two cannot drift apart;
+                        // the reference's line is luminous with no hard outer edge.
+                        const o = 0.5;
+                        g.lineWidth = 1;
+                        g.beginPath();
+                        g.moveTo(c, o);
+                        g.lineTo(w - c, o);
+                        g.lineTo(w - o, c);
+                        g.lineTo(w - o, h - c);
+                        g.lineTo(w - c, h - o);
+                        g.lineTo(c, h - o);
+                        g.lineTo(o, h - c);
+                        g.lineTo(o, c);
+                        g.closePath();
+                        const k = art.ink;
+                        g.strokeStyle = "rgba(" + Math.round(k.r * 255) + ","
+                                        + Math.round(k.g * 255) + ","
+                                        + Math.round(k.b * 255) + ",0.22)";
+                        g.lineWidth = 3;
+                        g.stroke();
+                        g.strokeStyle = chrome.stroke;
+                        g.lineWidth = 1;
+                        g.stroke();
+
+                        // Three cut bars at the top-right, the reference's one ornament:
+                        // small parallelograms leaning with the corner, straddling the
+                        // still's cut edge exactly as they do there.
+                        g.fillStyle = k;
+                        for (let i = 0; i < 3; ++i) {
+                            const x = w - 22 + i * 5;
+                            g.beginPath();
+                            g.moveTo(x, 8); g.lineTo(x + 3, 8);
+                            g.lineTo(x + 5, 3); g.lineTo(x + 2, 3);
+                            g.closePath(); g.fill();
+                        }
                     }
                 }
 
@@ -419,67 +538,70 @@ Item {
                     font.pixelSize: parent.height * 0.3
                     visible: text.length > 0
                 }
+
+                // The reference's bottom strip: a progress bar and the two times, on the
+                // plate's own colour. Solid rather than a scrim, so a white first frame
+                // cannot lift the time to 1.9:1 the way the old gradient let it.
+                Item {
+                    id: band
+                    x: art.inset
+                    y: art.height - art.inset - art.bandH
+                    width: art.width - 2 * art.inset
+                    height: art.bandH
+
+                    // The reference's bar is 12 px of 363 tall (0.033), filled to the
+                    // percentage; the unfilled rest is (42,45,51). It stops where the
+                    // duration starts, not at the card's edge.
+                    Rectangle {
+                        id: track
+                        visible: cell.pos > 0 && duration > 0
+                        x: 6
+                        y: 7
+                        width: Math.max(0, times.x - 12)
+                        height: 3
+                        radius: height / 2
+                        color: "#2E3138"
+
+                        Rectangle {
+                            width: parent.width * Math.min(1, cell.pos / duration)
+                            height: parent.height
+                            radius: parent.radius
+                            color: art.ink
+                        }
+                    }
+
+                    Row {
+                        id: times
+                        anchors.right: parent.right
+                        anchors.rightMargin: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 0
+
+                        // Duration is grey on both reference cards, (182,189,200); only
+                        // the percentage takes the card's colour.
+                        Text {
+                            text: duration > 0 ? page.fmtDuration(duration) : ""
+                            color: "#B6BDC8"
+                            font.pixelSize: Math.round(Theme.refH * 0.014)
+                            font.family: Theme.uiFont
+                        }
+                        Text {
+                            text: duration > 0 && cell.pos > 0
+                                  ? " · " + Math.round(cell.pos / duration * 100) + "%" : ""
+                            color: art.ink
+                            font.pixelSize: Math.round(Theme.refH * 0.014)
+                            font.family: Theme.uiFont
+                        }
+                    }
+                }
+
                 Text {
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 6
+                    anchors.verticalCenter: band.verticalCenter
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: parsed ? "" : "未识别"
                     color: Theme.accent
-                    font.pixelSize: page.height * 0.018
+                    font.pixelSize: Math.round(Theme.refH * 0.018)
                     font.family: Theme.uiFont
-                }
-                // Corner badge: the approved title/year rows keep their rhythm.
-                Text {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 6
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 4
-                    text: duration > 0 ? page.fmtDuration(duration)
-                                        + (cell.pos > 0 ? " · " + Math.round(cell.pos / duration * 100) + "%" : "")
-                          : ""
-                    color: Theme.textSecondary
-                    font.pixelSize: page.height * 0.016
-                    font.family: Theme.uiFont
-                }
-
-                // Where this one stopped, on the bottom edge of the still. Only a
-                // film that is partway through gets one: at 0 or at the end there is
-                // nothing to come back to, and a full-width bar would read as a
-                // second frame around the card.
-                Rectangle {
-                    visible: cell.pos > 0 && duration > 0
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    height: 3
-                    color: Theme.track
-
-                    Rectangle {
-                        x: 0
-                        y: 0
-                        width: parent.width * Math.min(1, cell.pos / duration)
-                        height: parent.height
-                        color: Theme.accent
-                    }
-                }
-
-                // The hover frame, three sides. The fourth would have lain on top of the
-                // resume bar that lives on this card's bottom edge - two accent lines, one
-                // above the other. A Rectangle can only border all four sides, so the ring
-                // is drawn 4 px taller than the card and cut back to it: its bottom band
-                // falls under the cut, and the top corners keep the card's own 4 px arc.
-                Item {
-                    anchors.fill: parent
-                    visible: cell.hovered
-                    clip: true
-                    Rectangle {
-                        width: parent.width
-                        height: parent.height + 4
-                        radius: 4
-                        color: "transparent"
-                        border.width: 2
-                        border.color: Theme.accent
-                    }
                 }
             }
 
@@ -494,7 +616,7 @@ Item {
                 maximumLineCount: 2
                 wrapMode: Text.WordWrap
                 color: Theme.textPrimary
-                font.pixelSize: shellHeight * 0.021
+                font.pixelSize: Math.round(Theme.refH * 0.021)
                 font.family: Theme.uiFont
             }
             // Year gets its own line: sharing one item let a long title push it out.
@@ -503,7 +625,7 @@ Item {
                 y: nameText.y + nameText.height + 1
                 text: year > 0 ? String(year) : " "
                 color: Theme.textSecondary
-                font.pixelSize: shellHeight * 0.019
+                font.pixelSize: Math.round(Theme.refH * 0.019)
                 font.family: Theme.uiFont
             }
 
@@ -519,7 +641,7 @@ Item {
                         // would be undefined, because an id is not a property of the
                         // object it sits on.
                         const at = cell.mapToItem(page, m.x, m.y);
-                        cardMenu.showAt(at.x, at.y, page.cardItems(), cell);
+                        cell.menuAt(at.x, at.y);
                         return;
                     }
                     playerCore.load(path); page.playerRequested();
@@ -581,17 +703,33 @@ Item {
         anchors.fill: parent
         visible: cardMenu.visible
         enabled: cardMenu.visible
-        // A right-click somewhere else while a menu is open moves the menu to that
-        // card, so both buttons have to reach this layer.
+        // A right-click somewhere else while a menu is open means the menu is on the
+        // wrong card, so both buttons have to reach this layer: the left one only
+        // dismisses, the right one dismisses and re-opens on what it landed on.
         acceptedButtons: Qt.LeftButton | Qt.RightButton
-        onClicked: cardMenu.hide()
+        onClicked: (m) => {
+            const right = m.button === Qt.RightButton
+            // This layer is the page, so its own coordinates are the page's.
+            const px = m.x, py = m.y
+            cardMenu.hide()
+            if (right)
+                page.openCardMenuAt(px, py)
+        }
     }
 
     ContextMenu {
         id: cardMenu
         z: 20
         space: page
-        refH: shellHeight
+        refH: Theme.refH
+        // The one menu stands for whichever card was hit, so a right-click on the menu
+        // itself - it can lie over a neighbouring card - moves it to that card rather
+        // than leaving it turned towards the one that is gone.
+        retarget: true
+        onRightPressed: (x, y) => {
+            cardMenu.hide()
+            page.openCardMenuAt(x, y)
+        }
         onPicked: (action, target) => {
             if (!target)
                 return;

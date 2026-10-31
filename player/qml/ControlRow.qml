@@ -7,7 +7,7 @@ Item {
     readonly property real winH: height / Theme.controlRowHeightRatio
     // The window's launch width. `row.width` is the live one, and the side margin read
     // off it came out 13 px at 1282 and 39 px at 3840 - the gap he asked to hold still.
-    readonly property real refW: shellWidth
+    readonly property real refW: Theme.refW
     readonly property real icon: Theme.iconRatio * winH
     // Fixed gaps between the icons, so maximising leaves them exactly as wide as at
     // the small window. See Theme.leftGroupPitchHRatio for the arithmetic.

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import Playerui
 
 // 在线媒体: a magnet-index site as a poster wall. The download jobs used to share this
@@ -11,6 +12,14 @@ Item {
     id: page
 
     property string saveDir: ""
+    // Which surface the magnet board uses: the centred card over the wall, or the column
+    // the window grows to fit. The setting owns it; the board forks on it.
+    property bool magnetPanel: false
+    // Which side the column stands on, when there is one.
+    property bool magnetRight: false
+    // The column is the reason the window is 333 px wider, so opening and closing it is an
+    // ask the host answers with the rect.
+    signal magnetDockAsked(bool on)
     // The poster whose magnets are being listed, or null.
     property var detail: null
     // A page hop asks for a whole new list, so the wall goes back to the top first - the
@@ -24,14 +33,18 @@ Item {
     signal tipFor(var item, string text, string keys)
     signal tipOff(var item)
 
+    // Leaving the page drops the caret too: coming back to a field still drawn in the
+    // accent says the box is waiting for keys the user has long since stopped typing.
+    onVisibleChanged: if (!visible) searchBox.releaseFocus()
+
     // The page's gutter. The media library hands over the same value its own header uses,
     // so the posters start on the pills' line; on its own it reads off the player control
     // row's gap, which is what that alignment is defined by.
-    property real pad: Math.round(shellWidth * Theme.sideInsetWRatio)
+    property real pad: Math.round(Theme.refW * Theme.sideInsetWRatio)
     // The distance between two neighbours - pills, chips, posters. Kept apart from `pad` for
     // the same reason the player's row keeps them apart: one is the margin to the window,
     // the other is the gap between things.
-    property real gap: Math.round(shellHeight * Theme.controlGapRatio)
+    property real gap: Math.round(Theme.refH * Theme.controlGapRatio)
     // Half of the gutter per side: two neighbours sit one gutter apart and the outermost
     // posters still land on the gutter.
     readonly property real inset: Math.round(gap / 2)
@@ -39,12 +52,22 @@ Item {
     // inset above and below it as between the posters side to side.
     readonly property real lineH: Math.round(smallFs * 1.35)
     readonly property real labelBlock: 2 * inset + 2 * lineH
-    // How wide a poster wants to be. How many fit is a fact about the window, and the row
-    // is divided by that number - so a wider window gains a column instead of stretching
-    // the ones it already has.
-    readonly property real targetCol: 200
-    readonly property real smallFs: Math.round(0.0180 * shellHeight)
-    readonly property real titleFs: Math.round(0.0194 * shellHeight)
+    // How wide a poster is *at least*: 194 px of art, measured off the reference window,
+    // where six of them filled a 1282 px page. The window decides how many fit; when what is
+    // left over at the end of the row is not enough for one more card, that surplus is eaten
+    // by the cards instead of standing as an empty band - the row is divided by the column
+    // count the 194 px minimum produced. The surplus is bounded by one card, so a six-column
+    // row grows each poster by at most 212/6 = 35 px (194 -> 229 at the worst width), and it
+    // falls back to exactly 194 the moment the seventh column fits. At the reference 1282 the
+    // division is exact - 1274 / 6 = 212 - so nothing moves there.
+    readonly property real artW: 194
+    // The search box, as wide as the caption's four tiles: 4 x 40 + the four 6 px gaps
+    // around the hairline + the 1 px rule. Both right edges already stand on the page's
+    // 13 px inset, so the same width puts this box's left edge on the gear's - the two
+    // are the only things on that line, and he asked for them to line up.
+    readonly property real searchW: 4 * 40 + 4 * 6 + 1
+    readonly property real smallFs: Math.round(0.0180 * Theme.refH)
+    readonly property real titleFs: Math.round(0.0194 * Theme.refH)
     // The bottom edge of the menu line: the sources and the categories share one row now,
     // so the wall starts one line under it.
     readonly property real menuBottom: tabs.y + tabs.height
@@ -73,6 +96,46 @@ Item {
                && (cur === s.url || cur.startsWith(s.url.replace(/\/+$/, "") + "/"));
     }
 
+    // A category is still the one being looked at while its own pages are walked: only the
+    // page number of a url says "which page", and the two sites hide it in opposite places
+    // - one puts it in the query (`.../movies/?page=2`) and keeps the category in the path,
+    // the other puts it in the path (`.../dianying/page/2`) and keeps the category in the
+    // query (`?tags1=languang`). So the number comes out of both ends and nothing else
+    // does. Dropping the whole query - the first version - made every category of one path
+    // read as the same list, so all four chips lit at once; dropping only the query made a
+    // path number read as a different list, so the first page hop greyed out the very chip
+    // being walked.
+    function sameList(a, b) {
+        if (a.length === 0 || b.length === 0)
+            return false;
+        return page.listKey(a) === page.listKey(b);
+    }
+
+    function listKey(u) {
+        const q = u.indexOf("?");
+        const path = (q < 0 ? u : u.slice(0, q))
+                         .replace(/\/page\/[0-9]+(?=\/|$)/, "")
+                         .replace(/\/+$/, "");
+        if (q < 0)
+            return path;
+        const rest = u.slice(q + 1).split("&")
+                      .filter(kv => !/^(page|paged)=[0-9]+$/.test(kv));
+        return path + (rest.length > 0 ? "?" + rest.join("&") : "");
+    }
+
+    // The wall's rows are GridView delegates, and a call made from the click handler there
+    // does not resolve anything outside the row: measured, `online.magnets(...)`,
+    // `page.askMagnets(...)` and even `host.askMagnets(...)` on a property that `typeof`
+    // had just reported as "object" each threw "… is not defined" - so the request never
+    // left and the column sat on 正在取链接…. The `page.detail` write on the line above
+    // does land (the column draws the clicked film), so the click only writes `detail` and
+    // the request is made here, where the page's own scope is not in question.
+    onDetailChanged: {
+        if (!detail || !detail.href)
+            return;
+        online.magnets(detail.href);
+    }
+
     // ---- one screen page, however many posters that turns out to be ----
     // The site hands out a fixed 20 per page. A page here is instead however many posters
     // the wall holds - columns across times the rows that fit down to the pager, and never
@@ -99,6 +162,11 @@ Item {
     property int siteSize: 0       // the site's own page size, read off the first page
     property int siteLast: 0       // the last site page its own paginator admits to
     property string rootUrl: ""    // the url of site page 1 for this list
+    // What the search box holds, kept next to the box's own text because the box is a
+    // control and this is a fact about the list on screen: it is what turns "no posters
+    // parsed" into "nothing matched that word".
+    property string word: ""
+    property string emptyNote: ""
     property string pageTpl: ""    // a site page url with \u0001 where its number goes
     // Every page number the site itself published a link for, kept across landings: the
     // paginator around page 7 tells us the url of 6 and 8, and those are the site's own
@@ -119,6 +187,12 @@ Item {
             page.numUrl[p.label] = p.url;
             page.siteLast = Math.max(page.siteLast, parseInt(p.label));
         }
+        // A page with no linked number at all is a list of one: a search answer prints its
+        // single page as the active span with no href, and a short category can do the same.
+        // Left at zero, `total` came out zero and the wall stayed empty with the posters in
+        // hand.
+        if (page.siteLast === 0)
+            page.siteLast = 1;
         page.buildTpl();
     }
 
@@ -173,6 +247,7 @@ Item {
     // one it replaces.
     function goto(url) {
         page.rootUrl = url;
+        page.emptyNote = "";
         page.sitePages = {};
         page.siteSize = 0;
         page.siteLast = 0;
@@ -184,6 +259,31 @@ Item {
         page.reqUrl[url] = 1;
         page.hopToTop();
         online.open(url);
+    }
+
+    // A name search on whichever site is open. The origin, not the source's stored url: a
+    // search started from a category page asks the same site the category belongs to.
+    function search(q) {
+        const t = q.trim();
+        if (t.length === 0)
+            return;
+        const m = /^(https?:\/\/[^/]+)/.exec(page.rootUrl);
+        if (m === null)
+            return;
+        page.word = t;
+        // Two search shapes: the index site answers on /s/<word>/, the WordPress one on
+        // its query string. Both print the same cards, so the wall is no different.
+        page.goto(/xbgame\.net/.test(m[1]) ? m[1] + "/?s=" + encodeURIComponent(t)
+                                           : m[1] + "/s/" + encodeURIComponent(t) + "/");
+    }
+
+    // A pill or a category is a different list, so the word that produced the one being
+    // left stops applying: a name still typed in the box that is not what the wall shows
+    // reads as a filter that silently did nothing.
+    function leaveSearch() {
+        page.word = "";
+        searchBox.text = "";
+        searchBox.releaseFocus();
     }
 
     // Assemble the screen page from the cached site pages, fetching whichever is missing.
@@ -228,18 +328,26 @@ Item {
         page.fill();
     }
 
-    // The chips: the two ends, then the pages that matter - the first, the last, and the
-    // current one's neighbours. The shape the site's own paginator uses.
+    // The chips: the two ends as arrows, then the pages that matter - the first, the
+    // current one and the two it leads, the last - with a dot chip wherever a jump of more
+    // than one page was left out. On the first page of 3674 that reads 1 2 3 … 3674, which
+    // is the shape the reference shows; the old row printed the last number bare, so
+    // "2 3674" read as two neighbours.
     readonly property var chips: {
         const n = page.pages, c = page.cur + 1;
         const nums = [];
         const add = v => { if (v >= 1 && v <= n && nums.indexOf(v) < 0) nums.push(v); };
-        add(1); add(c - 1); add(c); add(c + 1); add(n);
+        add(1); add(c - 1); add(c); add(c + 1); add(c + 2); add(n);
         nums.sort((a, b) => a - b);
-        const out = [{ kind: "prev", label: "上一页", live: c > 1, on: false, to: c - 2 }];
-        for (const v of nums)
+        const out = [{ kind: "prev", icon: "chevronLeft", live: c > 1, on: false, to: c - 2 }];
+        let last = 0;
+        for (const v of nums) {
+            if (last > 0 && v - last > 1)
+                out.push({ kind: "gap", label: "…", live: false, on: false, to: 0 });
             out.push({ kind: "page", label: String(v), live: v !== c, on: v === c, to: v - 1 });
-        out.push({ kind: "next", label: "下一页", live: c < n, on: false, to: c });
+            last = v;
+        }
+        out.push({ kind: "next", icon: "chevronRight", live: c < n, on: false, to: c });
         return out;
     }
 
@@ -282,8 +390,13 @@ Item {
             const items = [];
             for (const o of online.items)
                 items.push({ title: o.title, poster: o.poster, href: o.href });
-            if (items.length === 0)
+            // The site answers a no-hit search with the same page shape and zero rows, so
+            // silence here would be a blank wall that reads as a broken fetch.
+            if (items.length === 0) {
+                if (page.word.length > 0)
+                    page.emptyNote = "站点没有搜到「" + page.word + "」，换个词试试。";
                 return;
+            }
             page.sitePages[sp] = items;
             if (page.siteSize === 0) {
                 page.siteSize = items.length;
@@ -332,8 +445,18 @@ Item {
     }
 
     Rectangle {
+        id: plate
         anchors.fill: parent
         color: "#0A0A0C"
+
+        // Anywhere on the page that is not one of the controls below means "done with the
+        // field": the caret's frame is the only thing on screen saying the search box is
+        // live, and it must go out when the eye has moved on. A click on an item that does
+        // not ask for focus leaves QML's focus alone, so the page asks for it here.
+        MouseArea {
+            anchors.fill: parent
+            onClicked: searchBox.releaseFocus()
+        }
     }
 
     // ---- content: the whole width, because the menu is a row at the top now ----
@@ -346,7 +469,7 @@ Item {
             x: page.pad
             y: page.pad
             spacing: page.gap
-            height: Math.round(shellHeight * 0.05)
+            height: Math.round(Theme.refH * 0.05)
 
             // One pill per online source that is switched on, carrying the name it was
             // added with - the tab says what you are looking at, and the categories of
@@ -360,7 +483,7 @@ Item {
                     // row under it belongs to the source, so picking 电影 must not put the
                     // source's own pill out.
                     readonly property bool cur: page.shows(modelData)
-                    width: t.implicitWidth + Math.round(shellHeight * 0.028)
+                    width: t.implicitWidth + Math.round(Theme.refH * 0.028)
                     height: tabs.height
                     radius: Theme.controlRadius
                     color: src.cur ? Theme.accent
@@ -380,11 +503,52 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: page.goto(modelData.url)
+                        onClicked: { page.leaveSearch(); page.goto(modelData.url) }
                     }
                 }
             }
 
+        }
+
+        // ---- 搜索 by name, at the right end of the sources' line ----
+        // The site's own search box runs `window.open("/s/" + q + "/")` - read off the
+        // inline script every page it serves carries - so a search is just one more list
+        // url and `goto` does everything else: same wall, same posters, same magnet dialog.
+        // What a search answer does not carry is anywhere to go next: its 下一页 is printed
+        // `disabled` with no href, and `/s/<q>/page/2/` answers 404. One page, at most 20
+        // titles, which is why `notePager` falls back to a single page rather than leaving
+        // the total at zero.
+        MyField {
+            id: searchBox
+            readonly property real markS: 10       // the clear mark's own box
+            readonly property real markGap: 8      // and its gap to the field's right edge
+            x: parent.width - page.pad - width
+            y: tabs.y
+            width: page.searchW
+            height: tabs.height
+            fontSize: page.smallFs
+            framed: true
+            rightInset: markS + 2 * markGap
+            placeholder: "搜索片名"
+            onCommitted: page.search(text)
+
+            Icon {
+                width: searchBox.markS
+                height: searchBox.markS
+                x: parent.width - searchBox.markGap - width
+                anchors.verticalCenter: parent.verticalCenter
+                name: "close"
+                weight: 1.5
+                color: Theme.textSecondary
+                // Only while there is something to clear.
+                visible: searchBox.text.length > 0
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: searchBox.text = ""
+                }
+            }
         }
 
         // ---- the categories the selected source publishes, from the same fetch that
@@ -395,7 +559,9 @@ Item {
             id: chips
             x: tabs.x + (tabs.width > 0 ? tabs.width + page.gap : 0)
             y: tabs.y
-            width: Math.max(0, parent.width - x - page.pad)
+            // Up to the search box rather than to the page's gutter: the two share this
+            // line, and a long category run has to stop short of it, not run under it.
+            width: Math.max(0, searchBox.x - page.gap - x)
             height: tabs.height
             orientation: ListView.Horizontal
             spacing: page.gap
@@ -415,12 +581,16 @@ Item {
                 return out;
             }
             // No bar on this row: it is one line tall, the wheel scrolls it, and the
-            // style would put a white groove at its end.
+            // style would put a white groove at its end. A tap on the empty part of the row
+            // is a click somewhere else all the same - the ListView would otherwise eat it.
+            TapHandler {
+                onTapped: searchBox.releaseFocus()
+            }
 
             delegate: Rectangle {
                 required property var modelData
-                readonly property bool cur: online.currentUrl === modelData.url
-                width: ct.implicitWidth + Math.round(shellHeight * 0.028)
+                readonly property bool cur: page.sameList(online.currentUrl, modelData.url)
+                width: ct.implicitWidth + Math.round(Theme.refH * 0.028)
                 height: ListView.view.height
                 radius: Theme.controlRadius
                 color: ch.containsMouse ? "#2A2A2E" : "#1B1B1F"
@@ -440,7 +610,7 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: page.goto(modelData.url)
+                    onClicked: { page.leaveSearch(); page.goto(modelData.url) }
                 }
             }
         }
@@ -463,6 +633,10 @@ Item {
             // and its bar slid 30 px down and back on each page click. The skeleton and
             // the dots say "loading"; this line is only for things that went wrong.
             text: {
+                // A search that came back empty is an answer, not a failure, so it reads
+                // before anything the model has to say.
+                if (page.emptyNote.length > 0)
+                    return page.emptyNote;
                 if (online.error.length > 0)
                     return online.error;
                 if (page.liveSources.length === 0)
@@ -474,27 +648,34 @@ Item {
 
         GridView {
             id: wall
-            // -5: a poster's art is inset 5 px inside its cell, and it is the art's edges
-            // that should meet the page's gutter. Dividing that span by the column count -
-            // rather than picking a fraction of the width and letting the grid take as many
-            // as fit - is what leaves no void at the right: 0.155 gave 6 columns and a
-            // 85 px gap on this window.
+            // A poster's art is `page.inset` inside its cell on each side, and it is the
+            // art's edges that should meet the page's gutter - so the grid starts one inset
+            // to the left of it.
             x: page.pad - page.inset
             y: page.contentTop
             width: parent.width - 2 * (page.pad - page.inset)
-            // The pager is part of the page, not an overlay: the last row of posters has
-            // to stop above it rather than behind it.
+            // The whole height is the wall's: the page hop is no longer a strip held under
+            // it, it is the last thing in the list (see `footer`), so nothing is reserved.
             height: parent.height - y - page.pad
-                    - (pager.visible ? pager.height + page.inset : 0)
             clip: true
-            // The skeleton takes the area over while a page is being fetched: leaving the
-            // old posters up made a page hop look like nothing had happened.
-            visible: !online.busy && page.liveSources.length > 0
+            // The grid stays up whenever it has a source to read from. It used to hide
+            // itself for the duration of *any* page-level request, which is what the posters
+            // flickered on: a screen page is 12 posters and the site hands out 20, so every
+            // hop asks for a second site page, and each of those asks blanked the twelve
+            // posters already drawn for as long as the site took to answer (measured on
+            // xbgame: 2.07-2.14 s for the 230 KB list page). The skeleton is the right thing
+            // to show when there is nothing to show; over a wall that is already drawn it is
+            // the flicker.
+            visible: page.liveSources.length > 0
             enabled: visible
-            // -0.01 so that floor(width / cellWidth) cannot come out one column short
-            // through rounding: without it a window that fits 6 asks for 5.
-            readonly property int columns: Math.max(1, Math.floor(width / page.targetCol))
-            cellWidth: Math.max(120, width / columns - 0.01)
+            // How many cards fit *whole*: the row is divided by this count, so a column is
+            // only counted when its own trailing inset is paid for. The old rule gave the
+            // last cell 2 * inset of borrowed width, which a fixed card could hide but an
+            // elastic one turned into a card of 191 px (below the 194 minimum) and, at the
+            // widths in between, five pixels of the last poster clipped by the grid.
+            readonly property int columns: Math.max(1, Math.floor(width
+                                                                  / (page.artW + 2 * page.inset)))
+            cellWidth: Math.floor(width / wall.columns)
             // The poster keeps its own 1.72 ratio and the title block is added below it,
             // rather than the cell being 1.72 with the label squeezed into a leftover 17%
             // - that leftover made the art-to-art distance 46 px while the side-to-side
@@ -503,6 +684,193 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             // The screen page, not the site's: `page.shown` holds exactly `per` posters.
             model: page.shown
+
+            // ---- the page hop: this wall's own pages, at the end of the list ----
+            // It used to be a strip pinned to the bottom of the page, which cost the wall a
+            // row of posters and put the chips over the last row's labels. As the grid's
+            // footer it is part of the scrolled content, so it only shows once the list has
+            // been run to its end.
+            footer: Item {
+                id: pagerFooter
+                // The shelf the chips sit on. Measured off his second picture, where the two
+                // ends keep going: over a 41 px chip the flat top runs 60 px past the group,
+                // an S of 32 px drops 34 px, and the low run then runs on to the page edge.
+                // Scaled to this row's 36 px chip: 10 above, 53 past, 28 of curve, 30 down.
+                readonly property real lineRoom: Math.round(Theme.refH * 0.0138)
+                readonly property real overhang: Math.round(Theme.refH * 0.0733)
+                readonly property real run: Math.round(Theme.refH * 0.0387)
+                readonly property real drop: Math.round(Theme.refH * 0.0415)
+                width: wall.width
+                height: pager.visible ? pager.height + 2 * page.inset + pagerFooter.lineRoom : 0
+
+                // The wall scrolls in sub-pixel steps, so while it moves this row sits
+                // between two device rows. The chips' 1 px borders take that as a spread
+                // over both rows, and the line does too - but the line is a Canvas, so it
+                // reaches the screen as a texture, and the second row it grows is a dimmer
+                // copy (measured while scrolling: the line's own row stayed at 38, and the
+                // row under it took 15..21 out of the 10-value page behind it, changing
+                // every frame). The chips are geometry and settle back to one row at rest;
+                // the line's extra row is what reads as the line shivering under them.
+                // Moving both by the same sub-pixel remainder cancels it, so the texture
+                // is blitted row for row and the line is drawn the way it is at rest.
+                readonly property real snapY: {
+                    const dpr = Screen.devicePixelRatio > 0 ? Screen.devicePixelRatio : 1;
+                    const abs = wall.y + pagerFooter.y - wall.contentY;
+                    return Math.round(abs * dpr) / dpr - abs;
+                }
+
+                // ---- the line: flat over the chips, falling away and running out ----
+                Canvas {
+                    id: shelf
+                    x: 0
+                    y: page.inset + pagerFooter.snapY
+                    width: pagerFooter.width
+                    height: pagerFooter.drop
+                    visible: pager.visible
+                    antialiasing: true
+
+                    // The path is laid out around the chip group, and a page-count change
+                    // moves that group without moving this canvas: the canvas is the wall's
+                    // whole width and only repaints on its own size. Reading the group's
+                    // width through a property is what makes the change a repaint trigger -
+                    // without it the drops stayed where the *previous* group ended, which
+                    // put them under the arrows.
+                    property real groupW: pager.width
+                    property real groupX: pager.x
+                    onGroupWChanged: requestPaint()
+                    onGroupXChanged: requestPaint()
+                    onWidthChanged: requestPaint()
+                    onHeightChanged: requestPaint()
+                    onPaint: {
+                        const c = getContext("2d")
+                        c.reset()
+                        // The two ends stop where the poster art stops. This canvas lives in
+                        // the wall's coordinates, and the wall already sits `pad - inset` off
+                        // the page, so the card gutter here is the cell's own inset.
+                        const gap = page.inset
+                        const r = pagerFooter.run
+                        const gl = groupX
+                        const gr = groupX + groupW
+                        // Where the flat top ends and the drop begins, on each side.
+                        const fl = Math.max(gap + r + 1, gl - pagerFooter.overhang)
+                        const fr = Math.min(width - gap - r - 1, gr + pagerFooter.overhang)
+                        const yTop = 0.5
+                        const yLow = height - 0.5
+                        c.lineWidth = 1
+                        c.lineCap = "butt"
+                        c.strokeStyle = "#26262A"
+                        c.beginPath()
+                        c.moveTo(gap, yLow)
+                        c.lineTo(fl - r, yLow)
+                        c.bezierCurveTo(fl - r * 0.45, yLow, fl - r * 0.45, yTop, fl, yTop)
+                        c.lineTo(fr, yTop)
+                        c.bezierCurveTo(fr + r * 0.45, yTop, fr + r * 0.45, yLow, fr + r, yLow)
+                        c.lineTo(width - gap, yLow)
+                        c.stroke()
+                        // The two low runs and their drops carry the accent: dim at the page
+                        // edge, strongest where the drop meets the flat, and gone by the top
+                        // of the drop (measured there: (56,39,32) at the edge, (138,90,2) at
+                        // the junction, (31,31,36) - grey - 2 px above it).
+                        for (const side of [0, 1]) {
+                            const from = side ? width - gap : gap
+                            const to = side ? fr + r : fl - r
+                            const g = c.createLinearGradient(from, 0, to, 0)
+                            g.addColorStop(0, Qt.rgba(1, 0.545, 0, 0.16))
+                            g.addColorStop(0.72, Theme.accent)
+                            g.addColorStop(1, Qt.rgba(1, 0.545, 0, 0))
+                            c.strokeStyle = g
+                            c.beginPath()
+                            if (side === 0) {
+                                c.moveTo(gap, yLow)
+                                c.lineTo(fl - r, yLow)
+                                c.bezierCurveTo(fl - r * 0.45, yLow, fl - r * 0.45, yTop, fl, yTop)
+                            } else {
+                                c.moveTo(width - gap, yLow)
+                                c.lineTo(fr + r, yLow)
+                                c.bezierCurveTo(fr + r * 0.45, yLow, fr + r * 0.45, yTop, fr, yTop)
+                            }
+                            c.stroke()
+                        }
+                    }
+                }
+
+                Row {
+                    id: pager
+                    x: Math.max(0, (parent.width - width) / 2)
+                    y: page.inset + pagerFooter.lineRoom + pagerFooter.snapY
+                    // The reference's gap is 0.39 of a chip's height; at this row's 36 px
+                    // that is 14, not the page's 18 px control gap.
+                    spacing: Math.round(height * 0.39)
+                    height: Math.round(Theme.refH * 0.05)
+                    visible: page.liveSources.length > 0 && page.pages > 1
+
+                    Repeater {
+                        model: page.chips
+
+                        delegate: Rectangle {
+                            id: hop
+                            required property var modelData
+                            // The left arrow on the first page is greyed rather than gone, so
+                            // the row does not shift when a page is clicked.
+                            readonly property bool live: modelData.live === true
+                            readonly property bool arrow: modelData.icon !== undefined
+                            // A square, as the reference's are (44 x 41): the number, the arrow
+                            // and the dots all get the same plate, so the row reads as a strip of
+                            // chips rather than as words of different lengths. Four digits
+                            // (3674) is 28 px of ink in a 36 px plate.
+                            width: height
+                            height: parent.height
+                            radius: Math.round(height * 0.2)
+                            // The current page keeps the amber plate, so hovering it must not
+                            // paint the grey back over it.
+                            color: modelData.on ? "#3A2A0E"
+                                   : (hopMouse.containsMouse && hop.live ? "#2A2A2E" : "#1B1B1F")
+                            border.width: 1
+                            border.color: modelData.on ? Theme.accent : "#3A3A40"
+
+                            Icon {
+                                visible: hop.arrow
+                                anchors.centerIn: parent
+                                // 0.56 of the plate: the glyph's own ink then stands as tall as
+                                // the digits beside it (9 px at this row's 13 px text).
+                                width: Math.round(hop.height * 0.56)
+                                height: width
+                                name: modelData.icon || ""
+                                color: hop.live ? Theme.textPrimary : "#4A4A4E"
+                            }
+                            Text {
+                                visible: !hop.arrow
+                                anchors.centerIn: parent
+                                // Arrow chips carry an icon and no label; binding the
+                                // missing key straight to text warns on every rebuild.
+                                text: modelData.label || ""
+                                color: modelData.on ? Theme.accent
+                                       : (modelData.kind === "gap" ? Theme.textSecondary
+                                          : (hop.live ? Theme.textPrimary : "#4A4A4E"))
+                                font.pixelSize: page.smallFs
+                                font.family: Theme.uiFont
+                            }
+                            MouseArea {
+                                id: hopMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: hop.live ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: {
+                                    searchBox.releaseFocus();
+                                    if (hop.live)
+                                        page.jumpTo(modelData.to);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The grid is a Flickable, so a click on the empty part of it is consumed here
+            // and never reaches the page behind; a tap still means the same thing.
+            TapHandler {
+                onTapped: searchBox.releaseFocus()
+            }
 
             delegate: Item {
                 required property var modelData
@@ -560,15 +928,23 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    // One click lists the magnets behind the poster. Nothing is
-                    // downloaded until one of them is chosen.
+                    // One click lists the links behind the poster. Nothing is downloaded
+                    // until one of them is chosen.
                     onClicked: {
-                        magPopup.links = [];
+                        searchBox.releaseFocus();
+                        // The column no longer closes on a press elsewhere, so a second press
+                        // on the poster it is already showing has nothing to swap. Writing the
+                        // same model object would not fire onDetailChanged either, and the
+                        // column would sit waiting on a request that never goes out.
+                        if (magPopup.visible && page.detail === modelData)
+                            return;
                         magPopup.note = "";
+                        magPopup.shareNote = "";
+                        magPopup.info = {};
+                        magPopup.tab = "seed";
                         magPopup.waiting = true;
                         page.detail = modelData;
                         magPopup.open();
-                        online.magnets(modelData.href);
                     }
                 }
             }
@@ -578,13 +954,16 @@ Item {
         // The same grid, the same cells, the same gaps - so the page does not move when
         // the posters arrive. The wave runs across the columns so it reads as "fetching"
         // rather than as a picture that failed to load.
+        // Only over an empty wall: the posters already on screen are the answer to a request
+        // for more of them, and covering them is the flicker, not the feedback. The three
+        // dots below stay up for either case.
         Grid {
             id: skeleton
             x: wall.x
             y: wall.y
             columns: wall.columns
             spacing: 0
-            visible: online.busy
+            visible: online.busy && page.shown.length === 0
 
             Repeater {
                 model: wall.columns * 2
@@ -668,69 +1047,32 @@ Item {
             y: wall.y
             height: wall.height
         }
-
-        // ---- the page hop: this wall's own pages, along the bottom ----
-        // The chips are the same shape the site's paginator was drawn with; what changed is
-        // what a page is. Its numbers count screen pages (`page.per` posters each), so the
-        // row appears only when the list is longer than one screen.
-        Row {
-            id: pager
-            x: Math.max(page.pad, (parent.width - width) / 2)
-            y: parent.height - height - page.pad
-            spacing: Math.round(page.gap / 2)
-            height: Math.round(shellHeight * 0.05)
-            visible: page.liveSources.length > 0 && page.pages > 1
-
-            Repeater {
-                model: page.chips
-
-                delegate: Rectangle {
-                    id: hop
-                    required property var modelData
-                    // 上一页 on the first page is greyed rather than gone, so the row does
-                    // not shift when it is clicked.
-                    readonly property bool live: modelData.live === true
-                    // A page number is one or two glyphs: at the row's own padding it would
-                    // come out a stubby 24 x 36, so a chip is never narrower than it is
-                    // tall. 上一页 and 2202 are already wider than that and keep their width.
-                    width: Math.max(height, hopText.implicitWidth
-                                          + Math.round(shellHeight * 0.028))
-                    height: parent.height
-                    radius: Theme.controlRadius
-                    color: hopMouse.containsMouse && hop.live ? "#2A2A2E" : "#1B1B1F"
-                    border.width: 1
-                    border.color: modelData.on ? Theme.accent : "#3A3A40"
-
-                    Text {
-                        id: hopText
-                        anchors.centerIn: parent
-                        text: modelData.label
-                        color: modelData.on ? Theme.accent
-                               : (hop.live ? Theme.textPrimary : "#4A4A4E")
-                        font.pixelSize: page.smallFs
-                        font.family: Theme.uiFont
-                    }
-                    MouseArea {
-                        id: hopMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: hop.live ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: if (hop.live)
-                            page.jumpTo(modelData.to)
-                    }
-                }
-            }
-        }
     }
 
     // ---- the magnets behind one poster ----
     //
-    // The same shape as the source card: a title, a hairline, then one flat row per seed
-    // with its size and the action on the right. The rows used to be bordered plates, which
-    // read as buttons stacked inside a dialog that is itself a button-shaped thing.
+    // One board, two surfaces. The setting picks which: a centred card over the wall, or a
+    // 333 px column that the window grows to fit - the same trade the playlist dock makes,
+    // so the wall keeps every poster it had and the board takes a strip of its own.
+    //
+    // The board is shaped like the site's own film page either way: the cover and its info
+    // rows first, the download tabs under them, and only then the links. It has one size
+    // from the first frame - it used to grow by 177 px when the list landed, and the cover
+    // is what holds that space while the hops are still in flight.
     Popup {
         id: magPopup
-        property var links: []
+        // The film's own facts as the detail page printed them: title, poster, the
+        // label/value rows, the download tabs with their counts, and the rows behind
+        // each tab.
+        property var info: ({})
+        // Which of the site's tabs the list is showing. The rows of every tab arrive with
+        // the page, so moving this is what a tab click does - no second request.
+        property string tab: "seed"
+        // Why the last netdisk row did not open. It belongs to the tab row's own line, not
+        // to the list's empty state: the rows are there, the click is what failed.
+        property string shareNote: ""
+        readonly property var lists: info.lists || ({})
+        readonly property var links: lists[tab] || []
         // Why the list is empty, in the dialog's own words. It used to be written into
         // online.error, which is the posters' line: the 429 showed up across the page
         // while this dialog was already listing seeds.
@@ -738,27 +1080,29 @@ Item {
         // The dialog's own wait: the wall's busy flag is not set by a magnet fetch
         // anymore, so nothing else would say "not yet, hold on".
         property bool waiting: false
-        modal: true
-        // No dim: the posters behind are the context of the choice, and the wall should
-        // not go grey every time one of them is clicked.
-        Overlay.modal: Item { }
-        // Whole pixels, not `anchors.centerIn`: the overlay is 723 px tall and this card
-        // comes out an even height, so centring lands the whole layer on y=159.5. Measured
-        // on his own title: the 1 px border was drawn as two columns of (39,39,44) instead
-        // of one column of (58,58,64) like the settings card, and every glyph in the list
-        // was resampled at that half offset - which is the text shimmering while the bar
-        // is dragged, the bar itself having been fixed already.
+
+        // ---- the two surfaces ----
+        // `dock` is the setting; everything below is a fork on it. The column is the
+        // playlist's width so the two side panels agree at any launch size.
+        readonly property bool dock: page.magnetPanel
+        readonly property bool right: page.magnetRight
+        readonly property real dockW: Math.round(Theme.playlistWidthRatio * Theme.refH)
         readonly property Item ovl: Overlay.overlay
-        // The top edge sits where the tallest this panel can get would be centred, and the
-        // card only ever grows downward from there. Centring on the *current* height made
-        // the whole card jump upward the moment the links landed - measured on 坠落2:
-        // waiting 132 px tall with its top at y=342, nine rows 485 px tall with its top at
-        // y=165, i.e. 177 px of lurch on every first open. That was the "首次抖", not the
-        // text.
-        readonly property real maxH: Math.round(page.height * 0.72)
-        x: ovl ? Math.round((ovl.width - magPopup.width) / 2) : 0
-        y: ovl ? Math.round((ovl.height - maxH) / 2) : 0
-        width: Math.round(page.width * 0.5)
+        modal: !dock
+        // No dim in card mode: the posters behind are the context of the choice, and the
+        // wall should not go grey every time one of them is clicked.
+        Overlay.modal: Item { }
+        // The card is centred off the overlay, on whole pixels, not by `anchors.centerIn`:
+        // the overlay is 723 px tall and the card an even height, so centring lands the
+        // whole layer on y=159.5 - measured on his own title, the 1 px border came out as
+        // two columns of (39,39,44) instead of one of (58,58,64) and every glyph in the
+        // list was resampled at that half offset.
+        parent: ovl
+        width: dock ? dockW : Math.round(Theme.refW * 0.82 / 2) * 2
+        height: dock ? (ovl ? ovl.height : 0) : Math.round(Theme.refH * 0.88 / 2) * 2
+        x: dock ? (right ? (ovl ? ovl.width - width : 0) : 0)
+                    : (ovl ? Math.round((ovl.width - width) / 2) : 0)
+        y: dock ? 0 : (ovl ? Math.round((ovl.height - height) / 2) : 0)
         padding: magPad
         // Opened by the poster's click rather than bound to `page.detail`. The binding
         // survived the dismiss - `close()` is a C++ write, which does not break a QML
@@ -767,26 +1111,90 @@ Item {
         // card stayed shut; a different poster changed the value and opened it again. That
         // is the "must click another card first" he reported. Reproduced: dismiss, click
         // the same poster, no card.
-        closePolicy: Popup.CloseOnPressOutside
-        onClosed: page.detail = null
+        // In the card, a press anywhere else is how it is dismissed. In the column it is
+        // not: the column is 333 px of the window and the wall behind it stays clickable,
+        // so a press on another poster must only replace what the column shows - closing
+        // on it was what made the whole window shrink and grow again for nothing. The way
+        // out is the cross in the column's own bar.
+        closePolicy: dock ? Popup.NoAutoClose : Popup.CloseOnPressOutside
+        // The column is the reason the window is 333 px wider, so opening and closing it
+        // is what asks the window to grow and give the room back.
+        onAboutToShow: if (dock)
+                page.magnetDockAsked(true)
+        // The room is wanted by being on screen *and* being a column, so choosing a side -
+        // or 弹框 - while the board is up asks again. Without this, switching 弹框 to a column
+        // left the card drawn over the wall: nothing had told the window to grow.
+        onDockChanged: page.magnetDockAsked(visible && dock)
+        onClosed: {
+            if (dock)
+                page.magnetDockAsked(false);
+            page.detail = null;
+        }
 
-        readonly property real magPad: Math.round(shellHeight * 0.028)
-        readonly property real magGap: Math.round(shellHeight * 0.019)
-        readonly property real magRow: Math.round(shellHeight * 0.064)
-        readonly property real titleH: Math.round(page.titleFs * 1.35)
-        // The header is the title and the rule, nothing else. The one line that answers
-        // the click ("正在取磁力…", "站点回了 429…") used to sit here, which made it look
-        // like part of the heading; it belongs to the list under the rule, because that
-        // empty area is what it is talking about. headH is counted arithmetically rather
-        // than off the Column's implicitHeight: the list's height comes out of the
-        // popup's, so a content-driven popup height would be a ring with no solution.
-        readonly property real headH: titleH + 2 * magGap + 1
-        height: Math.min(2 * magPad + headH + Math.max(1, links.length) * magRow,
-                         Math.round(page.height * 0.72))
+        readonly property real magPad: dock ? Math.round(Theme.refH * 0.0221)
+                                            : Math.round(Theme.refH * 0.03)
+        readonly property real barH: dock ? Math.round(Theme.refH * 0.047) : 0
+        // The cross's own square: the same 34 px the column's bar gives it, so the two
+        // surfaces dismiss the same way and take the same room.
+        readonly property real crossBox: Math.round(Theme.refH * 0.047)
+        // The glyph inside that box, and how far the box has to reach into the padding so
+        // the cross's own ink ends on the same inset the text starts on (16 in the column,
+        // 22 in the card) instead of 11 px further in. The hit box keeps its 34 px.
+        readonly property real crossInk: Math.round(Theme.refH * 0.0249)
+        readonly property real crossShift: Math.round(crossBox / 2 - crossInk / 2
+                                                      + crossInk * 0.24)
+        // Before the detail page lands only the card's own two facts exist: the cover is
+        // what holds the block open so nothing moves under the pointer when the rest of
+        // the film's rows arrive.
+        readonly property var film: info.title ? info : (page.detail || {})
+        readonly property var filmMeta: info.meta || []
+        readonly property var filmTabs: info.tabs || []
+        // The column is a third of the card's width, so the cover and the label gutter
+        // both come down; the rows go two lines tall instead of one.
+        readonly property real posterW: dock ? 96 : Math.round(Theme.refH * 0.2326)
+        readonly property real posterH: dock ? Math.round(96 * 1.72)
+                                             : Math.round(Theme.refH * 0.3264)
+        readonly property real labelW: dock ? 74 : Math.round(Theme.refH * 0.144)
+        readonly property real filmTitleFs: Math.round(Theme.refH * 0.0221)
+        readonly property real chipFs: Math.round(Theme.refH * 0.0152)
+        readonly property real headGap: Math.round(Theme.refH * 0.019)
+        readonly property real tabH: Math.round(Theme.refH * 0.0415)
+        readonly property real rowH: dock ? Math.round(Theme.refH * 0.0719)
+                                          : Math.round(Theme.refH * 0.0553)
+        // What the hint line costs: in the card it shares the tab row, in the column the
+        // tabs wrap to two lines and the sentence gets a line of its own.
+        // The hint's line is reserved while the links are still coming too: without it the
+        // list sits 19 px higher while waiting than it does once they land, and the
+        // skeleton would then be a placeholder that the rows jump out of.
+        readonly property real hintH: dock && (waiting || links.length > 0
+                                               || shareNote.length > 0)
+                                      ? Math.round(Theme.refH * 0.018 * 1.35) + 4 : 0
+        // The list gets what is left after the film's block and the tab row. Counted
+        // arithmetically rather than off the Column's implicitHeight: the list's height
+        // comes out of the popup's, so a content-driven popup height would be a ring with
+        // no solution.
+        readonly property real listAvail: height - 2 * magPad - barH
+                                          - (dock ? 10 : 0) - head.height
+                                          - headGap - 1 - 6 - tabFlowH - 6 - hintH
+        // Whole rows only: the leftover 294 px showed an eighth row as two pixels of
+        // chip border under the last full row.
+        readonly property real listH: Math.floor(listAvail / rowH) * rowH
+        // One row of tabs in the card, two in the column: the flow's own height, held to
+        // at least one tab line so the underline still has something to sit on.
+        // While the links are still coming the tabs are not there to give the row its
+        // height, and in the column six of them never fit on one line - so the row is held
+        // open at the two lines it comes back to. Without this the list sits 48 px higher
+        // while waiting than the rows it is waiting for land at.
+        readonly property real tabFlowH: dock && waiting
+                                         ? Math.round(2 * tabH + tabRow.spacing)
+                                         : Math.max(tabH, tabRow.implicitHeight)
 
         background: Rectangle {
-            radius: 6
-            color: "#141418"
+            radius: magPopup.dock ? 0 : 6
+            // Black, the same plate the player and the window's own margin are on: the card
+            // was a step lighter than the page behind it, which read as a second surface
+            // rather than as the film's detail.
+            color: "#000000"
             border.color: "#3A3A40"
             border.width: 1
         }
@@ -796,23 +1204,271 @@ Item {
             width: parent.width
             spacing: 0
 
+            // ---- the column's own head: the title and its way out ----
+            // The card needs neither: it is dismissed by clicking anywhere on the wall,
+            // and the title is already the biggest thing in its info block.
+            Item {
+                id: dockBar
+                width: parent.width
+                height: magPopup.barH
+                visible: magPopup.dock
+
+                Text {
+                    id: dockTitle
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - height - magPopup.magPad
+                    text: magPopup.film.title || ""
+                    elide: Text.ElideRight
+                    color: Theme.textPrimary
+                    font.pixelSize: magPopup.filmTitleFs
+                    font.family: Theme.uiFont
+                }
+
+                Rectangle {
+                    id: dockClose
+                    anchors.right: parent.right
+                    anchors.rightMargin: -magPopup.crossShift
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: dockBar.height
+                    height: width
+                    radius: Theme.controlRadius
+                    color: dockCloseArea.containsMouse ? "#2A2A2E" : "transparent"
+
+                    // The same cross the playlist dock's header uses, drawn rather than
+                    // typed: a glyph would sit on its baseline and not on the box's centre.
+                    // The same drawn cross the card uses - one shape, so the two surfaces
+                    // need one shift to land on their text's inset.
+                    Icon {
+                        anchors.centerIn: parent
+                        width: magPopup.crossInk
+                        height: width
+                        name: "close"
+                        color: Theme.textSecondary
+                    }
+                    MouseArea {
+                        id: dockCloseArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: magPopup.close()
+                    }
+                }
+                // The 4 px the ✕ reads as "not touching the title" - and the column's own
+                // gutter, which is what the title starts on.
+                readonly property real tail: magPopup.magPad
+            }
+            Item { width: 1; height: magPopup.dock ? 10 : 0 }
+
+            // ---- the film: cover on the left, the site's info rows on the right ----
+            Item {
+                id: head
+                width: parent.width
+                height: Math.max(magPopup.posterH, infoCol.implicitHeight)
+
+                Rectangle {
+                    id: poster
+                    width: magPopup.posterW
+                    height: magPopup.posterH
+                    radius: Theme.controlRadius
+                    color: "#0E0E11"
+                    clip: true
+
+                    Image {
+                        id: posterImage
+                        anchors.fill: parent
+                        // The wall's own art is the fallback: not every detail page carries a
+                        // usable cover (one site prints a hotlink-protected CDN wrapper whose
+                        // origin is gone), and the poster that was just clicked is the same
+                        // film.
+                        source: magPopup.film.poster
+                                || (page.detail ? page.detail.poster : "")
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        // `status` alone resolves to the page's own status line, which sits
+                        // in this file as an id - so the image would never be shown.
+                        visible: posterImage.status === Image.Ready
+                    }
+                }
+
+                Column {
+                    id: infoCol
+                    x: poster.width + (magPopup.dock ? 12 : Math.round(Theme.refH * 0.025))
+                    // The card's cross lives in this block's top-right corner, so the rows
+                    // stop short of it; the column has its own header and needs nothing.
+                    width: head.width - x - (magPopup.dock ? 0 : magPopup.crossBox + 8)
+                    spacing: Math.round(Theme.refH * 0.0045)
+
+                    Text {
+                        width: parent.width
+                        // In the column the title is already in its header, and repeating
+                        // it would cost the block two of its eight rows.
+                        visible: !magPopup.dock
+                        text: magPopup.film.title || ""
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                        color: Theme.textPrimary
+                        font.pixelSize: magPopup.filmTitleFs
+                        font.family: Theme.uiFont
+                    }
+
+                    Repeater {
+                        model: magPopup.filmMeta
+
+                        delegate: Item {
+                            id: metaRow
+                            required property var modelData
+                            width: infoCol.width
+                            height: Math.max(metaKey.implicitHeight, metaVal.implicitHeight)
+
+                            Text {
+                                id: metaKey
+                                width: magPopup.labelW
+                                text: metaRow.modelData.k + ":"
+                                color: Theme.textSecondary
+                                font.pixelSize: page.smallFs
+                                font.family: Theme.uiFont
+                            }
+                            Text {
+                                id: metaVal
+                                x: magPopup.labelW
+                                width: metaRow.width - magPopup.labelW
+                                text: metaRow.modelData.v
+                                // 主演 is the one row that runs long; the site itself cuts
+                                // the cast off behind a link, so two lines is the most the
+                                // block gives any single row.
+                                wrapMode: Text.WordWrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                color: Theme.textPrimary
+                                font.pixelSize: page.smallFs
+                                font.family: Theme.uiFont
+                            }
+                        }
+                    }
+                }
+            }
+
+            Item { width: 1; height: magPopup.headGap }
+            Rectangle { width: parent.width; height: 1; color: "#26262A" }
+            Item { width: 1; height: 6 }
+
+            // ---- the site's own download tabs, counts and all ----
+            Item {
+                id: tabBar
+                width: parent.width
+                height: magPopup.tabFlowH
+
+                // A flow, not a row: six of these labels do not fit in 301 px, and the
+                // column has to show all six. In the card the same flow never wraps, so
+                // the line it draws is the line it always drew.
+                Flow {
+                    id: tabRow
+                    width: parent.width
+                    spacing: magPopup.dock ? Math.round(Theme.refH * 0.0249)
+                                           : Math.round(Theme.refH * 0.036)
+
+                    Repeater {
+                        model: magPopup.filmTabs
+
+                        delegate: Item {
+                            id: tabItem
+                            required property var modelData
+                            readonly property bool active: modelData.key === magPopup.tab
+                            // A tab whose count came out 0 has no rows behind it, and the
+                            // site greys those for the same reason.
+                            readonly property bool live: modelData.count > 0
+                            width: tabText.implicitWidth
+                            height: magPopup.tabH
+
+                            Text {
+                                id: tabText
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: tabItem.modelData.name + "("
+                                      + tabItem.modelData.count + ")"
+                                color: tabItem.active ? Theme.textPrimary
+                                       : (tabItem.live ? Theme.textSecondary : "#55555C")
+                                font.pixelSize: page.smallFs
+                                font.family: Theme.uiFont
+                            }
+                            Rectangle {
+                                visible: tabItem.active
+                                anchors.bottom: parent.bottom
+                                width: tabText.implicitWidth
+                                height: 2
+                                radius: 1
+                                color: Theme.accent
+                            }
+                            // The label is only a line of glyphs wide, so the hit area takes
+                            // the gap between neighbours as its own: half of the row's
+                            // spacing on each side, which is exactly where the next tab's
+                            // half begins.
+                            MouseArea {
+                                anchors.fill: parent
+                                anchors.leftMargin: -Math.round(Theme.refH * 0.018)
+                                anchors.rightMargin: -Math.round(Theme.refH * 0.018)
+                                hoverEnabled: true
+                                enabled: tabItem.live
+                                cursorShape: tabItem.live ? Qt.PointingHandCursor
+                                                         : Qt.ArrowCursor
+                                onClicked: {
+                                    magPopup.tab = tabItem.modelData.key;
+                                    magPopup.shareNote = "";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // One line for the whole list instead of a button on every row. It says
+                // what the tab you are looking at does: a 磁力 row starts a download, a
+                // netdisk row has nothing to download until its share page is opened.
+                // The column gives it a line of its own below, so it is not drawn twice.
+                Text {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !magPopup.dock && magPopup.links.length > 0
+                    text: magPopup.shareNote.length > 0 ? magPopup.shareNote
+                          : (magPopup.tab === "seed" ? "点一行加入下载"
+                                                     : "点一行在浏览器打开")
+                    color: magPopup.shareNote.length > 0 ? Theme.accent : Theme.textSecondary
+                    // The tabs take the left of this row, so the sentence gets what is left
+                    // and cuts in the middle rather than running under the list's scrollbar.
+                    width: Math.min(implicitWidth, tabBar.width - tabRow.implicitWidth - 12)
+                    elide: Text.ElideMiddle
+                    font.pixelSize: page.smallFs
+                    font.family: Theme.uiFont
+                }
+            }
+
+            Item { width: 1; height: 6 }
+
+            // The column's copy of that sentence, under the tabs.
             Text {
                 width: parent.width
-                text: page.detail ? page.detail.title : ""
+                visible: magPopup.dock && (magPopup.waiting || magPopup.links.length > 0
+                                           || magPopup.shareNote.length > 0)
                 elide: Text.ElideRight
-                color: Theme.textPrimary
-                font.pixelSize: page.titleFs
+                // A space while waiting: the line has to be as tall as the sentence it is
+                // holding a place for, and empty text would collapse it.
+                text: magPopup.waiting ? " "
+                      : (magPopup.shareNote.length > 0 ? magPopup.shareNote
+                      : (magPopup.tab === "seed" ? "点一行加入下载"
+                                                 : "点一行在浏览器打开"))
+                color: magPopup.shareNote.length > 0 ? Theme.accent : Theme.textSecondary
+                font.pixelSize: page.smallFs
                 font.family: Theme.uiFont
             }
-            Item { width: 1; height: magPopup.magGap }
-            Rectangle { width: parent.width; height: 1; color: "#26262A" }
-            Item { width: 1; height: magPopup.magGap }
+            Item {
+                width: 1
+                height: magPopup.hintH > 0 ? 4 : 0
+            }
 
             ListView {
                 id: magList
                 width: parent.width
-                height: Math.max(magPopup.magRow,
-                                 magPopup.height - 2 * magPopup.magPad - magPopup.headH)
+                height: magPopup.listH
                 clip: true
                 model: magPopup.links
                 boundsBehavior: Flickable.StopAtBounds
@@ -822,53 +1478,97 @@ Item {
                     required property var modelData
                     required property int index
                     width: ListView.view.width
-                    height: magPopup.magRow
+                    height: magPopup.rowH
 
-                    Rectangle {
-                        anchors.top: parent.top
-                        width: parent.width
-                        height: 1
-                        color: "#26262A"
-                        visible: index > 0
-                    }
                     // Hover is a band behind the row, not a plate around it: the whole row
                     // is the target, so the band is what has to reach the edges.
                     Rectangle {
                         anchors.fill: parent
                         color: mh.containsMouse ? "#1B1B1F" : "transparent"
                     }
-                    // Each line is placed on a whole pixel rather than centred: the row is
-                    // 46 px and a 13 px line box is 19 px tall, so centring leaves every
-                    // glyph at y+13.5 and the text is resampled half a pixel off its own
-                    // raster - which is what shimmers when the list moves. The three
-                    // columns are laid out by hand for the same reason: a Row centres its
-                    // children and would put the half pixel straight back.
-                    readonly property real nameW: width - 4 - 48 - 56 - 24
-                    Text {
+                    Rectangle {
                         x: 2
-                        width: row.nameW
-                        y: Math.round((parent.height - implicitHeight) / 2)
-                        text: modelData.label
-                        elide: Text.ElideMiddle
+                        y: Math.round((row.height - 4) / 2)
+                        width: 4
+                        height: 4
+                        radius: 2
+                        color: "#6A6A72"
+                    }
+                    // The size is the site's, right after the name; the badges and the age
+                    // are the same row's facts, and the three columns are laid out by hand
+                    // so every line sits on a whole pixel. In the column there is no row
+                    // wide enough for all four, so the name takes the first line and the
+                    // rest move under it.
+                    readonly property bool narrow: magPopup.dock
+                    readonly property real sizeW: 52
+                    readonly property real featW: narrow ? width - 16 - sizeW - 8 - timeW
+                                                         : 128
+                    readonly property real timeW: 56
+                    readonly property real nameW: width - 16 - 8 - sizeW - 8 - featW - 8 - timeW
+                    readonly property real line1: narrow ? Math.round(Theme.refH * 0.0083)
+                                                         : Math.round((height - page.smallFs * 1.35) / 2)
+                    Text {
+                        x: 16
+                        // `width` alone here is this Text's own width, not the row's: the
+                        // binding then reads itself and the label comes out empty. Row's.
+                        width: row.narrow ? row.width - 16 - 8 - row.timeW : row.nameW
+                        y: row.line1
+                        text: modelData.title || modelData.label
+                        elide: Text.ElideRight
                         color: Theme.textPrimary
                         font.pixelSize: page.smallFs
                         font.family: Theme.uiFont
                     }
                     Text {
-                        x: 2 + row.nameW + 12
-                        width: 48
-                        y: Math.round((parent.height - implicitHeight) / 2)
-                        text: modelData.size
+                        x: 16
+                        y: narrow ? Math.round(row.height - page.smallFs * 1.35 - 4) : row.line1
+                        width: row.sizeW
+                        text: modelData.size || ""
                         color: Theme.textSecondary
                         font.pixelSize: page.smallFs
                         font.family: Theme.uiFont
                     }
+                    Row {
+                        id: feats
+                        x: 16 + (narrow ? 0 : row.nameW + 8) + row.sizeW + 8
+                        y: narrow ? Math.round(row.height - page.smallFs * 1.35 - 6) : 0
+                        width: row.featW
+                        height: narrow ? Math.round(magPopup.chipFs * 1.5) : row.height
+                        spacing: 4
+
+                        Repeater {
+                            model: row.modelData.features
+                                   ? row.modelData.features.slice(0, 3) : []
+
+                            delegate: Rectangle {
+                                required property var modelData
+                                y: Math.round((feats.height - height) / 2)
+                                width: chipText.implicitWidth + Math.round(magPopup.chipFs * 0.55)
+                                height: Math.round(magPopup.chipFs * 1.5)
+                                radius: 2
+                                color: "transparent"
+                                border.width: 1
+                                border.color: "#3F6FA8"
+
+                                Text {
+                                    id: chipText
+                                    anchors.centerIn: parent
+                                    text: modelData
+                                    color: Theme.cool
+                                    font.pixelSize: magPopup.chipFs
+                                    font.family: Theme.uiFont
+                                }
+                            }
+                        }
+                    }
                     Text {
-                        x: 2 + row.nameW + 12 + 48 + 12
-                        width: 56
-                        y: Math.round((parent.height - implicitHeight) / 2)
-                        text: "加入下载"
-                        color: Theme.accent
+                        anchors.right: parent.right
+                        width: row.timeW
+                        y: narrow ? Math.round(row.height - page.smallFs * 1.35 - 4) : row.line1
+                        text: modelData.time || ""
+                        horizontalAlignment: Text.AlignRight
+                        elide: Text.ElideLeft
+                        color: "#8A8A90"
                         font.pixelSize: page.smallFs
                         font.family: Theme.uiFont
                     }
@@ -878,32 +1578,147 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            // The card picture comes along with the seed, so the row is
-                            // recognisable before a single byte has landed.
-                            downloads.add(modelData.magnet, page.saveDir,
-                                          page.detail ? page.detail.poster : "");
-                            page.detail = null;
-                            page.jobsRequested();
+                            if (modelData.magnet) {
+                                // The card picture comes along with the seed, so the row is
+                                // recognisable before a single byte has landed.
+                                downloads.add(modelData.magnet, page.saveDir,
+                                              page.detail ? page.detail.poster : "");
+                                page.detail = null;
+                                page.jobsRequested();
+                            } else {
+                                // A netdisk row: its share address only exists on the hop
+                                // page, so this asks for it and the answer opens a browser.
+                                magPopup.shareNote = "";
+                                online.openShare(modelData.hop);
+                            }
                         }
                     }
                 }
             }
         }
 
-        // The answer to the click, in the list's own area and on the title's left edge:
-        // it speaks for the empty space under the rule, not for the heading above it.
-        // A sibling of the Column rather than a row of it, so the list keeps its height.
+        // ---- the card's own way out ----
+        // The column has had a cross in its bar; the card answered only to a press outside
+        // it, which is not something the screen says anywhere. Its right and top gaps are
+        // the card's own padding, the same 22 px the text starts on.
+        Rectangle {
+            id: cardClose
+            visible: !magPopup.dock && magPopup.opened
+            anchors.right: magContent.right
+            anchors.rightMargin: -magPopup.crossShift
+            anchors.top: magContent.top
+            width: magPopup.crossBox
+            height: width
+            radius: Theme.controlRadius
+            color: cardCloseHit.containsMouse ? "#2A2A2E" : "transparent"
+
+            Icon {
+                anchors.centerIn: parent
+                width: magPopup.crossInk
+                height: width
+                name: "close"
+                color: Theme.textSecondary
+            }
+            MouseArea {
+                id: cardCloseHit
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: magPopup.close()
+            }
+        }
+
+        // The answer to the click, in the list's own area: it speaks for the empty space
+        // under the tabs, not for the film above them. A sibling of the Column rather than
+        // a row of it, so the list keeps its height.
         Text {
             x: 0
-            y: magList.y + magPopup.magGap
+            y: magList.y + 8
             width: magList.width
-            visible: magPopup.waiting || magPopup.links.length === 0
+            visible: !magPopup.waiting
+                     && (magPopup.links.length === 0 || magPopup.note.length > 0)
             elide: Text.ElideRight
-            text: magPopup.waiting ? "正在取磁力…"
-                : (magPopup.note.length > 0 ? magPopup.note : "这一页没有可用的磁力链接")
-            color: magPopup.waiting ? Theme.textSecondary : Theme.accent
+            text: magPopup.note.length > 0 ? magPopup.note
+                  : (magPopup.tab === "seed" ? "这一页没有可用的磁力链接"
+                                             : "这个来源没有链接")
+            color: Theme.accent
             font.pixelSize: page.smallFs
             font.family: Theme.uiFont
+        }
+
+        // ---- the wait, in the shape of what is coming ----
+        // Not a sentence: the rows have a shape, and drawing it means the answers land into
+        // placeholders that were already the size of a row, so nothing under the pointer
+        // moves when they do. Every measure here is the real row's own - the bullet at x=2,
+        // the name line on `line1`, the size line on its second line, one `rowH` apart - and
+        // it breathes the way the wall's skeleton does (0.45 -> 1 -> 0.45 over 420 ms, one
+        // phase step per row).
+        Item {
+            id: magSkel
+            x: magList.x
+            y: magList.y
+            width: magList.width
+            height: magPopup.listH
+            visible: magPopup.waiting
+            // What the name line has left of the row once the columns it does not carry are
+            // paid for - the same arithmetic the row itself uses.
+            readonly property real nameW: magPopup.dock
+                                          ? width - 16 - 8 - 56
+                                          : width - 16 - 8 - 52 - 8 - 128 - 8 - 56
+
+            Repeater {
+                model: Math.floor(magSkel.height / magPopup.rowH)
+
+                delegate: Item {
+                    id: skRow
+                    required property int index
+                    y: index * magPopup.rowH
+                    width: magSkel.width
+                    height: magPopup.rowH
+                    readonly property bool narrow: magPopup.dock
+                    readonly property real line1: narrow
+                                                  ? Math.round(Theme.refH * 0.0083)
+                                                  : Math.round((height - page.smallFs * 1.35) / 2)
+                    readonly property real phase: index * 90
+
+                    SequentialAnimation on opacity {
+                        running: magSkel.visible
+                        loops: Animation.Infinite
+                        PauseAnimation { duration: skRow.phase }
+                        NumberAnimation { from: 0.45; to: 1; duration: 420
+                                            easing.type: Easing.InOutQuad }
+                        NumberAnimation { from: 1; to: 0.45; duration: 420
+                                          easing.type: Easing.InOutQuad }
+                    }
+
+                    Rectangle {
+                        x: 2
+                        y: Math.round((skRow.height - 4) / 2)
+                        width: 4
+                        height: 4
+                        radius: 2
+                        color: "#141418"
+                    }
+                    Rectangle {
+                        x: 16
+                        y: skRow.line1
+                        width: Math.round(magSkel.nameW)
+                        height: page.smallFs
+                        radius: 2
+                        color: "#141418"
+                    }
+                    Rectangle {
+                        visible: skRow.narrow
+                        x: 16
+                        y: Math.round(skRow.height - page.smallFs * 1.35 - 4)
+                        width: 52
+                        height: page.smallFs
+                        radius: 2
+                        color: "#141418"
+                        opacity: 0.75
+                    }
+                }
+            }
         }
 
         // The list's bar, as a sibling of the Column so the Column does not lay it out
@@ -925,12 +1740,25 @@ Item {
             // "this poster has nothing", which is not the same as "not yet". A reply for
             // a poster that is no longer the one open is dropped - the guard is the href,
             // because clicking another card while this one is in flight is normal.
-            function onMagnetsReady(url, links, note) {
+            function onMagnetsReady(url, links, note, detail) {
                 if (!page.detail || page.detail.href !== url)
                     return;
                 magPopup.waiting = false;
-                magPopup.links = links;
                 magPopup.note = note;
+                magPopup.info = detail;
+                // A film with no magnets and 74 夸克 rows should open on the tab that has
+                // something rather than on an empty 磁力 list.
+                if (!magPopup.links.length) {
+                    const ls = detail.lists || {};
+                    for (const t of (detail.tabs || []))
+                        if ((ls[t.key] || []).length > 0) {
+                            magPopup.tab = t.key;
+                            break;
+                        }
+                }
+            }
+            function onShareFailed(note) {
+                magPopup.shareNote = note;
             }
         }
     }

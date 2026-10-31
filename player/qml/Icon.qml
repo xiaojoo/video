@@ -75,6 +75,11 @@ Item {
         "plus":         { d: "M12 5.5v13M5.5 12h13", filled: false },
         "up":           { d: "M6.5 14.5L12 9l5.5 5.5", filled: false },
         "down":         { d: "M6.5 9.5L12 15l5.5-5.5", filled: false },
+        // The pager's two ends. The wall's own 上一页 / 下一页 words made the row read as a
+        // sentence, so these carry it instead: 11 units tall to sit on the digits' own cap
+        // height, 7 wide - the reference's arrow is 0.63 as wide as it is tall.
+        "chevronLeft":  { d: "M15.5 6.5L8.5 12l7 5.5", filled: false },
+        "chevronRight": { d: "M8.5 6.5L15.5 12l-7 5.5", filled: false },
         // A pencil at 45°: the body, the ferrule line, and the tip as its own filled
         // wedge so it still reads at 14 px.
         "pencil":       { d: "M6 18l1.2-4.1L15.6 5.5l3 3-8.4 8.4zM14 7.2l2.8 2.8",

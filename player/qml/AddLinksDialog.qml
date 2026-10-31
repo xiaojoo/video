@@ -38,7 +38,7 @@ Popup {
 
     // What the width is a fraction of. Handed over by the host; not read off
     // Overlay.overlay, which is null while this is being built.
-    property real refWidth: shellWidth
+    property real refWidth: Theme.refW
     property string saveDir: ""
 
     // 更改 asks the host for the folder picker: the dialog does not own that decision.
@@ -52,10 +52,10 @@ Popup {
     // one of the three links simply was not in the list.
     property string problem: ""
 
-    readonly property real pad: Math.round(shellHeight * 0.028)
-    readonly property real smallFs: Math.round(0.0180 * shellHeight)
-    readonly property real titleFs: Math.round(0.0194 * shellHeight)
-    readonly property real fieldH: Math.round(shellHeight * 0.05)
+    readonly property real pad: Math.round(Theme.refH * 0.028)
+    readonly property real smallFs: Math.round(0.0180 * Theme.refH)
+    readonly property real titleFs: Math.round(0.0194 * Theme.refH)
+    readonly property real fieldH: Math.round(Theme.refH * 0.05)
 
     function links() {
         const out = [];
@@ -79,7 +79,7 @@ Popup {
         editor.text = lines.join("\n");
         const n = lines.length;
         sheet.problem = (added > 0 ? "已加入 " + added + " 个；" : "")
-                        + n + " 行没加入：只认 magnet: 链接和本机的 .torrent 文件。";
+                        + n + " 行没加入：只认 magnet: 链接、.torrent 文件和 http(s) 直链。";
         editor.forceActiveFocus();
     }
 
@@ -125,7 +125,7 @@ Popup {
             Rectangle {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.round(shellHeight * 0.0304)
+                width: Math.round(Theme.refH * 0.0304)
                 height: width
                 radius: Theme.controlRadius
                 color: closeHit.containsMouse ? "#2A2A31" : "transparent"
@@ -155,7 +155,7 @@ Popup {
         Rectangle {
             id: pasteBox
             width: parent.width
-            height: Math.round(shellHeight * 0.21)
+            height: Math.round(Theme.refH * 0.21)
             radius: Theme.controlRadius
             color: "#1B1B1F"
             border.width: editor.activeFocus ? 1 : 0
@@ -285,7 +285,7 @@ Popup {
             id: goBtn
             readonly property bool dead: editor.text.trim().length === 0
             width: parent.width
-            height: Math.round(shellHeight * 0.064)
+            height: Math.round(Theme.refH * 0.064)
             radius: Theme.controlRadius
             color: dead ? "#3A2A0E"
                         : goHit.containsMouse ? "#FFA733" : Theme.accent
@@ -297,7 +297,7 @@ Popup {
                     return n > 1 ? "立即下载 " + n + " 个" : "立即下载";
                 }
                 color: goBtn.dead ? "#C7A96F" : "#15151A"
-                font.pixelSize: Math.round(0.0194 * shellHeight)
+                font.pixelSize: Math.round(0.0194 * Theme.refH)
                 font.family: Theme.uiFont
             }
             MouseArea {

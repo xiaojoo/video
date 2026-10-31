@@ -76,19 +76,19 @@ Item {
     // The line the list starts under, the same one the tab row leaves above the toolbar:
     // the page's own gutter. At 0 the first card sat directly on the toolbar's bottom
     // edge while the row above it had 13 px, so the whole column read as one block.
-    readonly property real gapY: Math.round(shellWidth * Theme.sideInsetWRatio)
+    readonly property real gapY: Math.round(Theme.refW * Theme.sideInsetWRatio)
     // Sizes follow the window's launch height the way the rest of the app's chrome does.
     // Off the panel's own height they came out two thirds of everything around them - 11 px
     // text in a page whose tabs read 13 - and grew whenever the page grew.
-    readonly property real rowH: Math.round(0.094 * shellHeight)
-    readonly property real titleFs: Math.round(0.0194 * shellHeight)
-    readonly property real smallFs: Math.round(0.0180 * shellHeight)
-    readonly property real hitS: Math.round(0.0304 * shellHeight)
+    readonly property real rowH: Math.round(0.094 * Theme.refH)
+    readonly property real titleFs: Math.round(0.0194 * Theme.refH)
+    readonly property real smallFs: Math.round(0.0180 * Theme.refH)
+    readonly property real hitS: Math.round(0.0304 * Theme.refH)
     // The same row height as the two menu rows and the pager above it.
-    readonly property real barH: Math.round(0.05 * shellHeight)
+    readonly property real barH: Math.round(0.05 * Theme.refH)
     // The picture on the left of a job row: 16:9, the height the card has left after its
     // own inset.
-    readonly property real thumbH: Math.round(0.072 * shellHeight)
+    readonly property real thumbH: Math.round(0.072 * Theme.refH)
 
     // The badge on the picture. The name is all the row has to say what kind of file this
     // is, and the reference puts that on the picture rather than in the sentence under it.
@@ -145,7 +145,7 @@ Item {
 
             Row {
                 id: marks
-                spacing: Math.round(shellHeight * 0.0111)
+                spacing: Math.round(Theme.refH * 0.0111)
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
 
@@ -209,7 +209,7 @@ Item {
                 id: newBtn
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: newRow.implicitWidth + Math.round(shellHeight * 0.039)
+                width: newRow.implicitWidth + Math.round(Theme.refH * 0.039)
                 height: panel.barH
                 radius: Theme.controlRadius
                 color: newHit.containsMouse ? "#FFA733" : Theme.accent
@@ -217,7 +217,7 @@ Item {
                 Row {
                     id: newRow
                     anchors.centerIn: parent
-                    spacing: Math.round(shellHeight * 0.008)
+                    spacing: Math.round(Theme.refH * 0.008)
                     Icon {
                         width: Math.round(panel.smallFs * 1.35)
                         height: width
@@ -260,7 +260,7 @@ Item {
                 // gutter here pushed the sentence 13 px right of both: measured, its left
                 // edge was at 30 against the row of marks' 13.
                 x: 0
-                y: Math.round(shellHeight * 0.03)
+                y: Math.round(Theme.refH * 0.03)
                 width: list.width
                 text: "还没有任务。点上面的「新建」加一条链接，或到 在线媒体 里挑一部。"
                 wrapMode: Text.WordWrap
@@ -278,7 +278,7 @@ Item {
                 // The card runs the full width of the panel, so its left edge is the page's
                 // gutter - the same line the tabs above start on. The content is inset
                 // inside the card instead.
-                readonly property real inset: Math.round(shellHeight * 0.0166)
+                readonly property real inset: Math.round(Theme.refH * 0.0166)
                 readonly property real thumbW: Math.round(panel.thumbH * 16 / 9)
                 readonly property real textX: inset + thumbW + 14
                 // The gap between two neighbours on the right, and the same gap between the
@@ -302,10 +302,14 @@ Item {
                     if (!modelData.jobRunning)
                         return got + all + " · 已停止"
                     if (modelData.jobTotal <= 0)
-                        return "正在取种子信息 · " + modelData.jobPeers + " 个对端"
+                        return modelData.jobKind === "http"
+                            ? "正在探测地址…"
+                            : "正在取种子信息 · " + modelData.jobPeers + " 个对端"
                     let t = modelData.jobPct.toFixed(1) + "% · " + got + all
                           + " · " + panel.sizeText(Math.round(modelData.jobRate)) + "/s"
-                          + " · 做种 " + modelData.jobSeeders + "/连接 " + modelData.jobPeers
+                          + (modelData.jobKind === "http"
+                                ? " · 连接 " + modelData.jobPeers
+                                : " · 做种 " + modelData.jobSeeders + "/连接 " + modelData.jobPeers)
                     if (modelData.jobResumeMs > 0)
                         t += " · 接上进度 " + modelData.jobResumeMs + " ms"
                     return t
@@ -450,6 +454,9 @@ Item {
                         // Which half of the job this row is pulling. Kept in place when the
                         // file is complete - a mark that leaves would slide the other three.
                         readonly property bool live: !modelData.jobComplete
+                        // A url job has no 边看/全下 to choose between; the mark would be a
+                        // switch that changes nothing.
+                        visible: modelData.jobKind !== "http"
                         width: Math.round(panel.hitS * 1.5)
                         height: panel.hitS
                         radius: 4

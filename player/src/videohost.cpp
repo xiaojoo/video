@@ -114,6 +114,32 @@ bool presentCover(HWND h, int x, int y, int sx, int sy, int w, int hh)
     DeleteDC(mem);
     return ok;
 }
+
+// The freeze for a programmatic growth: the rect the window is about to take, copied off
+// the screen and held there while the scene graph re-allocates its surface. The same trick
+// the fullscreen swap makes, sized to the window rather than the monitor.
+HBITMAP s_frzBmp = nullptr;
+int s_frzW = 0, s_frzH = 0;
+HWND s_frzWnd = nullptr;
+
+bool presentBitmap(HWND h, HBITMAP bmp, const QRect &r)
+{
+    if (!h || !bmp)
+        return false;
+    HDC mem = CreateCompatibleDC(nullptr);
+    if (!mem)
+        return false;
+    HGDIOBJ old = SelectObject(mem, bmp);
+    POINT dst{ r.x(), r.y() };
+    SIZE size{ r.width(), r.height() };
+    POINT src{ 0, 0 };
+    BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, BYTE(0) };
+    const bool ok = UpdateLayeredWindow(h, nullptr, &dst, &size, mem, &src, 0, &bf,
+                                        ULW_OPAQUE) != FALSE;
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    return ok;
+}
 }
 
 // Defined from SDK 10.0.18985 up; the literal is what every build of Windows
@@ -215,6 +241,10 @@ VideoHost::VideoHost(QObject *parent) : QObject(parent)
     m_dragBeat.setTimerType(Qt::PreciseTimer);
     m_dragBeat.setInterval(4);
     connect(&m_dragBeat, &QTimer::timeout, this, &VideoHost::dragTick);
+    // The backstop for a growth freeze: a page that takes no frame at all would otherwise
+    // hold a copy of the screen up indefinitely.
+    m_freezeBeat.setSingleShot(true);
+    connect(&m_freezeBeat, &QTimer::timeout, this, &VideoHost::dropFreeze);
 }
 
 VideoHost::~VideoHost()
@@ -533,6 +563,123 @@ void VideoHost::setRect(int x, int y, int w, int h)
     const QRect now = windowRectOf(m_hwnd);
     MoveWindow(m_hwnd, x, y, w, h, (now.width() == w && now.height() == h) ? FALSE : TRUE);
     emit resized();
+}
+
+bool VideoHost::raiseFreeze(const QRect &to)
+{
+    if (to.width() != s_frzW || to.height() != s_frzH) {
+        if (s_frzBmp) {
+            DeleteObject(s_frzBmp);
+            s_frzBmp = nullptr;
+        }
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = to.width();
+        bi.bmiHeader.biHeight = -to.height();     // top-down: row 0 is the top of the rect
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        void *bits = nullptr;
+        s_frzBmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (!s_frzBmp || !bits) {
+            s_frzW = s_frzH = 0;
+            return false;
+        }
+        s_frzW = to.width();
+        s_frzH = to.height();
+    }
+    QElapsedTimer g;
+    g.start();
+    // One BitBlt of the rect off the desktop - the window is what is on screen there right
+    // now, so what the freeze holds is the real interface, not a colour laid over it.
+    HDC sdc = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(sdc);
+    HGDIOBJ old = (sdc && mem) ? SelectObject(mem, s_frzBmp) : nullptr;
+    if (old)
+        BitBlt(mem, 0, 0, s_frzW, s_frzH, sdc, to.x(), to.y(), SRCCOPY);
+    if (old)
+        SelectObject(mem, old);
+    if (mem)
+        DeleteDC(mem);
+    if (sdc)
+        ReleaseDC(nullptr, sdc);
+    const int grabMs = int(g.elapsed());
+
+    static bool haveClass = false;
+    if (!haveClass) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = &curtainProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = kCurtainClass;
+        // Either this call makes the class or the fullscreen cover registered it first, in
+        // which case RegisterClassExW fails and the lookup finds it.
+        haveClass = RegisterClassExW(&wc) != 0
+                 || GetClassInfoExW(GetModuleHandleW(nullptr), kCurtainClass, &wc);
+    }
+    if (!haveClass)
+        return false;
+    if (!s_frzWnd)
+        s_frzWnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                   kCurtainClass, L"", WS_POPUP,
+                                   to.x(), to.y(), to.width(), to.height(),
+                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!s_frzWnd || !presentBitmap(s_frzWnd, s_frzBmp, to))
+        return false;
+    SetWindowPos(s_frzWnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // Up is not enough: it has to be composited before the window moves, or the growth
+    // shows through it for a frame - the same reason the swap cover flushes.
+    DwmFlush();
+    qInfo("FREEZE %dx%d at %d,%d grab %d ms", to.width(), to.height(), to.x(), to.y(),
+          grabMs);
+    return true;
+}
+
+void VideoHost::dropFreeze()
+{
+    qInfo("FREEZE down after %d ms, %d swaps", int(m_freezeClock.elapsed()), m_freezeSwaps);
+    if (s_frzWnd && IsWindow(s_frzWnd))
+        ShowWindow(s_frzWnd, SW_HIDE);
+    QObject::disconnect(m_freezeConn);
+    m_freezeBeat.stop();
+}
+
+void VideoHost::setRectCovered(int x, int y, int w, int h)
+{
+    if (!m_hwnd)
+        return;
+    const QRect cur = windowRectOf(m_hwnd);
+    const QRect to(x, y, w, h);
+    // Opening the column only uncovers pixels: the window stays where it is, so the ones it
+    // already owned are re-composed unchanged and the single wrong thing is the new column.
+    // Closing it *moves* them - the wall goes back to the left edge while the right 333 px
+    // go away - so the frame composed in between is the open layout cut down to the smaller
+    // rect, a flash inside the window rather than at its edge. Anything that is not the
+    // plain rightward growth therefore freezes both rects.
+    QRect frz = cur.united(to);
+    if (to.x() == cur.x() && to.y() == cur.y() && to.height() == cur.height()
+        && to.width() > cur.width())
+        frz = QRect(cur.right() + 1, to.y(), to.width() - cur.width(), to.height());
+    if (!raiseFreeze(frz)) {
+        setRect(x, y, w, h);
+        return;
+    }
+    setRect(x, y, w, h);
+    m_freezeClock.start();
+    // Three swaps at the new size before the freeze comes down: a swap only hands the
+    // frame to DWM, and measured on the fullscreen path the screen still held the smaller
+    // surface one composition after the first present at the new one. The beat is for a
+    // page that draws no frames at all - without it the freeze would never lift.
+    m_freezeSwaps = 0;
+    QObject::disconnect(m_freezeConn);
+    if (auto *qw = qobject_cast<QQuickWindow *>(m_win)) {
+        m_freezeConn = connect(qw, &QQuickWindow::frameSwapped, this, [this] {
+            if (++m_freezeSwaps >= 3)
+                dropFreeze();
+        });
+    }
+    m_freezeBeat.start(150);
 }
 
 QPoint VideoHost::cursorPos() const

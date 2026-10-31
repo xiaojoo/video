@@ -24,6 +24,12 @@ Item {
     property var target: null
 
     signal picked(string action, var target)
+    // A right-click is the gesture that opened this menu, so it can also mean "this one is
+    // on the wrong object": the surface gets the point in `space` and re-opens the menu
+    // there. Only a surface that shares one menu across many objects listens; for the
+    // others a right-click inside the menu still does nothing.
+    signal rightPressed(real x, real y)
+    property bool retarget: false
     // Emitted when the pointer lands on a row: the action of a row that owns a submenu,
     // "" for every other row. The shell cannot tell a submenu from a command on its own,
     // and the menu has no business opening lists it knows nothing about.
@@ -99,6 +105,11 @@ Item {
         hoverRows = 0;
     }
 
+    function reportRightPress(item, x, y) {
+        const p = item.mapToItem(menu.space, x, y);
+        menu.rightPressed(p.x, p.y);
+    }
+
     // The card is as wide as the widest label really lays out - the same reason the
     // dropdown does not measure text itself: FontMetrics does not resolve the fallbacks
     // a Text item does, so mixed-script rows come out narrower than they paint.
@@ -130,6 +141,17 @@ Item {
         height: menu.count * menu.rowH + 2 * menu.pad
         radius: 4
         color: "#141418"
+
+        // The card's own surface, under the rows: a right-click that misses every row is
+        // still a right-click on this surface. Off by default, because for a menu that
+        // belongs to one fixed object it is a dismissal the host already handles; the
+        // library, whose one menu stands for whichever card was hit, turns it on.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.RightButton
+            enabled: menu.retarget
+            onClicked: (m) => menu.reportRightPress(parent, m.x, m.y)
+        }
 
         Column {
             id: rows
@@ -213,6 +235,12 @@ Item {
                         id: hit
                         anchors.fill: parent
                         hoverEnabled: true
+                        // The right button is taken here only so it can be handed to the
+                        // host as "the menu is on the wrong object"; the row itself still
+                        // answers the left button alone. Where the host does not retarget,
+                        // the button is left alone exactly as it was.
+                        acceptedButtons: menu.retarget
+                                         ? (Qt.LeftButton | Qt.RightButton) : Qt.LeftButton
                         // A row that is off still shows - it has to explain itself - but
                         // it does not answer the click, which is how the greyed icons on
                         // the control row behave.
@@ -227,7 +255,12 @@ Item {
                         // by the *next* row entered, so crossing the few pixels between a
                         // row and the list beside it does not dismiss the pair.
                         onExited: menu.hoverRows = menu.hoverRows - 1
-                        onClicked: {
+                        onClicked: (m) => {
+                            if (m.button === Qt.RightButton) {
+                                if (menu.retarget)
+                                    menu.reportRightPress(line, m.x, m.y);
+                                return;
+                            }
                             menu.picked(line.item.action, menu.target);
                             // A row that owns a submenu keeps the menu open: the list
                             // belongs beside it, and closing the parent would close the

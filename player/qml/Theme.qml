@@ -12,6 +12,12 @@ QtObject {
     readonly property color textPrimary: "#FFFFFF"
     readonly property color textSecondary: "#B8B8B8"
     readonly property color glyph: "#E6E6E6"
+    // The library card's resting colour, off the reference he sent: the three bars in its
+    // top-right corner and the bar beside its title measure (82,153,255) at their
+    // brightest. The card's hover keeps using `accent`, which is the reference's other
+    // card. The frame's own line is a tinted near-white on both cards, so it lives in
+    // LibraryPage rather than here.
+    readonly property color cool: "#5299FF"
 
     // One token for the whole chrome. The reference is set in SF Pro, which cannot be
     // shipped, so this is the closest family the OS has. It was the Display optical
@@ -20,6 +26,20 @@ QtObject {
     // and the smaller counters are what read as cramped. Every size the chrome uses
     // now is 21 px or under, so the body optical size is the one that fits.
     readonly property string uiFont: "Segoe UI Variable Text"
+
+    // The one window every size below is cut from: 1282 x 723, the default launch size and
+    // the reference all these ratios were measured on. Chrome reads these, never
+    // `shellWidth`/`shellHeight` - those are the size the app *started* at, so a bigger
+    // launch window made every button, glyph and card proportionally bigger too. With a
+    // fixed reference a resize changes one thing only: how many posters and rows fit.
+    //
+    // Two things about these that cost a measurement each. As `int` they come out zero at
+    // runtime and the whole page collapses into a 130 px band, so they are `real`. And
+    // because `font.pixelSize` is an int property, a binding that used to hand it a
+    // QVariant double (qRound: 14.82 -> 15) now hands it a plain double (truncate: 14) -
+    // every font site below therefore says Math.round.
+    readonly property real refW: 1282
+    readonly property real refH: 723
 
     // Ratios of window height, measured on the 1282x723 reference.
     readonly property real controlRowHeightRatio: 0.084
@@ -40,17 +60,18 @@ QtObject {
     // and our scrim would otherwise flatten them to 38/255. The matching lift is
     // mpv's sub-margin-y=185, set once in PlayerCore.
     //
-    // 0.24 of the *launch* height (723 px) is 173 px; asked to make it smaller
+    // 0.24 of the reference height (723 px) is 173 px; asked to make it smaller
     // without a number, so the coefficient is stated: 0.19, which is 0.79x of what
-    // it was = 137 px. A ratio of shellHeight rather than the live height is the
+    // it was = 137 px. A ratio of Theme.refH rather than the live height is the
     // point - the chrome under it is pinned, so scaling this with the window only
     // made the black band grow on the way to fullscreen.
     readonly property real scrimHeightRatio: 0.19
 
     // Ratios of window width. Halved from 0.0203 at his ask ("左右间隙调小一点");
-    // no number given, so the coefficient is 0.5. Kept as a ratio of the *launch*
-    // width (see `inset` in Main.qml): at 0.0102 of the live width it was 13 px on a
-    // 1282 window and 39 px on a 3840 one, which is the gap he asked to hold still.
+    // no number given, so the coefficient is 0.5. Kept as a ratio of the *fixed
+    // reference* width (see `inset` in Main.qml): at 0.0102 of the live width it was
+    // 13 px on a 1282 window and 39 px on a 3840 one, which is the gap he asked to
+    // hold still.
     readonly property real sideInsetWRatio: 0.0102
     // The gaps *between* the icons used to be ratios of the window width, so on a
     // 3840 monitor they came out 2.96x wider than at 1298. Written against the window

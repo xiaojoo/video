@@ -12,10 +12,10 @@ Item {
     readonly property real artSize: 11
     // The space between the bumps is not the space to the window's edges: the group sits
     // on the page's own inset, the same 13 px the tab row leaves above and to the left
-    // (round(shellWidth * sideInsetWRatio)). It was 6 px, and the two rows started on
+    // (round(Theme.refW * sideInsetWRatio)). It was 6 px, and the two rows started on
     // two different lines - measured, tiles at y 6..33 and x up to 1275 against tabs at
     // 13..46 with their left edge at 13.
-    readonly property real edge: Math.round(shellWidth * Theme.sideInsetWRatio)
+    readonly property real edge: Math.round(Theme.refW * Theme.sideInsetWRatio)
     // The gear sits on its own side of a hairline and is not one of the three window
     // buttons, so its tile is the same size and its ink a little larger: a ring and its
     // teeth read smaller than a line or a box at the same box size.

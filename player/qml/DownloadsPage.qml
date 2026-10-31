@@ -26,9 +26,9 @@ Item {
     signal tipOff(var item)
 
     // The page's gutter, the same one the library's cards and the wall's posters keep.
-    readonly property real pad: Math.round(shellWidth * Theme.sideInsetWRatio)
-    readonly property real smallFs: Math.round(0.0180 * shellHeight)
-    readonly property real titleFs: Math.round(0.0194 * shellHeight)
+    readonly property real pad: Math.round(Theme.refW * Theme.sideInsetWRatio)
+    readonly property real smallFs: Math.round(0.0180 * Theme.refH)
+    readonly property real titleFs: Math.round(0.0194 * Theme.refH)
 
     function refreshJobs() {
         const list = downloads.jobs();
@@ -170,13 +170,13 @@ Item {
     // ---- 新建: paste one or more links, choose where they land, start them ----
     AddLinksDialog {
         id: addSheet
-        refWidth: page.width
+        refWidth: Theme.refW
         saveDir: page.saveDir
         onDirRequested: page.dirRequested()
         // One row per non-empty line. The engine takes them one at a time and answers -1
-        // for a line that is neither a magnet nor a .torrent file; those go back into the
-        // box with a sentence instead of being dropped on the floor. Only a clean paste
-        // closes the dialog.
+        // for a line that is neither a magnet, a .torrent file nor an http(s) url; those
+        // go back into the box with a sentence instead of being dropped on the floor.
+        // Only a clean paste closes the dialog.
         onSubmitted: (links) => {
             const bad = [];
             for (const l of links)
@@ -212,10 +212,10 @@ Item {
         parent: Overlay.overlay
         x: ovl ? Math.round((ovl.width - clearAsk.width) / 2) : 0
         y: ovl ? Math.round((ovl.height - clearAsk.height) / 2) : 0
-        readonly property real pad: Math.round(shellHeight * 0.028)
-        readonly property real btnW: Math.round(shellHeight * 0.086)
-        readonly property real btnH: Math.round(shellHeight * 0.05)
-        width: Math.round(page.width * 0.34)
+        readonly property real pad: Math.round(Theme.refH * 0.028)
+        readonly property real btnW: Math.round(Theme.refH * 0.086)
+        readonly property real btnH: Math.round(Theme.refH * 0.05)
+        width: Math.round(Theme.refW * 0.34)
         height: askBody.implicitHeight + 2 * clearAsk.pad
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 

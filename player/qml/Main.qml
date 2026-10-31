@@ -24,7 +24,7 @@ Window {
     // the window *started* at, not the one it has now: the chrome under it (the bar, the
     // glyphs, the time) is pinned to the launch size too, and a 13 px margin that became
     // 39 px on the way to fullscreen was the only part of that row still scaling.
-    readonly property real inset: Theme.sideInsetWRatio * shellWidth
+    readonly property real inset: Theme.sideInsetWRatio * Theme.refW
     property bool uiVisible: true
     property string page: shellMode
     property int rotateIdx: 0
@@ -507,7 +507,7 @@ Window {
     // "the area with the bar and the buttons in it" is one number, not two. The band
     // keeps the height it has at the launch size and rides the bottom edge, exactly
     // like the bar and the row inside it.
-    readonly property real scrimH: shellHeight * Theme.scrimHeightRatio
+    readonly property real scrimH: Theme.refH * Theme.scrimHeightRatio
     readonly property real bandTop: win.vh - win.scrimH
 
     // ---- the playlist dock -------------------------------------------------
@@ -537,7 +537,7 @@ Window {
     // it; the cell and `P` just open and close the column, and it reopens on whichever
     // list was last read.
     property string plTab: "files"
-    readonly property real plW: Math.round(Theme.playlistWidthRatio * shellHeight)
+    readonly property real plW: Math.round(Theme.playlistWidthRatio * Theme.refH)
     // What the last open actually added. A stored number rather than a binding: the
     // room to our right is measured against our own width, and a binding that reads
     // `width` to produce the thing that changes `width` settles one step late.
@@ -639,6 +639,132 @@ Window {
         return !videoHost.zoomed && !videoHost.fullscreen && !videoHost.mini
     }
 
+    // ---- the magnet board as a column -------------------------------------
+    // The same trade the playlist dock makes, on either side of the window: the board is
+    // 333 px of the window's own width, so the wall keeps every poster it had. On the left
+    // (rather than putting the column on the right, where the caption's three tiles already
+    // live) means the window's x moves with it, and every page item has to be pushed back by
+    // the same number - `magExtra` is that number, and it is 0 whenever the window cannot
+    // move (maximised, fullscreen, mini, or a screen edge in the way). On the right the
+    // column stands in the room the window grew into, so nothing has to be pushed anywhere;
+    // `magRight` is the margin that keeps the wall out of it.
+    readonly property bool magnetPanel: prefsUi.magnetPanel === "dock"
+                                        || prefsUi.magnetPanel === "right"
+    readonly property bool magnetRight: prefsUi.magnetPanel === "right"
+    readonly property real magW: Math.round(Theme.playlistWidthRatio * Theme.refH)
+    property bool magOpen: false
+    property real magExtra: 0
+    property real magRight: 0
+    // How much the window actually gave up for a right-hand column, which is what the way
+    // out has to hand back - the column's own width is `magRight` whether or not the screen
+    // had the room.
+    property real magTaken: 0
+    property real magOwed: 0
+    // ...and which way it had pushed the window when it was owed, so the restore puts both
+    // back rather than only the width.
+    property real magOwedShift: 0
+    // Which way the strip came from: -magW when it was taken off the screen's left, 0 when
+    // the window grew to the right. Measured with the window at x=0 - the case he is in -
+    // the left room is 0, and asking for it is what left the column standing over the
+    // posters instead of widening the window.
+    property real magShift: 0
+
+    // The room to take, measured against the rect the window would have with nothing
+    // borrowed. The left is preferred because the wall then does not move at all; with the
+    // window against the work area's left edge there is nothing there, so the right is used
+    // and the wall slides over by the same number.
+    function magRoomAt(x, w) {
+        const wa = videoHost.workArea();
+        const left = x - wa.x;
+        const right = wa.x + wa.width - (x + w);
+        if (left >= win.magW)
+            return [win.magW, -win.magW];
+        if (right >= win.magW)
+            return [win.magW, 0];
+        if (left >= right && left > 0)
+            return [left, -left];
+        return right > 0 ? [right, 0] : [0, 0];
+    }
+
+    // How much of a right-hand board the screen can give, against the same un-borrowed rect:
+    // growing to the right is the one direction where the room the window gains is exactly
+    // where the board stands, so the wall neither moves nor loses a poster. What the screen
+    // cannot give comes out of the wall's right margin instead, which is why the board never
+    // ends up over a poster.
+    function magRoomR(x, w) {
+        const wa = videoHost.workArea();
+        return Math.max(0, Math.min(win.magW, wa.x + wa.width - (x + w)));
+    }
+
+    // One decision, one write: what the window should be for the board as it is set up now.
+    // Handing the old side's room back and then taking the new side's was what flicked the
+    // right of the screen when the side was picked in the settings card, and it laid the
+    // wall out twice in between.
+    function magnetReconcile() {
+        const borrow = win.magExtra + win.magTaken;
+        // The base is where the window would sit with nothing borrowed: a left-hand column
+        // pushed it left by magShift, so the way back is the other sign. Read the wrong way
+        // round, every change of side moved the base 333 px further left until the window
+        // sat against the screen's edge.
+        const baseX = win.x - win.magShift;
+        const base = win.width - borrow;
+        if (!plCanGrow()) {
+            // A state that owns the rect - maximised, fullscreen, mini - is not ours to
+            // resize, so what it had lent stays owed until the window is sizeable again.
+            if (borrow > 0) {
+                win.magOwed = borrow;
+                win.magOwedShift = win.magShift;
+            }
+            win.magExtra = 0;
+            win.magRight = 0;
+            win.magTaken = 0;
+            win.magShift = 0;
+            win.touch();
+            return;
+        }
+        let extra = 0, taken = 0, right = 0, shift = 0;
+        if (win.magOpen) {
+            if (win.magnetRight) {
+                right = win.magW;
+                taken = magRoomR(baseX, base);
+            } else {
+                const room = magRoomAt(baseX, base);
+                extra = room[0];
+                shift = room[1];
+            }
+        }
+        win.magExtra = extra;
+        win.magRight = right;
+        win.magTaken = taken;
+        win.magShift = shift;
+        const x = baseX + shift;
+        const w = base + extra + taken;
+        // Only a real change reaches for the window. Moving a 333 px column from one side to
+        // the other leaves the rect exactly as it was, and writing it again would show.
+        if (x !== win.x || w !== win.width)
+            videoHost.setRectCovered(x, win.y, w, win.height);
+        win.touch();
+    }
+
+    function setMagnetDock(on) {
+        const want = on && win.magnetPanel;
+        if (want === win.magOpen)
+            return;
+        win.magOpen = want;
+        magnetReconcile();
+    }
+
+    // Picking a side while the board is up changes which margin pays for it, not whether it
+    // is owed; a board that stopped being a column gives its room back on its own, from the
+    // popup's own ask.
+    function magnetModeChanged() {
+        win.magOpen = win.magOpen && win.magnetPanel;
+        magnetReconcile();
+    }
+
+    onMagnetRightChanged: magnetModeChanged()
+    onMagnetPanelChanged: magnetModeChanged()
+
     function setPlaylist(on) {
         if (on === win.plOpen)
             return;
@@ -689,14 +815,21 @@ Window {
     // again. Decided on the rect rather than on `videoHost.zoomed`, because the WM_SIZE
     // that carries the restore arrives while the zoomed flag is still set.
     onWidthChanged: {
-        if (win.plOwed <= 0 || videoHost.fullscreen || videoHost.mini)
+        if ((win.plOwed <= 0 && win.magOwed <= 0) || videoHost.fullscreen || videoHost.mini)
             return;
         const wa = videoHost.workArea();
         if (width >= wa.width && height >= wa.height)
             return;
-        const back = win.plOwed;
+        // Both ledgers are the same debt against the same rect, whichever panel borrowed it
+        // and whichever side it stood on. Measured before the magnet's half was here: open
+        // the column, maximise, close it, restore down - the window came back 1615 wide and
+        // stayed that way, and the next open added the room again on top of it.
+        const back = win.plOwed + win.magOwed;
+        const shiftBack = win.magOwedShift;
         win.plOwed = 0;
-        videoHost.setRect(x, y, width - back, height);
+        win.magOwed = 0;
+        win.magOwedShift = 0;
+        videoHost.setRect(x - shiftBack, y, width - back, height);
     }
 
     // The chrome stays up as long as the pointer is anywhere in that band - the
@@ -890,8 +1023,11 @@ Window {
         anchors.right: parent.right
         // The dock takes the window's right strip, so the caption goes back to the
         // film's edge - measured before this, the three tiles landed on top of the
-        // dock's own header and its ✕.
-        anchors.rightMargin: win.plExtra
+        // dock's own header and its ✕. The magnet board lives on the other page and the
+        // two are never out together, so the strip is whichever of them asked for more.
+        anchors.rightMargin: Math.max(win.plExtra, win.magRight)
+        // and left by however much the magnet column borrowed from the other side.
+        anchors.leftMargin: win.magExtra
         height: caption.height
         // Also above `ui`: the click-outside layer that dismisses a dropdown or the drawer
         // covers the whole window, and the window's own close/min/max must not be eaten by
@@ -992,7 +1128,7 @@ Window {
             anchors.verticalCenter: bar.verticalCenter
             text: win.fmt(playerCore.position)
             color: Theme.glyph
-            font.pixelSize: Theme.subtitleFontRatio * shellHeight
+            font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
             font.family: Theme.uiFont
         }
 
@@ -1002,19 +1138,19 @@ Window {
             anchors.verticalCenter: bar.verticalCenter
             text: win.fmt(playerCore.duration)
             color: Theme.glyph
-            font.pixelSize: Theme.subtitleFontRatio * shellHeight
+            font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
             font.family: Theme.uiFont
         }
 
         ScrubBar {
             id: bar
-            x: posText.x + posText.width + Theme.timeGapHRatio * shellHeight
-            width: durText.x - Theme.timeGapHRatio * shellHeight - x
+            x: posText.x + posText.width + Theme.timeGapHRatio * Theme.refH
+            width: durText.x - Theme.timeGapHRatio * Theme.refH - x
             // Fixed at the launch size, then shifted with the bottom edge, so the bar
             // keeps exactly the height it has where the window started and the same
             // gap to the buttons under it at any window size.
-            height: shellHeight * 0.030
-            y: Theme.barCenterRatio * shellHeight - height / 2 + (win.vh - shellHeight)
+            height: Theme.refH * 0.030
+            y: Theme.barCenterRatio * Theme.refH - height / 2 + (win.vh - Theme.refH)
             progress: playerCore.duration > 0 ? playerCore.position / playerCore.duration : 0.0
             onScrubbed: (frac) => {
                 if (playerCore.duration > 0)
@@ -1024,11 +1160,11 @@ Window {
 
         HoverCard {
             id: card
-            refW: shellWidth
-            refH: shellHeight
+            refW: Theme.refW
+            refH: Theme.refH
             x: Math.max(win.inset, Math.min(win.stageW - win.inset - width,
                                             bar.x + bar.width * bar.hoverPos - width / 2))
-            y: bar.y - height - shellHeight * 0.020
+            y: bar.y - height - Theme.refH * 0.020
             visible: bar.hovering && bar.hoverPos >= 0
             chapterLabel: win.hasChapters ? win.chapterName(win.chapterAt(bar.hoverPos)) : ""
             timeLabel: win.fmt(bar.hoverPos * playerCore.duration)
@@ -1052,8 +1188,8 @@ Window {
             // the time text with it. Everything derived from it inside ControlRow
             // (icon, scrub line, knob) is fixed by the same move; the horizontal pitch
             // still follows the width, so the row keeps spanning the window.
-            height: shellHeight * Theme.controlRowHeightRatio
-            y: Theme.controlCenterRatio * shellHeight - height / 2 + (win.vh - shellHeight)
+            height: Theme.refH * Theme.controlRowHeightRatio
+            y: Theme.controlCenterRatio * Theme.refH - height / 2 + (win.vh - Theme.refH)
             // Mini is the narrowest layout there is, so it pins the tier rather than
             // competing with the width thresholds.
             miniTier: videoHost.mini ? 0 : -1
@@ -1103,7 +1239,7 @@ Window {
     Picker {
         id: picker
         z: 40
-        refH: shellHeight
+        refH: Theme.refH
         onPicked: (i) => {
             if (win.pickerApply)
                 win.pickerApply(i);
@@ -1147,7 +1283,7 @@ Window {
     ContextMenu {
         id: playerMenu
         z: 34
-        refH: shellHeight
+        refH: Theme.refH
         onPicked: (action, target) => win.menuPick(action)
         onHovered: (what, row) => win.menuHovered(what, row)
         // The submenu belongs to the menu: when the menu goes, the list beside it goes
@@ -1195,7 +1331,7 @@ Window {
     Playlist {
         id: playlist
         z: 30
-        refH: shellHeight
+        refH: Theme.refH
         mediaPath: playerCore.mediaUrl
         items: win.plItems
         edges: win.edgeTimes
@@ -1274,11 +1410,22 @@ Window {
         target: videoHost
         function onMiniChanged() { if (videoHost.mini && win.plOpen) win.setPlaylist(false) }
     }
-    onPageChanged: if (page !== "player" && win.plOpen) win.setPlaylist(false)
+    onPageChanged: {
+        if (page !== "player" && win.plOpen)
+            win.setPlaylist(false);
+        // The magnet column belongs to the online wall; the player has a film to show and
+        // the library page has no board to keep.
+        if (page !== "library" && win.magOpen)
+            win.setMagnetDock(false);
+    }
 
     Loader {
         z: 10
         anchors.fill: parent
+        anchors.leftMargin: win.magExtra
+        // The right-hand board's room comes out of the page instead of out of the window's
+        // position, so the wall keeps the posters it has and none of them slides.
+        anchors.rightMargin: win.magRight
         active: page === "library"
         // An inactive Loader has no content, but it is still a full-window item at z 10 -
         // and it is the first thing a hit-test meets. Measured while chasing the cursor:
@@ -1287,6 +1434,9 @@ Window {
         visible: page === "library"
         sourceComponent: LibraryPage {
             saveDir: win.dlDir
+            magnetPanel: win.magnetPanel
+            magnetRight: win.magnetRight
+            onMagnetDockAsked: (on) => win.setMagnetDock(on)
             onTipFor: (item, text, keys) => tip.show(item, text, keys, "above")
             onTipOff: (item) => tip.hideFor(item)
             // The folder picker is the window's, and the library page is a component of
@@ -1382,7 +1532,7 @@ Window {
     Tip {
         id: tip
         z: 60
-        refH: shellHeight
+        refH: Theme.refH
     }
 
     // 设置, opened from the caption. It is the window's, not the online page's, for the
@@ -1390,9 +1540,11 @@ Window {
     // and the card is the only place a source can be added, switched off or removed.
     SourceSettings {
         id: settings
-        refWidth: win.width
+        refWidth: Theme.refW
         dlDir: win.dlDir
+        magnetPanel: prefsUi.magnetPanel
         onDirRequested: dirPick.open()
+        onMagnetPanelPicked: (which) => prefsUi.magnetPanel = which
     }
 
     // The one thing the settings card stores that outlives the process. `QtCore.Settings`
@@ -1402,6 +1554,13 @@ Window {
         id: prefs
         category: "downloads"
         property string dir: ""
+    }
+
+    // The second thing the settings card stores: how the magnet board is presented.
+    Settings {
+        id: prefsUi
+        category: "ui"
+        property string magnetPanel: "popup"
     }
 
 }

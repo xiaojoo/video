@@ -16,7 +16,8 @@ class QTimer;
 // from here, so `running` is a fact about a child process and nothing else.
 struct DownloadRow {
     qint64 id = 0;
-    QString src;        // magnet URI or a .torrent file
+    QString src;        // magnet URI, a .torrent file, or an http(s) media url
+    QString kind = u"torrent"_qs; // torrent | http - picks the engine's mode
     QString name;       // what the swarm called it, until the swarm says otherwise
     QString dir;        // where the finished file lands
     QString poster;     // the site's card picture, carried so the row can show it
@@ -61,10 +62,13 @@ public:
     // folder stored in the settings card: a probe run must never write into whatever
     // the user picked in the UI, and the card must not pretend otherwise.
     Q_INVOKABLE bool dirOverridden() const { return !m_overrideDir.isEmpty(); }
-    // Returns the row id, or -1 when the source is neither a magnet URI nor an
-    // existing .torrent file.
+    // Returns the row id, or -1 when the source is neither a magnet URI, an existing
+    // .torrent file, nor an http(s) url the engine can pull.
+    // `headers` is a block of "Name: value" lines sent with every request of an http
+    // job; it is written beside the job's state, never into the catalogue or argv.
     Q_INVOKABLE qint64 add(const QString &source, const QString &dir = QString(),
-                           const QString &poster = QString());
+                           const QString &poster = QString(),
+                           const QString &headers = QString());
     Q_INVOKABLE void start(qint64 id);
     Q_INVOKABLE void stop(qint64 id);
     // Removes the row and its own state folder. The downloaded file is left exactly
@@ -113,7 +117,12 @@ private:
     DownloadRow *find(qint64 id);
     void spawn(DownloadRow &row);
     void poll(qint64 id);
+    // One line of the child's stdout: LISTEN sets the view url, DONE carries the
+    // engine's own final record.
+    void ingestLine(qint64 id, const QString &line);
     QString stateDirFor(qint64 id) const;
+    QString headersPathFor(qint64 id) const;
+    void writeHeaders(qint64 id, const QString &headers);
 
     QString m_overrideDir;
     QSqlDatabase m_db;
@@ -147,6 +156,7 @@ public:
         RunningRole,
         PathRole,
         ErrorRole,
+        KindRole,
     };
 
     explicit DownloadsModel(Downloads *d, QObject *parent = nullptr);

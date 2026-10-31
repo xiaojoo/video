@@ -40,11 +40,20 @@ public:
 
     // A list page: posters, titles, and the source's own navigation for the rail.
     Q_INVOKABLE void open(const QString &url);
-    // The magnets behind one poster: the detail page, then one hop per seed.
+    // The links behind one poster: the detail page, then one hop per seed.
     Q_INVOKABLE void magnets(const QString &url);
+    // One row of the netdisk tabs. The page keeps the address behind its own hop, so this
+    // reads the hop and hands the address to a browser - 夸克's own when it is installed,
+    // because that is where the signed-in session is.
+    Q_INVOKABLE void openShare(const QString &hop);
 
     // The base64 payload these pages hand to window.atob. Exposed for the probe.
     static QString decodeMagnet(const QString &html);
+    // The netdisk address a pan hop prints in its script and in its 前往网盘转存 anchor.
+    static QString decodeShare(const QString &html);
+    // What the detail page says about the film itself: the h1, the cover, the list of
+    // label/value rows under it, and the download tabs with the counts the site printed.
+    static QJsonObject parseDetail(const QString &html, const QString &base);
 
     QJsonArray items() const { return m_items; }
     QJsonArray nav() const { return m_nav; }
@@ -64,12 +73,19 @@ public:
     static QJsonArray parseNav(const QString &html, const QString &base);
     static QJsonArray parsePager(const QString &html, const QString &base);
     static QJsonArray parseSeeds(const QString &html, const QString &base);
+    // The rows behind the site's other tabs: one per netdisk link on the page, each keyed
+    // by the tab it belongs to.
+    static QJsonArray parsePans(const QString &html, const QString &base);
 
 signals:
     void itemsChanged();
     void busyChanged();
     void sourcesChanged();
-    void magnetsReady(const QString &url, const QJsonArray &links, const QString &note);
+    void magnetsReady(const QString &url, const QJsonArray &links, const QString &note,
+                      const QJsonObject &detail);
+    // A netdisk row was clicked and nothing could be opened. The dialog owns this line, not
+    // the wall's error property: the posters behind are fine.
+    void shareFailed(const QString &note);
     // A list page has been fetched and parsed, and `url` names which one. `ok` is false
     // when the transfer failed, so whoever asked can stop waiting for it.
     // `itemsChanged` cannot be used for this: open() emits it before the request even goes

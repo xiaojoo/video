@@ -70,6 +70,11 @@ public:
 
     Q_PROPERTY(QRect rect READ geometry NOTIFY resized)
     Q_INVOKABLE void setRect(int x, int y, int w, int h);
+    // setRect, but the write is hidden behind a freeze of the pixels it makes wrong. DWM
+    // composes a resized window from the surface it already has: opening the column shows
+    // one frame of black in the new column, closing it shows the open layout cut down to
+    // the smaller rect.
+    Q_INVOKABLE void setRectCovered(int x, int y, int w, int h);
     // Where the shell's pointer is, in the same physical screen pixels the window rect
     // uses. A drag has to ask this rather than rebuild the pointer's global position from
     // the window's own geometry - see startDrag below.
@@ -125,6 +130,10 @@ private:
     void bandStep();
     void raiseCurtain();
     void hideCurtain();
+    // The freeze a growth hides behind: copy the rect off the screen, put it up topmost,
+    // then take it down once the scene has presented at the new size. See setRectCovered.
+    bool raiseFreeze(const QRect &to);
+    void dropFreeze();
     void settle();
     // Remembers the size a presented frame currently has, so the first present at any
     // other size is the one that ends the cover. Call it right before the write.
@@ -194,6 +203,13 @@ private:
     bool m_maxBeforeMini = false;
     // l, t, r, b of the native frame; all zero while frameless.
     RECT m_insets{};
+    // The freeze that hides a growth: the connection to the scene's own swap reports,
+    // how many have gone over, and the backstop for a run where nothing renders.
+    QMetaObject::Connection m_freezeConn;
+    int m_freezeSwaps = 0;
+    // How long a freeze actually held the screen, for the log.
+    QElapsedTimer m_freezeClock;
+    QTimer m_freezeBeat;
     // One step of the drag pump: read the cursor, then write the window where it says.
     void dragTick();
     void applyDrag(const QPoint &p);
