@@ -1099,7 +1099,8 @@ Item {
         // list was resampled at that half offset.
         parent: ovl
         width: dock ? dockW : Math.round(Theme.refW * 0.82 / 2) * 2
-        height: dock ? (ovl ? ovl.height : 0) : Math.round(Theme.refH * 0.88 / 2) * 2
+        height: dock ? Math.min(ovl ? ovl.height : 0, magPopup.fitH)
+                     : Math.round(Theme.refH * 0.88 / 2) * 2
         x: dock ? (right ? (ovl ? ovl.width - width : 0) : 0)
                     : (ovl ? Math.round((ovl.width - width) / 2) : 0)
         y: dock ? 0 : (ovl ? Math.round((ovl.height - height) / 2) : 0)
@@ -1133,7 +1134,20 @@ Item {
 
         readonly property real magPad: dock ? Math.round(Theme.refH * 0.0221)
                                             : Math.round(Theme.refH * 0.03)
+        // The header's lift out of the card's own 16 px padding, so its top gap becomes the
+        // page's gutter (13 px at this size) - the number the tab row is paid with above and
+        // below itself.
+        readonly property real topLift: dock ? Math.round(Theme.refW * Theme.sideInsetWRatio)
+                                               - magPad : 0
         readonly property real barH: dock ? Math.round(Theme.refH * 0.047) : 0
+        // The measure behind the label column: the same font the rows draw their label in.
+        Text {
+            id: metaInk
+            visible: false
+            text: (magPopup.metaLongest || "") + ":"
+            font.pixelSize: page.smallFs
+            font.family: Theme.uiFont
+        }
         // The cross's own square: the same 34 px the column's bar gives it, so the two
         // surfaces dismiss the same way and take the same room.
         readonly property real crossBox: Math.round(Theme.refH * 0.047)
@@ -1154,31 +1168,45 @@ Item {
         readonly property real posterW: dock ? 96 : Math.round(Theme.refH * 0.2326)
         readonly property real posterH: dock ? Math.round(96 * 1.72)
                                              : Math.round(Theme.refH * 0.3264)
-        readonly property real labelW: dock ? 74 : Math.round(Theme.refH * 0.144)
+        readonly property string metaLongest: (filmMeta || []).reduce(function (a, r) {
+            return (r.k || "").length > a.length ? (r.k || "") : a;
+        }, "")
+        readonly property real labelW: dock ? Math.round(metaInk.implicitWidth + 15)
+                                            : Math.round(Theme.refH * 0.144)
         readonly property real filmTitleFs: Math.round(Theme.refH * 0.0221)
         readonly property real chipFs: Math.round(Theme.refH * 0.0152)
         readonly property real headGap: Math.round(Theme.refH * 0.019)
         readonly property real tabH: Math.round(Theme.refH * 0.0415)
         readonly property real rowH: dock ? Math.round(Theme.refH * 0.0719)
                                           : Math.round(Theme.refH * 0.0553)
-        // What the hint line costs: in the card it shares the tab row, in the column the
-        // tabs wrap to two lines and the sentence gets a line of its own.
-        // The hint's line is reserved while the links are still coming too: without it the
-        // list sits 19 px higher while waiting than it does once they land, and the
-        // skeleton would then be a placeholder that the rows jump out of.
-        readonly property real hintH: dock && (waiting || links.length > 0
-                                               || shareNote.length > 0)
-                                      ? Math.round(Theme.refH * 0.018 * 1.35) + 4 : 0
-        // The list gets what is left after the film's block and the tab row. Counted
-        // arithmetically rather than off the Column's implicitHeight: the list's height
-        // comes out of the popup's, so a content-driven popup height would be a ring with
-        // no solution.
-        readonly property real listAvail: height - 2 * magPad - barH
-                                          - (dock ? 10 : 0) - head.height
-                                          - headGap - 1 - 6 - tabFlowH - 6 - hintH
-        // Whole rows only: the leftover 294 px showed an eighth row as two pixels of
-        // chip border under the last full row.
-        readonly property real listH: Math.floor(listAvail / rowH) * rowH
+        // The list gets whatever the column has left under it, read off the Column's own
+        // layout rather than a second arithmetic of the blocks above it. That arithmetic
+        // subtracted a hint line the Column never spends - its Text is invisible while
+        // there is nothing to say - so the box stopped 18 px short of the bottom padding
+        // and the band under the last row read as 62 px against the 16 px the sides have.
+        // `magList.y` comes from the blocks above, none of which read the list's height, so
+        // this is not the ring the old comment was afraid of.
+        readonly property real listTop: magContent.y + magList.y
+        readonly property real aboveH: 2 * magPad + listTop
+        readonly property real listAvail: height - aboveH
+        // The rows the column has room for: the ones that landed, or the one line the empty
+        // state speaks from. While the hops are in flight it reserves what fits down to the
+        // window's own bottom, so the wait looks the way it always did and the card only
+        // ever pulls its bottom edge up when the rows land - it never grows after them.
+        readonly property real fullRows: Math.max(1, Math.ceil(((ovl ? ovl.height : 0)
+                                                                - aboveH) / rowH))
+        readonly property real shownRows: waiting ? fullRows : Math.max(1, links.length)
+        // The column's card is as tall as what it has to show. A four row list used to sit
+        // in a box sized for eight and the panel ran the full height of the window, so the
+        // band under the last row was 226 px against the 16 px the sides have; now the card
+        // ends 16 px under its last row and the strip below it is the window's own black.
+        // The top edge does not move, so the rows land where the skeleton's bars were.
+        readonly property real fitH: aboveH + shownRows * rowH
+        // In the card, whole rows only: the leftover 294 px showed an eighth row as two
+        // pixels of chip border under the last full row. In the column the box reaches the
+        // padding line, and the bar on the right is what says there is more.
+        readonly property real listH: dock ? Math.max(0, Math.min(listAvail, shownRows * rowH))
+                                           : Math.floor(listAvail / rowH) * rowH
         // One row of tabs in the card, two in the column: the flow's own height, held to
         // at least one tab line so the underline still has something to sit on.
         // While the links are still coming the tabs are not there to give the row its
@@ -1196,13 +1224,22 @@ Item {
             // rather than as the film's detail.
             color: "#000000"
             border.color: "#3A3A40"
-            border.width: 1
+            // The column is not a card floating on the page, it is a strip of the window,
+            // so it stops drawing an outline: the hairline down its right edge and the one
+            // under its last row only said "here is a box" where there is none.
+            border.width: magPopup.dock ? 0 : 1
         }
 
         Column {
             id: magContent
             width: parent.width
             spacing: 0
+            // The column's top gap is the page's own gutter: the same 13 px that puts the
+            // 本地媒体库 tab row 13 px under the window's top and 13 px above the row under
+            // it. The card's padding is 16 on all four sides, so the header is lifted by the
+            // difference and the two titles land on one line - measured before this, the
+            // column's title ink started 3 px below the tab row's.
+            y: magPopup.topLift
 
             // ---- the column's own head: the title and its way out ----
             // The card needs neither: it is dismissed by clicking anywhere on the wall,
@@ -1348,6 +1385,77 @@ Item {
                         }
                     }
                 }
+
+                // ---- the same block, while its rows are still in flight ----
+                // The list has drawn a skeleton since the board grew one; the film's own
+                // block was the hole that stayed empty until the page landed. The bars use
+                // the real block's measures - the cover's square, the label column's x, one
+                // line of small text plus the column's spacing per bar - and breathe on the
+                // same clock as the list's, so the two halves of the wait look like one.
+                Item {
+                    id: headSkel
+                    anchors.fill: parent
+                    visible: magPopup.waiting
+                    readonly property real colX: infoCol.x
+                    readonly property real pitch: Math.round(Theme.refH * 0.018 * 1.35)
+                                                  + Math.round(Theme.refH * 0.0045)
+                    readonly property real labelW: Math.round(page.smallFs * 2)
+                    readonly property real valueX: Math.round(page.smallFs * 3.4)
+
+                    Rectangle {
+                        width: magPopup.posterW
+                        height: magPopup.posterH
+                        radius: Theme.controlRadius
+                        color: "#141418"
+                        SequentialAnimation on opacity {
+                            running: headSkel.visible
+                            loops: Animation.Infinite
+                            NumberAnimation { from: 0.45; to: 1; duration: 420
+                                                easing.type: Easing.InOutQuad }
+                            NumberAnimation { from: 1; to: 0.45; duration: 420
+                                              easing.type: Easing.InOutQuad }
+                        }
+                    }
+
+                    Repeater {
+                        model: Math.floor(magPopup.posterH / headSkel.pitch)
+
+                        delegate: Item {
+                            id: hsRow
+                            required property int index
+                            x: headSkel.colX
+                            y: index * headSkel.pitch
+                            width: head.width - x
+                            height: headSkel.pitch
+                            readonly property real phase: index * 90
+
+                            SequentialAnimation on opacity {
+                                running: headSkel.visible
+                                loops: Animation.Infinite
+                                PauseAnimation { duration: hsRow.phase }
+                                NumberAnimation { from: 0.45; to: 1; duration: 420
+                                                    easing.type: Easing.InOutQuad }
+                                NumberAnimation { from: 1; to: 0.45; duration: 420
+                                                  easing.type: Easing.InOutQuad }
+                            }
+
+                            Rectangle {
+                                width: headSkel.labelW
+                                height: page.smallFs
+                                radius: 2
+                                color: "#141418"
+                            }
+                            Rectangle {
+                                x: headSkel.valueX
+                                width: Math.round(parent.width * 0.55)
+                                height: page.smallFs
+                                radius: 2
+                                color: "#141418"
+                                opacity: 0.75
+                            }
+                        }
+                    }
+                }
             }
 
             Item { width: 1; height: magPopup.headGap }
@@ -1370,7 +1478,9 @@ Item {
                                            : Math.round(Theme.refH * 0.036)
 
                     Repeater {
-                        model: magPopup.filmTabs
+                        // A tab with 0 behind it has no rows to show. It used to sit there
+                        // greyed out, which was one more thing to look past.
+                        model: (magPopup.filmTabs || []).filter(function (t) { return t.count > 0 })
 
                         delegate: Item {
                             id: tabItem
@@ -1428,11 +1538,11 @@ Item {
                 Text {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: !magPopup.dock && magPopup.links.length > 0
-                    text: magPopup.shareNote.length > 0 ? magPopup.shareNote
-                          : (magPopup.tab === "seed" ? "点一行加入下载"
-                                                     : "点一行在浏览器打开")
-                    color: magPopup.shareNote.length > 0 ? Theme.accent : Theme.textSecondary
+                    // Only the hop page's own note. The sentence said what the row already
+                    // says and was the last piece of copy on the panel.
+                    visible: !magPopup.dock && magPopup.shareNote.length > 0
+                    text: magPopup.shareNote
+                    color: Theme.accent
                     // The tabs take the left of this row, so the sentence gets what is left
                     // and cuts in the middle rather than running under the list's scrollbar.
                     width: Math.min(implicitWidth, tabBar.width - tabRow.implicitWidth - 12)
@@ -1444,25 +1554,22 @@ Item {
 
             Item { width: 1; height: 6 }
 
-            // The column's copy of that sentence, under the tabs.
+            // The column's copy of the note, under the tabs.
             Text {
+                id: magHint
                 width: parent.width
-                visible: magPopup.dock && (magPopup.waiting || magPopup.links.length > 0
-                                           || magPopup.shareNote.length > 0)
+                visible: magPopup.dock && (magPopup.waiting || magPopup.shareNote.length > 0)
                 elide: Text.ElideRight
-                // A space while waiting: the line has to be as tall as the sentence it is
-                // holding a place for, and empty text would collapse it.
-                text: magPopup.waiting ? " "
-                      : (magPopup.shareNote.length > 0 ? magPopup.shareNote
-                      : (magPopup.tab === "seed" ? "点一行加入下载"
-                                                 : "点一行在浏览器打开"))
-                color: magPopup.shareNote.length > 0 ? Theme.accent : Theme.textSecondary
+                // A space while waiting keeps the line the height it will have once the
+                // rows land, so the list does not jump under them.
+                text: magPopup.waiting ? " " : magPopup.shareNote
+                color: Theme.accent
                 font.pixelSize: page.smallFs
                 font.family: Theme.uiFont
             }
             Item {
                 width: 1
-                height: magPopup.hintH > 0 ? 4 : 0
+                height: magHint.visible ? 4 : 0
             }
 
             ListView {
@@ -1486,32 +1593,56 @@ Item {
                         anchors.fill: parent
                         color: mh.containsMouse ? "#1B1B1F" : "transparent"
                     }
-                    Rectangle {
-                        x: 2
-                        y: Math.round((row.height - 4) / 2)
-                        width: 4
-                        height: 4
-                        radius: 2
-                        color: "#6A6A72"
-                    }
-                    // The size is the site's, right after the name; the badges and the age
-                    // are the same row's facts, and the three columns are laid out by hand
-                    // so every line sits on a whole pixel. In the column there is no row
-                    // wide enough for all four, so the name takes the first line and the
-                    // rest move under it.
+                    // The size is the site's, the badges and the age are the same row's
+                    // facts, and the columns are laid out by hand so every line sits on a
+                    // whole pixel. In the column a row that has badges or an age gives the
+                    // name the whole first line and moves the facts under it; a row with
+                    // neither - the netdisk ones - stays one line, name then size.
                     readonly property bool narrow: magPopup.dock
                     readonly property real sizeW: 52
                     readonly property real featW: narrow ? width - 16 - sizeW - 8 - timeW
                                                          : 128
                     readonly property real timeW: 56
                     readonly property real nameW: width - 16 - 8 - sizeW - 8 - featW - 8 - timeW
-                    readonly property real line1: narrow ? Math.round(Theme.refH * 0.0083)
-                                                         : Math.round((height - page.smallFs * 1.35) / 2)
+                    readonly property bool hasTime: (modelData.time || "").length > 0
+                    readonly property bool hasFeats: (modelData.features || []).length > 0
+                    readonly property bool hasSize: (modelData.size || "").length > 0
+                    readonly property bool twoLine: narrow && (hasFeats || hasTime)
+                    // What the name line gives up to the columns to its right - only the ones
+                    // this row actually carries. A netdisk row has no size and no date, and
+                    // the fixed 52 + 64 it used to hand back is why its name turned into "…"
+                    // two characters early with the right edge still black.
+                    readonly property real tailW: (hasSize ? 8 + sizeW : 0)
+                                                  + (hasTime ? 8 + timeW : 0)
+                    readonly property real line1: !twoLine
+                                                  ? Math.round((height - page.smallFs * 1.35) / 2)
+                                                  : (narrow ? Math.round(Theme.refH * 0.0083)
+                                                            : Math.round((height - page.smallFs * 1.35) / 2))
+                    readonly property real line2: Math.round(height - page.smallFs * 1.35 - 4)
+                    // An id is not a property of the row, so the measure is handed up as
+                    // one before the name's width and the size's x read it back.
+                    readonly property real nameInk: nameText.implicitWidth
+                    // What the name line actually gets, after the row's own arithmetic.
+                    readonly property real nameShown: Math.min(nameInk, width - tailW)
+                    // What the name actually measures, so a one-line row can put the size
+                    // right after the glyphs instead of a fixed column out where the name
+                    // may never reach.
                     Text {
-                        x: 16
+                        id: nameText
+                        visible: false
+                        text: modelData.title || modelData.label
+                        font.pixelSize: page.smallFs
+                        font.family: Theme.uiFont
+                    }
+                    Text {
+                        // Flush with the tab row above: the panel's own 16 px is already
+                        // in the content area, so the row adds nothing of its own.
+                        x: 0
                         // `width` alone here is this Text's own width, not the row's: the
                         // binding then reads itself and the label comes out empty. Row's.
-                        width: row.narrow ? row.width - 16 - 8 - row.timeW : row.nameW
+                        width: !narrow ? row.nameW
+                             : (row.twoLine ? row.width
+                                            : row.nameShown)
                         y: row.line1
                         text: modelData.title || modelData.label
                         elide: Text.ElideRight
@@ -1520,8 +1651,9 @@ Item {
                         font.family: Theme.uiFont
                     }
                     Text {
-                        x: 16
-                        y: narrow ? Math.round(row.height - page.smallFs * 1.35 - 4) : row.line1
+                        x: (!narrow ? row.nameW + 8
+                                    : (row.twoLine ? 0 : row.nameShown + 8))
+                        y: row.twoLine ? row.line2 : row.line1
                         width: row.sizeW
                         text: modelData.size || ""
                         color: Theme.textSecondary
@@ -1530,8 +1662,8 @@ Item {
                     }
                     Row {
                         id: feats
-                        x: 16 + (narrow ? 0 : row.nameW + 8) + row.sizeW + 8
-                        y: narrow ? Math.round(row.height - page.smallFs * 1.35 - 6) : 0
+                        x: (narrow ? 0 : row.nameW + 8) + row.sizeW + 8
+                        y: row.twoLine ? row.line2 - 2 : row.line1
                         width: row.featW
                         height: narrow ? Math.round(magPopup.chipFs * 1.5) : row.height
                         spacing: 4
@@ -1564,7 +1696,7 @@ Item {
                     Text {
                         anchors.right: parent.right
                         width: row.timeW
-                        y: narrow ? Math.round(row.height - page.smallFs * 1.35 - 4) : row.line1
+                        y: row.twoLine ? row.line2 : row.line1
                         text: modelData.time || ""
                         horizontalAlignment: Text.AlignRight
                         elide: Text.ElideLeft
@@ -1633,7 +1765,7 @@ Item {
         // a row of it, so the list keeps its height.
         Text {
             x: 0
-            y: magList.y + 8
+            y: magPopup.listTop + 8
             width: magList.width
             visible: !magPopup.waiting
                      && (magPopup.links.length === 0 || magPopup.note.length > 0)
@@ -1656,7 +1788,7 @@ Item {
         Item {
             id: magSkel
             x: magList.x
-            y: magList.y
+            y: magPopup.listTop
             width: magList.width
             height: magPopup.listH
             visible: magPopup.waiting
@@ -1692,24 +1824,16 @@ Item {
                     }
 
                     Rectangle {
-                        x: 2
-                        y: Math.round((skRow.height - 4) / 2)
-                        width: 4
-                        height: 4
-                        radius: 2
-                        color: "#141418"
-                    }
-                    Rectangle {
-                        x: 16
+                        x: 0
                         y: skRow.line1
-                        width: Math.round(magSkel.nameW)
+                        width: Math.round(magPopup.dock ? magSkel.width : magSkel.nameW)
                         height: page.smallFs
                         radius: 2
                         color: "#141418"
                     }
                     Rectangle {
                         visible: skRow.narrow
-                        x: 16
+                        x: 0
                         y: Math.round(skRow.height - page.smallFs * 1.35 - 4)
                         width: 52
                         height: page.smallFs
@@ -1730,7 +1854,7 @@ Item {
         ThinScrollBar {
             target: magList
             x: magPopup.width - magPopup.magPad - 2 - width
-            y: magList.y
+            y: magPopup.listTop
             height: magList.height
         }
 

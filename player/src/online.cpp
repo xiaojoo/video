@@ -742,18 +742,27 @@ QJsonObject Online::parseDetail(const QString &html, const QString &base)
         out.insert(QStringLiteral("poster"), joinUrl(base, cm.captured(1)));
 
     // The info block is the list right under the cover. Every row is "label: value", and
-    // the site prints rows it has nothing for (单集片长:, 又名:) - those are dropped
-    // rather than drawn as an empty line.
+    // the site prints rows it has nothing for (an empty 单集片长:, an empty 又名:) - a row
+    // with no value is dropped rather than drawn as a blank line.
     static const QRegularExpression block(
         QStringLiteral("<div class=\"cover-container\">(.*?)</div>"),
         QRegularExpression::DotMatchesEverythingOption);
     QJsonArray meta;
     // 首播/豆瓣评分/常用标签 are the rows he crossed out - the first showing, the site's
     // own score and the tags repeat what the download rows already say. 集数 he asked to
-    // keep.
+    // keep. 又名 is the site's alias list, and it is the longest label on the page for the
+    // least information.
     static const QSet<QString> dropped{ QStringLiteral("首播"),
                                         QStringLiteral("豆瓣评分"),
-                                        QStringLiteral("常用标签") };
+                                        QStringLiteral("常用标签"),
+                                        QStringLiteral("又名") };
+    // Three labels are shortened rather than drawn as the site's form-field wording: the
+    // column's label cell is 74 px, and 制片国家/地区 ran into its own value.
+    static const QMap<QString, QString> renamed{
+        { QStringLiteral("制片国家/地区"), QStringLiteral("国家") },
+        { QStringLiteral("资源更新于"), QStringLiteral("更新") },
+        { QStringLiteral("单集片长"), QStringLiteral("片长") },
+    };
     const auto bm = block.match(html);
     if (bm.hasMatch()) {
         static const QRegularExpression li(
@@ -765,7 +774,7 @@ QJsonObject Online::parseDetail(const QString &html, const QString &base)
             const int at = line.indexOf(QLatin1Char(':'));
             if (at <= 0)
                 continue;
-            const QString key = line.left(at).trimmed();
+            const QString key = renamed.value(line.left(at).trimmed(), line.left(at).trimmed());
             QString val = line.mid(at + 1).trimmed();
             // 主演 ends with the rest of the cast printed as "......".
             while (val.endsWith(QStringLiteral("…")) || val.endsWith(QLatin1Char('.')))
