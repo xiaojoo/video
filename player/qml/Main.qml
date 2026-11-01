@@ -1424,6 +1424,11 @@ Window {
         function onMiniChanged() { if (videoHost.mini && win.plOpen) win.setPlaylist(false) }
     }
     onPageChanged: {
+        // The bubble is a child of the window, not of the page, so nothing takes it down
+        // when the page it was pointing at goes away: clicking a download row's play mark
+        // jumped to the player with "播放视频" still hanging over the picture. Every jump
+        // comes through here, so this is the one place that has to say it.
+        tip.hide();
         if (page !== "player" && win.plOpen)
             win.setPlaylist(false);
         // The magnet column belongs to the online wall; the player has a film to show and

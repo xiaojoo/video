@@ -50,6 +50,61 @@ bool isHttpSource(const QString &src)
         || src.startsWith(u"https://"_qs, Qt::CaseInsensitive);
 }
 
+// Whether the bytes that exist so far could be demuxed at all. An mp4 that keeps its
+// index (the moov box) at the tail has no sample table anywhere in the prefix, so no
+// fraction short of the last box plays - measured on a 夸克 row at 44.33%: the head is
+// ftyp(28 B) + free(8 B) + mdat(1,625,722,230 B) and moov is the final 1,271,359 B, which
+// the demuxer answers with "moov atom not found". A faststart file shows moov before mdat;
+// matroska and mpeg-ts carry their index as they go and stream from the first megabyte.
+bool partialPlayable(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray head = f.read(65536);
+    f.close();
+    if (head.size() < 8)
+        return false;
+    // Sniffed from the first box, not from the extension: the row this was written for
+    // was called `4K.mkv.part` and opened with `ftyp isom` (measured).
+    static const QStringList boxed{ u"ftyp"_qs, u"moov"_qs, u"mdat"_qs, u"free"_qs,
+                                    u"skip"_qs, u"wide"_qs, u"uuid"_qs, u"pdin"_qs,
+                                    u"pnot"_qs, u"junk"_qs, u"mfra"_qs, u"meta"_qs };
+    if (!boxed.contains(QString::fromLatin1(head.mid(4, 4))))
+        return true;
+    auto be32 = [&head](qsizetype at) {
+        return (quint32(quint8(head.at(at))) << 24) | (quint32(quint8(head.at(at + 1))) << 16)
+             | (quint32(quint8(head.at(at + 2))) << 8) | quint32(quint8(head.at(at + 3)));
+    };
+    qsizetype off = 0;
+    while (off + 8 <= head.size()) {
+        const QString type = QString::fromLatin1(head.mid(off + 4, 4));
+        bool fourcc = !type.isEmpty();
+        for (const QChar &c : type)
+            fourcc = fourcc && c.unicode() >= 0x20 && c.unicode() < 0x7f;
+        // Zeros where a box name belongs: the first part has not landed yet, so there is
+        // no header on disk and the view has nothing to seek with.
+        if (!fourcc)
+            return false;
+        if (type == u"moov"_qs)
+            return true;
+        if (type == u"mdat"_qs)
+            return false;
+        quint64 size = be32(off);
+        if (size == 1) {
+            if (off + 16 > head.size())
+                return true;
+            size = (quint64(be32(off + 8)) << 32) | be32(off + 12);
+        } else if (size == 0) {
+            return true;    // this box runs to the end, so nothing indexes after it
+        }
+        if (size < 8)
+            return true;    // a header this walk cannot read is no reason to block playback
+        off += qsizetype(size);
+    }
+    return true;    // neither index nor media inside the window: unknown, so let it try
+}
+
 // The last segment of the url is what the file will be called; a url without one gets
 // the host, because "download" as a name tells the row nothing it did not already say.
 // A 网盘's own file name is usually just a quality label - the drive hands over `4k.mp4`
@@ -622,6 +677,24 @@ bool Downloads::isComplete(qint64 id) const
     return false;
 }
 
+// Whether the bytes that exist right now could be demuxed at all, which is what the row's
+// play mark answers before it offers to play. A finished row always can; a filling one
+// depends on where its container keeps its index, not on how much has landed.
+bool Downloads::rowPlayable(const DownloadRow &row) const
+{
+    if (row.complete)
+        return true;
+    if (row.name.isEmpty() || row.dir.isEmpty())
+        return false;
+    // While a job fills, the http engine writes beside the final name with a `.part`
+    // suffix; the name the row carries only exists after the rename.
+    const QString part = QDir(row.dir).filePath(row.name + u".part"_qs);
+    if (QFile::exists(part))
+        return partialPlayable(part);
+    const QString at = QDir(row.dir).filePath(row.name);
+    return QFile::exists(at) && partialPlayable(at);
+}
+
 QVariantList Downloads::jobs() const
 {
     QVariantList out;
@@ -645,6 +718,7 @@ QVariantList Downloads::jobs() const
         m.insert(u"jobResume"_qs, r.resume);
         m.insert(u"jobResumeMs"_qs, r.resumeMs);
         m.insert(u"jobComplete"_qs, r.complete);
+        m.insert(u"jobPlayable"_qs, rowPlayable(r));
         m.insert(u"jobRunning"_qs, r.running);
         m.insert(u"jobPath"_qs, r.path);
         m.insert(u"jobError"_qs, r.error);

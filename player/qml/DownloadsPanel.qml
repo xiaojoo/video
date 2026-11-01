@@ -298,7 +298,7 @@ Item {
                     const got = panel.sizeText(modelData.jobCompleted)
                     const all = modelData.jobTotal > 0 ? " / " + panel.sizeText(modelData.jobTotal) : ""
                     if (modelData.jobComplete)
-                        return "已完成 · " + got + all + " · 点左边直接看"
+                        return got + all + " · 已完成"
                     if (!modelData.jobRunning)
                         return got + all + " · 已停止"
                     if (modelData.jobTotal <= 0)
@@ -388,9 +388,15 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onEntered: panel.tipFor(thumb, "直接播放这一部", "")
+                        // The row says whether the bytes on disk could be demuxed yet, because
+                        // for a plain mp4 the answer is "not until the last box lands" - its
+                        // index sits at the tail. Offering a play that cannot start is what
+                        // read as a dead button and a player page full of the last film.
+                        onEntered: panel.tipFor(thumb, modelData.jobPlayable
+                                                ? "播放视频" : "暂不能播放", "")
                         onExited: panel.tipOff(thumb)
-                        onClicked: panel.playRequested(modelData.jobId, modelData.jobRunning)
+                        onClicked: if (modelData.jobPlayable)
+                                       panel.playRequested(modelData.jobId, modelData.jobRunning)
                     }
                 }
 
@@ -506,11 +512,21 @@ Item {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onEntered: panel.tipFor(pullBox, modelData.jobRunning
-                                                    ? "暂停下载" : "开始下载", "")
+                            // On a finished row this mark used to say 开始下载 and do
+                            // nothing: start() returns early once a job is complete, so the
+                            // only thing a press here could do was nothing. The row is done,
+                            // so the mark now means what its glyph already looked like.
+                            onEntered: panel.tipFor(pullBox, modelData.jobComplete
+                                                    ? "播放视频"
+                                                    : (modelData.jobRunning ? "暂停下载"
+                                                                            : "开始下载"), "")
                             onExited: panel.tipOff(pullBox)
-                            onClicked: panel.toggleRequested(modelData.jobId,
-                                                             !modelData.jobRunning)
+                            onClicked: {
+                                if (modelData.jobComplete)
+                                    panel.playRequested(modelData.jobId, false)
+                                else
+                                    panel.toggleRequested(modelData.jobId, !modelData.jobRunning)
+                            }
                         }
                     }
 

@@ -125,6 +125,8 @@ private:
     DownloadRow *find(qint64 id);
     // A name the row would write to that another row or the disk already has.
     bool nameTaken(const QString &dir, const QString &name) const;
+    // The same question playable() answers, on a row already in hand.
+    bool rowPlayable(const DownloadRow &row) const;
     void spawn(DownloadRow &row);
     void poll(qint64 id);
     // One line of the child's stdout: LISTEN sets the view url, DONE carries the
