@@ -1,6 +1,7 @@
 #include "downloads.h"
 #include "duration.h"
 #include "library.h"
+#include "netdisk.h"
 #include "online.h"
 #include "playercore.h"
 #include "singleinstance.h"
@@ -120,6 +121,12 @@ int main(int argc, char *argv[])
                                    u"parse a source list page and print it as json"_qs, u"url"_qs);
     QCommandLineOption onlineMagnets(u"online-magnets"_qs,
                                      u"follow a detail page down to its magnets"_qs, u"url"_qs);
+    QCommandLineOption netdiskProbe(u"netdisk-probe"_qs,
+                                    u"walk a share to a readable url through the client"_qs,
+                                    u"url"_qs);
+    QCommandLineOption netdiskLive(u"netdisk-live"_qs,
+                                   u"walk a share, then pull it with our own engine and report"_qs,
+                                   u"url"_qs);
     parser.addOption(shot);
     parser.addOption(shotAt);
     parser.addOption(size);
@@ -139,8 +146,136 @@ int main(int argc, char *argv[])
     parser.addOption(dlDir);
     parser.addOption(onlineProbe);
     parser.addOption(onlineMagnets);
+    parser.addOption(netdiskProbe);
+    parser.addOption(netdiskLive);
     parser.process(app);
 
+    // The 夸克 driver, on its own. Driving it through the wall would mean clicking a
+    // poster on a screen that may be covered by something else, and the chain is long
+    // enough (share -> token -> detail -> save -> task -> url -> client -> move) that its
+    // stages deserve a reading of their own.
+    if (parser.isSet(netdiskProbe)) {
+        // What this harness proves is the half the app cannot fake: that the share walks down
+        // to a copy, the copy yields a url, and the headers that make that url readable come
+        // back with it. The bytes themselves are Downloads' business, so the probe stops at
+        // the hand-off instead of waiting on an hour-long pull.
+        Netdisk netdisk;
+        QEventLoop loop;
+        int rc = 1;
+        QObject::connect(&netdisk, &Netdisk::queued, &loop,
+                         [](const QString &, const QString &name, const QString &) {
+                             qInfo("netdisk queued name=%s", qPrintable(name));
+                         });
+        QObject::connect(&netdisk, &Netdisk::ready, &loop,
+                         [&](const QString &key, const QString &url, const QString &headers,
+                             const QString &name, const QString &) {
+                             QJsonObject o;
+                             o.insert(u"share"_qs, key);
+                             o.insert(u"host"_qs, QUrl(url).host());
+                             o.insert(u"name"_qs, name);
+                             o.insert(u"header_fields"_qs,
+                                      headers.split(QChar(u'\r'), Qt::SkipEmptyParts).size());
+                             // Length only. The value is his session.
+                             o.insert(u"header_len"_qs, headers.size());
+                             writeJson(QJsonDocument(o).toJson(QJsonDocument::Compact));
+                             rc = 0;
+                             loop.quit();
+                         });
+        QObject::connect(&netdisk, &Netdisk::failed, &loop,
+                         [&](const QString &, const QString &note) {
+                             // Through stdout, not the log channel: Qt re-encodes the log
+                             // through the console code page, which turned the whole
+                             // sentence into question marks (measured).
+                             QJsonObject o;
+                             o.insert(u"failed"_qs, note);
+                             writeJson(QJsonDocument(o).toJson(QJsonDocument::Compact));
+                             rc = 1;
+                             loop.quit();
+                         });
+        // The ladder's own worst case is a big copy that has not materialised yet, which the
+        // driver retries for a few minutes. Nothing here waits on a download any more.
+        QTimer::singleShot(300000, &loop, [&] {
+            qWarning("netdisk probe timed out");
+            loop.quit();
+        });
+        netdisk.download(parser.value(netdiskProbe), QString(), QString());
+        loop.exec();
+        return rc;
+    }
+    // The whole 网盘 chain, in the app's own classes: the ladder, the hand-off into
+    // Downloads, the engine's spawn argv (which is where the connection number becomes a
+    // fact rather than a promise), and the copy taken back out of the account when the
+    // bytes land. Only the click is left out, and a click cannot prove any of these.
+    if (parser.isSet(netdiskLive)) {
+        Netdisk netdisk;
+        Downloads downloads;
+        Library library;
+        const QString outDir = parser.isSet(dlDir)
+                                   ? QFileInfo(parser.value(dlDir)).absoluteFilePath()
+                                   : QCoreApplication::applicationDirPath() + u"/netdisk-live"_qs;
+        QDir().mkpath(outDir);
+        library.open(parser.isSet(db) ? parser.value(db) : outDir + u"/live.db"_qs);
+        downloads.setDatabase(library.database());
+        downloads.setOverrideDir(outDir);
+        downloads.setConns(4);
+        QEventLoop loop;
+        int rc = 1;
+        QString handed;
+        QObject::connect(&netdisk, &Netdisk::ready, &loop,
+                         [&](const QString &, const QString &url, const QString &headers,
+                             const QString &name, const QString &poster) {
+                             handed = url;
+                             const qint64 id = downloads.add(url, outDir, poster, headers, name);
+                             qInfo("nd live row=%lld handed headers=%d",
+                                   static_cast<long long>(id), headers.size());
+                             downloads.start(id);
+                         });
+        QObject::connect(&netdisk, &Netdisk::failed, &loop, [&](const QString &, const QString &note) {
+            QJsonObject o;
+            o.insert(u"failed"_qs, note);
+            writeJson(QJsonDocument(o).toJson(QJsonDocument::Compact));
+            loop.quit();
+        });
+        // One line every four seconds, from the row itself: the numbers a screenshot would
+        // have to be measured out of are already in here.
+        QTimer tick;
+        tick.setInterval(4000);
+        QObject::connect(&tick, &QTimer::timeout, &loop, [&] {
+            for (const QVariant &v : downloads.jobs()) {
+                const QVariantMap m = v.toMap();
+                const QString note = m.value(u"jobError"_qs).toString();
+                qInfo("nd live %lld/%lld %lldKB/s conns=%d err=%s",
+                      m.value(u"jobCompleted"_qs).toLongLong(),
+                      m.value(u"jobTotal"_qs).toLongLong(),
+                      static_cast<long long>(m.value(u"jobRate"_qs).toDouble() / 1024),
+                      m.value(u"jobPeers"_qs).toInt(),
+                      note.isEmpty() ? "-"
+                                     : qPrintable(QString::fromUtf8(
+                                           note.toUtf8().toPercentEncoding().left(60))));
+            }
+        });
+        tick.start();
+        QObject::connect(&downloads, &Downloads::finished, &loop,
+                         [&](qint64 id, const QString &path) {
+                             QJsonObject o;
+                             o.insert(u"path"_qs, path);
+                             o.insert(u"bytes"_qs, QFileInfo(path).size());
+                             o.insert(u"row"_qs, static_cast<double>(id));
+                             writeJson(QJsonDocument(o).toJson(QJsonDocument::Compact));
+                             rc = 0;
+                             // The shell does this on the same signal; the harness owes it too,
+                             // and this is the one call that shows the copy is really gone.
+                             netdisk.dropCopy(handed);
+                             QTimer::singleShot(8000, &loop, [&] { loop.quit(); });
+                         });
+        QTimer::singleShot(420000, &loop, [&] {
+            qWarning("nd live timed out");
+            loop.quit();
+        });
+        netdisk.download(parser.value(netdiskLive), QString(), QString());
+        loop.exec();
+        return rc;
+    }
     // The scraper, on its own: what it found is printed as json and the process is
     // done. The wall is only worth building once this answers correctly against the
     // live site, and it is far cheaper to read json than to judge a screenshot.
@@ -271,6 +406,10 @@ int main(int argc, char *argv[])
     QString startMode = parser.value(mode);
 
     Online online;
+    // The 夸克 side of the board: it drives the client over its DevTools
+    // port instead of downloading by itself, because the client is the only thing the CDN
+    // answers - a url handed to our own http stack comes back 412.
+    Netdisk netdisk;
     Downloads downloads;
     downloads.setDatabase(library.database());
     if (parser.isSet(dlDir))
@@ -363,6 +502,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"library"_qs, &library);
     engine.rootContext()->setContextProperty(u"libraryModel"_qs, &libraryModel);
     engine.rootContext()->setContextProperty(u"online"_qs, &online);
+    engine.rootContext()->setContextProperty(u"netdisk"_qs, &netdisk);
     engine.rootContext()->setContextProperty(u"downloads"_qs, &downloads);
     engine.rootContext()->setContextProperty(u"downloadsModel"_qs, &downloadsModel);
     engine.rootContext()->setContextProperty(u"single"_qs, &single);

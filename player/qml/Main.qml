@@ -985,7 +985,20 @@ Window {
 
     // Start the countdown with the UI, otherwise the chrome stays up until the
     // first mouse event and the hidden/shown state is not reproducible.
-    Component.onCompleted: if (!win.keepUi) poke.start()
+    // The stored connection count is handed to the engine here rather than read in C++:
+    // the settings card owns the number and where it lives, and the engine only ever gets
+    // told "use this many".
+    Component.onCompleted: {
+        downloads.setConns(prefs.conns);
+        // A copy of his drive is only ever owed back while some row still needs the url it
+        // made readable: a job that died with the app leaves one behind otherwise.
+        const live = [];
+        const rows = downloads.jobs();
+        for (let i = 0; i < rows.length; ++i)
+            live.push(rows[i].jobSrc);
+        netdisk.reconcile(live);
+        if (!win.keepUi) poke.start();
+    }
 
     // The scrim belongs to the picture, not to the chrome. It used to live inside
     // `ui`, so hiding the controls for a transition also lifted the gradient off the
@@ -1538,13 +1551,48 @@ Window {
     // 设置, opened from the caption. It is the window's, not the online page's, for the
     // same reason the caption is: the gear has to work while the player is on screen too,
     // and the card is the only place a source can be added, switched off or removed.
+    // 夸克: the ladder ends with a url that is only readable with the account's cookies
+    // attached, and from there the pull is our own engine's. That is what makes a 网盘 file
+    // behave like any other row - the same bar, the same resume, the same play-while-downloading
+    // - and it is why 并发数 counts here too: measured on one 5.6 GB file, 夸克's own downloader
+    // holds ~100 KB/s per task while our engine with the cookie does 1.1 MB/s on one connection
+    // and a stable 2.78 MB/s at four.
+    Connections {
+        target: netdisk
+        function onReady(key, url, headers, name, poster)
+        {
+            const id = downloads.add(url, win.dlDir, poster, headers, name);
+            if (id > 0)
+                downloads.start(id);
+        }
+    }
+
+    // The copy in his drive existed only to make that url readable. As soon as the bytes are
+    // on ours, it is quota we owe him back.
+    Connections {
+        target: downloads
+        function onFinished(id, path)
+        {
+            const rows = downloads.jobs();
+            for (let i = 0; i < rows.length; ++i) {
+                if (rows[i].jobId === id)
+                    netdisk.dropCopy(rows[i].jobSrc);
+            }
+        }
+    }
+
     SourceSettings {
         id: settings
         refWidth: Theme.refW
         dlDir: win.dlDir
         magnetPanel: prefsUi.magnetPanel
+        dlConns: prefs.conns
         onDirRequested: dirPick.open()
         onMagnetPanelPicked: (which) => prefsUi.magnetPanel = which
+        // Written through to the engine as it is stored: the next job the user starts uses
+        // the new number, and one that is already running keeps the connections it opened
+        // with - killing a job to change a setting is not what a stepper should do.
+        onConnsPicked: (n) => { prefs.conns = n; downloads.setConns(n); }
     }
 
     // The one thing the settings card stores that outlives the process. `QtCore.Settings`
@@ -1554,6 +1602,10 @@ Window {
         id: prefs
         category: "downloads"
         property string dir: ""
+        // How many connections an http job (a 网盘 direct link) pulls with. 8 is where the
+        // measurement stopped paying for itself: 1/6/12 connections read 359/705/1152 KB/s
+        // on the CDN, so past ~8 the curve is flat and the cost is other people's bandwidth.
+        property int conns: 8
     }
 
     // The second thing the settings card stores: how the magnet board is presented.

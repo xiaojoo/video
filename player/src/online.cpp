@@ -1,4 +1,5 @@
 #include "online.h"
+#include "netdisk.h"
 
 #include <QDir>
 #include <QFile>
@@ -975,45 +976,31 @@ void Online::magnets(const QString &url)
 }
 
 namespace {
-// Where the 夸克 browser is, when this machine has one. It registers itself as an internet
-// client under its own name, and it is where the signed-in netdisk session lives: the
-// system default on this box is Chrome, which is not signed in to 夸克.
-QString quarkExe()
-{
-    static QString found;
-    static bool looked = false;
-    if (looked)
-        return found;
-    looked = true;
-    static const QStringList roots{
-        QStringLiteral("HKEY_CURRENT_USER\\Software\\Clients\\StartMenuInternet"),
-        QStringLiteral("HKEY_LOCAL_MACHINE\\Software\\Clients\\StartMenuInternet")
-    };
-    static const QRegularExpression quoted(QStringLiteral("\"([^\"]+)\""));
-    for (const QString &root : roots) {
-        const QSettings reg(root, QSettings::NativeFormat);
-        QStringList names = reg.childGroups();
-        names += reg.childKeys();
-        for (const QString &name : names) {
-            if (!name.contains(QStringLiteral("quark"), Qt::CaseInsensitive))
-                continue;
-            // The command is that key's default value, and QSettings names the default
-            // value "." rather than the empty string - reading QString() comes back empty.
-            const QString cmd = QSettings(root + u"\\"_qs + name
-                                          + u"\\shell\\open\\command"_qs,
-                                          QSettings::NativeFormat)
-                                    .value(QStringLiteral(".")).toString();
-            const auto q = quoted.match(cmd);
-            const QString exe = q.hasMatch() ? q.captured(1)
-                                             : cmd.section(QLatin1Char(' '), 0, 0);
-            if (!exe.isEmpty() && QFileInfo::exists(exe)) {
-                found = exe;
-                return found;
-            }
-        }
-    }
-    return found;
+// The 夸克 client - and it is the client that holds the signed-in netdisk session, since
+// the system default browser on this box is not signed in to 夸克. The lookup itself lives
+// with the client driver, which needs the same path to bring the client up with a debug
+// port. It reads the scheme handler rather than StartMenuInternet because on this machine
+// that second entry carries no command line at all: the old walk came back empty and a
+// 夸克 row opened the default browser instead, silently.
+QString quarkExe() { return Netdisk::clientExecutable(); }
 }
+
+void Online::shareUrl(const QString &hop)
+{
+    // The hop is fetched rather than opened: it answers with an interstitial that carries
+    // the address, and it is that address the netdisk driver needs.
+    get(hop, [this, hop](const QString &, const QByteArray &bytes, const QString &err) {
+        if (!err.isEmpty()) {
+            emit shareFailed(magnetFailure(err));
+            return;
+        }
+        const QString url = decodeShare(QString::fromUtf8(bytes));
+        if (url.isEmpty()) {
+            emit shareFailed(tr("跳页里没有网盘地址（站点的跳页可能改了）"));
+            return;
+        }
+        emit shareUrlReady(hop, url);
+    }, false);
 }
 
 void Online::openShare(const QString &hop)

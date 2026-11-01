@@ -46,6 +46,9 @@ public:
     // reads the hop and hands the address to a browser - 夸克's own when it is installed,
     // because that is where the signed-in session is.
     Q_INVOKABLE void openShare(const QString &hop);
+    // The same hop, but answered instead of opened: a 夸克 row needs the share address to
+    // hand to the client driver, not a browser window.
+    Q_INVOKABLE void shareUrl(const QString &hop);
 
     // The base64 payload these pages hand to window.atob. Exposed for the probe.
     static QString decodeMagnet(const QString &html);
@@ -86,6 +89,7 @@ signals:
     // A netdisk row was clicked and nothing could be opened. The dialog owns this line, not
     // the wall's error property: the posters behind are fine.
     void shareFailed(const QString &note);
+    void shareUrlReady(const QString &hop, const QString &url);
     // A list page has been fetched and parsed, and `url` names which one. `ok` is false
     // when the transfer failed, so whoever asked can stop waiting for it.
     // `itemsChanged` cannot be used for this: open() emits it before the request even goes

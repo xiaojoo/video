@@ -588,7 +588,11 @@ func (j *HttpJob) status() Status {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	st := Status{
-		Name: j.name, Total: j.total, Completed: j.completed, Missing: j.total - j.completed,
+		// The name of the file this job is actually writing, not a re-derivation of the
+		// url: the shell copies this field over the row's name, and a 夸克 url's last path
+		// segment is a 40-character object id - the row then points at a path that was
+		// never written while the real file sits beside it under the name it was given.
+		Name: filepath.Base(j.Out), Total: j.total, Completed: j.completed, Missing: j.total - j.completed,
 		Rate: j.rate, NumPieces: len(j.Parts), Complete: j.finalized, Want: "all",
 		DataDir: filepath.Dir(j.Out), ElapsedMs: time.Since(j.started).Milliseconds(),
 		Resume: j.resume,

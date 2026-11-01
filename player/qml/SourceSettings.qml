@@ -63,6 +63,10 @@ Popup {
     // choice is stored by the window; this card only shows and sets it.
     property string magnetPanel: "popup"
     signal magnetPanelPicked(string which)
+    // How many connections a 网盘 direct link is pulled with. Same arrangement as the
+    // board's position: the card shows it, the window stores it and hands it to the engine.
+    property int dlConns: 8
+    signal connsPicked(int n)
 
     // The primary pill: an accent edge, an accent wash that comes in from the icon side,
     // and a halo reaching ~6 px past the edge. A real blur needs QtQuick.Effects and
@@ -915,54 +919,145 @@ Popup {
                 Rectangle {
                     id: dlCard
                     width: body.width
-                    height: card.rowH
+                    height: 2 * card.rowH
                     radius: 6
                     color: card.plate
                     border.width: 1
                     border.color: card.line
 
-                    Column {
-                        x: 15
-                        y: Math.round((parent.height - height) / 2)
-                        width: 420
-                        spacing: 4
-
-                        Text {
-                            width: parent.width
-                            text: "保存位置"
-                            color: card.textHi
-                            font.pixelSize: card.smallFs
-                            font.family: Theme.uiFont
-                            font.weight: Font.DemiBold
-                        }
-                        Text {
-                            width: parent.width
-                            text: sheet.dlDir.length > 0 ? sheet.dlDir : "…"
-                            elide: Text.ElideMiddle
-                            color: card.textFaint
-                            font.pixelSize: card.labelFs
-                            font.family: Theme.uiFont
-                        }
+                    // One hairline for the pair, drawn by the card that owns both rows: two
+                    // stacked cards would put two 1 px edges on the same line.
+                    Rectangle {
+                        y: card.rowH
+                        width: parent.width
+                        height: 1
+                        color: card.line
                     }
 
-                    Row {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        height: card.btnH
-                        spacing: 12
+                    Column {
+                        width: parent.width
 
-                        WashButton {
-                            label: "更改存储路径"
-                            glyph: "folder"
-                            onClicked: sheet.dirRequested()
+                        Item {
+                            width: parent.width
+                            height: card.rowH
+
+                            Column {
+                                x: 15
+                                y: Math.round((parent.height - height) / 2)
+                                width: 420
+                                spacing: 4
+
+                                Text {
+                                    width: parent.width
+                                    text: "保存位置"
+                                    color: card.textHi
+                                    font.pixelSize: card.smallFs
+                                    font.family: Theme.uiFont
+                                    font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: sheet.dlDir.length > 0 ? sheet.dlDir : "…"
+                                    elide: Text.ElideMiddle
+                                    color: card.textFaint
+                                    font.pixelSize: card.labelFs
+                                    font.family: Theme.uiFont
+                                }
+                            }
+
+                            Row {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                height: card.btnH
+                                spacing: 12
+
+                                WashButton {
+                                    label: "更改存储路径"
+                                    glyph: "folder"
+                                    onClicked: sheet.dirRequested()
+                                }
+                                EdgeButton {
+                                    label: "打开文件夹"
+                                    glyph: "play"
+                                    onClicked: if (sheet.dlDir.length > 0)
+                                                   Qt.openUrlExternally("file:///"
+                                                       + sheet.dlDir.replace(/\\/g, "/"))
+                                }
+                            }
                         }
-                        EdgeButton {
-                            label: "打开文件夹"
-                            glyph: "play"
-                            onClicked: if (sheet.dlDir.length > 0)
-                                           Qt.openUrlExternally("file:///"
-                                               + sheet.dlDir.replace(/\\/g, "/"))
+
+                        // ---- how many connections a 网盘 link is pulled with ----
+                        // Presets rather than a typed number: the curve is measured (1/6/12
+                        // connections = 359/705/1152 KB/s on the CDN), so the only choices
+                        // that mean anything are the ones on either side of the knee.
+                        Item {
+                            width: parent.width
+                            height: card.rowH
+
+                            Column {
+                                x: 15
+                                y: Math.round((parent.height - height) / 2)
+                                width: 420
+                                spacing: 4
+
+                                Text {
+                                    width: parent.width
+                                    text: "网盘并发下载"
+                                    color: card.textHi
+                                    font.pixelSize: card.smallFs
+                                    font.family: Theme.uiFont
+                                    font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: "一起拉的连接数。夸克整条链上限 ~2.8 MB/s（两个任务同时下合计 3.06）；只影响新开始的任务"
+                                    color: card.textFaint
+                                    font.pixelSize: card.labelFs
+                                    font.family: Theme.uiFont
+                                }
+                            }
+
+                            Row {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                height: card.btnH
+                                spacing: 6
+
+                                Repeater {
+                                    model: [1, 2, 4, 6, 8, 12, 16]
+
+                                    delegate: Rectangle {
+                                        id: copt
+                                        required property var modelData
+                                        readonly property bool on: sheet.dlConns === modelData
+                                        width: coptText.implicitWidth + 18
+                                        height: card.btnH
+                                        radius: Theme.controlRadius
+                                        color: copt.on ? Theme.accent
+                                               : (coptHit.containsMouse ? card.btnHover : card.fill)
+                                        border.width: 1
+                                        border.color: copt.on ? Theme.accent : card.line
+
+                                        Text {
+                                            id: coptText
+                                            anchors.centerIn: parent
+                                            text: copt.modelData
+                                            color: copt.on ? "#15151A" : card.textMid
+                                            font.pixelSize: card.bodyFs
+                                            font.family: Theme.uiFont
+                                        }
+                                        MouseArea {
+                                            id: coptHit
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: sheet.connsPicked(copt.modelData)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

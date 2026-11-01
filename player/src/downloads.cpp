@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -17,6 +18,7 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVariant>
 
 namespace {
@@ -50,9 +52,33 @@ bool isHttpSource(const QString &src)
 
 // The last segment of the url is what the file will be called; a url without one gets
 // the host, because "download" as a name tells the row nothing it did not already say.
+// A 网盘's own file name is usually just a quality label - the drive hands over `4k.mp4`
+// for a film the poster names in full. Take the name the poster carries and keep the
+// extension the drive reported, so the row, the file and the library say the same thing.
+QString namedLike(const QString &title, const QString &file)
+{
+    QString t = title.trimmed();
+    static const QRegularExpression bad(QStringLiteral("[\\\\/:*?\"<>|]"));
+    t.replace(bad, QStringLiteral("_"));
+    if (t.isEmpty())
+        return file;
+    const QString ext = QFileInfo(file).suffix();
+    return ext.isEmpty() ? t : t + QLatin1Char('.') + ext;
+}
+
 QString nameFromUrl(const QString &src)
 {
     const QUrl u(src);
+    // A drive's signed url carries the file's own name in the query: 夸克 hands over
+    // `.../cVVG0w1e/9?filename=2026.1080p.mp4&auth_key=...`, and the last path segment there is
+    // a 40-character object id. Without this the row is named after the id.
+    static const QStringList nameKeys{ u"filename"_qs, u"fn"_qs, u"name"_qs };
+    const QUrlQuery q(u);
+    for (const QString &k : nameKeys) {
+        const QString v = q.queryItemValue(k, QUrl::FullyDecoded);
+        if (!v.isEmpty())
+            return v;
+    }
     QString base = u.fileName();
     if (base.isEmpty())
         base = u.host();
@@ -140,6 +166,14 @@ void Downloads::setOverrideDir(const QString &dir)
     m_overrideDir = dir;
 }
 
+// Clamped rather than rejected: the card's stepper can be clicked faster than the engine
+// can be told, and a job that silently falls back to one connection is worse than a job
+// that uses the nearest legal number.
+void Downloads::setConns(int n)
+{
+    m_conns = qBound(1, n, 16);
+}
+
 QString Downloads::defaultDir() const
 {
     if (!m_overrideDir.isEmpty())
@@ -219,8 +253,16 @@ DownloadRow *Downloads::find(qint64 id)
     return nullptr;
 }
 
+bool Downloads::nameTaken(const QString &dir, const QString &name) const
+{
+    for (const DownloadRow &r : m_rows)
+        if (r.dir == dir && r.name.compare(name, Qt::CaseInsensitive) == 0)
+            return true;
+    return QFile::exists(QDir(dir).filePath(name));
+}
+
 qint64 Downloads::add(const QString &source, const QString &dir, const QString &poster,
-                      const QString &headers)
+                      const QString &headers, const QString &name)
 {
     const QString src = source.trimmed();
     const bool isMagnet = src.startsWith(u"magnet:"_qs);
@@ -230,15 +272,27 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
         return -1;
 
     const QString kind = isHttp ? u"http"_qs : u"torrent"_qs;
-    const QString initialName = isHttp ? nameFromUrl(src)
+    const QString where = dir.isEmpty() ? defaultDir() : dir;
+    QString initialName = isHttp ? nameFromUrl(src)
                              : (isMagnet ? tr("正在取种子信息") : fi.completeBaseName());
+    // A 网盘 share hands the same film in a dozen encodes, so the board's title arrives more
+    // than once; two rows writing one path would make the second read like a finished copy of
+    // the first. Only the named path is touched - a magnet's name is the torrent's own.
+    if (!name.trimmed().isEmpty()) {
+        const QString wanted = namedLike(name, initialName);
+        const QFileInfo wf(wanted);
+        const QString tail = wf.suffix().isEmpty() ? QString() : QLatin1Char('.') + wf.suffix();
+        initialName = wanted;
+        for (int n = 2; nameTaken(where, initialName); ++n)
+            initialName = wf.completeBaseName() + u" (%1)"_qs.arg(n) + tail;
+    }
 
     QSqlQuery q(m_db);
     q.prepare(u"INSERT OR IGNORE INTO downloads(src, name, dir, total, completed, want,"
               " state, added, poster, kind) VALUES(?,?,?,?,?,?,?,strftime('%s','now'),?,?)"_qs);
     q.addBindValue(src);
     q.addBindValue(initialName);
-    q.addBindValue(dir.isEmpty() ? defaultDir() : dir);
+    q.addBindValue(where);
     q.addBindValue(0);
     q.addBindValue(0);
     q.addBindValue(u"all"_qs);
@@ -282,7 +336,7 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
     r.src = src;
     r.kind = kind;
     r.name = initialName;
-    r.dir = dir.isEmpty() ? defaultDir() : dir;
+    r.dir = where;
     r.poster = poster.trimmed();
     if (!headers.trimmed().isEmpty())
         writeHeaders(id, headers);
@@ -384,7 +438,7 @@ void Downloads::spawn(DownloadRow &row)
     if (row.kind == u"http"_qs) {
         args << u"-mode"_qs << u"http"_qs << u"-data"_qs << row.dir
              << u"-url"_qs << row.src << u"-out-name"_qs << row.name
-             << u"-conns"_qs << u"8"_qs << u"-chunk"_qs << u"8"_qs
+             << u"-conns"_qs << QString::number(m_conns) << u"-chunk"_qs << u"8"_qs
              << u"-http"_qs << u"127.0.0.1:0"_qs << u"-interval"_qs << u"1s"_qs;
         // The path, not the text: a process list is readable by anything on the box.
         if (QFileInfo::exists(headersPathFor(row.id)))
@@ -398,6 +452,12 @@ void Downloads::spawn(DownloadRow &row)
     const QString extra = qEnvironmentVariable("PLAYERUI_DL_ARGS");
     if (!extra.isEmpty())
         args += extra.split(u' ', Qt::SkipEmptyParts);
+    // One line per job, carrying the number the settings card just set: argv is the only
+    // place that number lands, so "did the change take effect" is answerable from the log
+    // instead of from a stopwatch.
+    qInfo("downloads spawn id=%lld kind=%s conns=%d name=%s",
+          static_cast<long long>(row.id), qPrintable(row.kind), m_conns,
+          qPrintable(QString::fromUtf8(row.name.toUtf8().toPercentEncoding().left(60))));
     c.proc->start(exe, args);
     row.running = true;
     row.error.clear();

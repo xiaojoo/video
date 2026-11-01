@@ -1071,6 +1071,9 @@ Item {
         // Why the last netdisk row did not open. It belongs to the tab row's own line, not
         // to the list's empty state: the rows are there, the click is what failed.
         property string shareNote: ""
+        // The row whose hop is being followed: the answer arrives on a signal, and by
+        // then the click that asked for it is nowhere to be found.
+        property string pendingName: ""
         readonly property var lists: info.lists || ({})
         readonly property var links: lists[tab] || []
         // Why the list is empty, in the dialog's own words. It used to be written into
@@ -1717,6 +1720,14 @@ Item {
                                               page.detail ? page.detail.poster : "");
                                 page.detail = null;
                                 page.jobsRequested();
+                            } else if (modelData.kind === "quark") {
+                                // 夸克 has a client on this machine that will pull the file
+                                // for us - its own http stack is the only thing its cdn
+                                // answers - so this row hands the address on rather than
+                                // opening a window. Every other netdisk still does that.
+                                magPopup.shareNote = "正在问夸克要地址…";
+                                magPopup.pendingName = modelData.title || modelData.label;
+                                online.shareUrl(modelData.hop);
                             } else {
                                 // A netdisk row: its share address only exists on the hop
                                 // page, so this asks for it and the answer opens a browser.
@@ -1882,6 +1893,34 @@ Item {
                 }
             }
             function onShareFailed(note) {
+                magPopup.shareNote = note;
+            }
+            function onShareUrlReady(hop, url) {
+                // The poster's own title, not the download row's label: a site row is named
+                // like a release notice - title, then 【WEB-4K】, then the subtitle and
+                // watermark notes - and only the first part is the film.
+                netdisk.download(url, magPopup.film.title || magPopup.pendingName,
+                                 page.detail ? page.detail.poster : "");
+            }
+        }
+
+        // The ladder's three states, said on the row he clicked. 转存 is the slow part - a big
+        // copy is not readable until the drive has materialised it - and until the url is in
+        // hand there is nothing in the download list to point at, so silence here reads as a
+        // dead button.
+        Connections {
+            target: netdisk
+            function onQueued(key, name, poster) {
+                magPopup.shareNote = "正在转存到网盘…";
+            }
+            function onReady(key, url, headers, name, poster) {
+                // Stay on the board: a 网盘 share is the same film in a dozen encodes, and
+                // the pull now runs N ways, so queueing a second row is the normal next click.
+                // This is also what a magnet row does when it is added.
+                magPopup.shareNote = "";
+                page.jobsRequested();
+            }
+            function onFailed(key, note) {
                 magPopup.shareNote = note;
             }
         }

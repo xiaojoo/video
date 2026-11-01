@@ -62,13 +62,21 @@ public:
     // folder stored in the settings card: a probe run must never write into whatever
     // the user picked in the UI, and the card must not pretend otherwise.
     Q_INVOKABLE bool dirOverridden() const { return !m_overrideDir.isEmpty(); }
+    // How many connections an http job pulls with. The settings card owns the number and
+    // its persistence; this is the engine's copy, read once per spawn so a change applies
+    // to the next job rather than interrupting one that is running.
+    Q_INVOKABLE void setConns(int n);
+    int conns() const { return m_conns; }
     // Returns the row id, or -1 when the source is neither a magnet URI, an existing
     // .torrent file, nor an http(s) url the engine can pull.
     // `headers` is a block of "Name: value" lines sent with every request of an http
     // job; it is written beside the job's state, never into the catalogue or argv.
+    // `name` overrides the file name the url would have implied - a 网盘 share calls a
+    // 2026 film `4k.mp4`, and the row is read from the poster, not from the drive.
     Q_INVOKABLE qint64 add(const QString &source, const QString &dir = QString(),
                            const QString &poster = QString(),
-                           const QString &headers = QString());
+                           const QString &headers = QString(),
+                           const QString &name = QString());
     Q_INVOKABLE void start(qint64 id);
     Q_INVOKABLE void stop(qint64 id);
     // Removes the row and its own state folder. The downloaded file is left exactly
@@ -115,6 +123,8 @@ private:
     void load();
     void persist(const DownloadRow &row);
     DownloadRow *find(qint64 id);
+    // A name the row would write to that another row or the disk already has.
+    bool nameTaken(const QString &dir, const QString &name) const;
     void spawn(DownloadRow &row);
     void poll(qint64 id);
     // One line of the child's stdout: LISTEN sets the view url, DONE carries the
@@ -125,6 +135,7 @@ private:
     void writeHeaders(qint64 id, const QString &headers);
 
     QString m_overrideDir;
+    int m_conns = 8;
     QSqlDatabase m_db;
     QList<DownloadRow> m_rows;
     QHash<qint64, Child> m_children;
