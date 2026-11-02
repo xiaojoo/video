@@ -99,7 +99,7 @@ private:
         QString copyFid;    // our saved copy
         // 百度 needs none of the above: its chain is five plain https calls. Kept in the same
         // Job because the queue and `busyKey` are shared with the 夸克 ladder.
-        QString provider;   // "quark" or "baidu", so a timeout can name the right one
+        QString provider;   // quark | baidu | xunlei | uc, so a timeout can name the right one
         QString surl;       // the /s/<id> part, leading `1` included
         QString pwd;
         QString shareid;
@@ -125,8 +125,9 @@ private:
     // The 夸克 ladder runs inside a tab of the browser we own (its own port, its own
     // profile), which is what took the 夸克 client out of this chain. `launch` tells a job he
     // clicked apart from a favour: handing a copy back must not start a process.
-    void qkPage(std::function<void(bool, const QString &)> done, bool launch = true,
-                int tries = 0);
+    void drivePage(const QString &domain, const QString &startUrl, const QString &label,
+                   std::function<void(bool, const QString &)> done, bool launch = true,
+                   int tries = 0);
     // The driven browser's own UA, so the cdn sees the UA of the tab that holds the jar.
     void fetchUa();
     void attach(const QJsonObject &target);
@@ -143,6 +144,9 @@ private:
     void grabHeaders(const QString &url, std::function<void(const QString &)> done);
 
     // ---- the ladder ----
+    void ucLadder();
+    void ucWalk();
+    void ucHandOff(const QString &url);
     void stepToken();
     void stepDetail();
     void stepSave();
@@ -276,7 +280,8 @@ private:
     Job m_job;
     QHash<QString, Copy> m_copies;   // handed-over url -> the copy that made it readable
     QString m_ua;        // the UA of the browser we drive, read off /json/version
-    QString m_qkTabId;   // the DevTools tab the 夸克 socket is on
-    bool m_qkReady = false;
+    QString m_pageTabId;   // the DevTools tab our socket is on
+    QString m_pageDomain;  // which drive that tab belongs to
+    bool m_pageReady = false;
     QString m_lastAnswer;   // the drive's own answer to the last call that refused us
 };

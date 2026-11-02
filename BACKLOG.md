@@ -45,7 +45,7 @@
   自己持有那个标志。按钮的「等待登录中」同时改成只看自己那一行的状态句（`busy` 是三行共用的一颗
   标志，否则等迅雷时夸克也说自己"等待登录中"）。
 - **还没量**：`save / task / file/download` 这三步要他扫完码才有会话。已确认的是前两步在网页 tab
-  里就答：`--netdisk-probe` 走 `pan.quark.cn/s/a7995afb9a86` 打出 `nd token code=0`、
+  里就答：`--netdisk-probe` 走 `pan.quark.cn/s/<12 位分享号>` 打出 `nd token code=0`、
   `nd detail n=4 pick=5618601231 bytes`，然后停在 `夸克还没登录：设置-网盘登录里点「去登录」`。
   `file/download` 的 `sys=win32&ve=<客户端版本>` 两个参数跟着客户端一起删掉了 —— 它在网页 tab
   上到底要不要，**没量过不许说不要**，等他登录后按同一把尺子复量。
@@ -53,3 +53,29 @@
   已起来的实例只新开一扇并把窗口带到前面）。我把多余的 4 扇按 `/json/close` 收了，留了记录器
   正附着的那一扇。要做的修法：`login()` 先读 `/json/list`，域名已有页面就**不带 url** 启动（只
   唤起窗口），别再造一行。这条对三家都成立，改完要连迅雷/百度一起复量。
+
+## UC 网盘：整条链匿名走得通，不登录、不转存、不欠副本
+
+他一句「uc 已经在谷歌浏览器登录，不要再让我操作」，量出来的答案是：**根本不用他的登录**。
+
+- **接口是夸克同族**：`pc-api.uc.cn/1/clouddrive/...?pr=UCBrowser&fr=pc`。分享列表不是夸克那对
+  token+detail，而是**一发** `POST share/sharepage/v2/detail`，body 键
+  `pwd_id,passcode,force,page,size,fetch_banner,fetch_share,fetch_total,sort,pdir_fid,pdir_fid_token,stoken,web_platform,banner_platform`；
+  回答 `data.token_info.stoken`(44 位) + `data.detail_info.list[]`（`dir` 项带 `share_fid_token`、
+  `include_items`、`more_than_one_layer`）。下钻把 `pdir_fid`+`pdir_fid_token`+`stoken` 一起带上。
+- **地址**：`POST file/download` body `{fids:[fid], fid_token_list:[share_fid_token], pwd_id, stoken}`
+  → `code=0` + `download_url`（Aliyun OSS 签名，`dl-uf-zb.pds.uc.cn`，query 键
+  `Expires,OSSAccessKeyId,Signature,x-oss-traffic-limit,response-content-disposition,callback-var,dfi,callback,ud`）。
+  少了 share 三件套 → `31001 require login [share missing]`；`sharepage/download` 不存在（404）。
+- **读**：那条地址裸取回 **403 `RequestDeniedByCallback`**；带上**发起那一发的标签页自己的 Cookie**
+  （匿名态的 9 条里只有 2 条命中那个 host，`header_len=401`）就 **206 + `bytes 0-63/1338670508`**。
+  ⇒ 和夸克一样，门槛是 Cookie，但 UC 的匿名 Cookie 就够了，不需要谁去扫码。
+- **端到端实测（04:0x，`--netdisk-live https://drive.uc.cn/s/<13 位分享号> --dl-dir probe/dl-scratch`）**：
+  `nd in uc` → `nd uc walk seen=3 files=2 code=0 size=1338670508 url=1676` →
+  `nd cookies host=dl-uf-zb.pds.uc.cn jar=100 sent=2` → `nd uc ready bytes=1338670508 headers=401 name_chars=9`
+  → `downloads spawn id=3 kind=http conns=4 name=02 4K.mkv` → 120 s 后盘上
+  `parts=160 done=2 prefix=8,366,691`，速率约 **0.5 MB/s（4 路，免费档）**。全程没有转存，所以没有副本要还。
+- **还没做/还没量**：① 屏上点通（墙上一行 UC → 详情栏「正在问UC要地址…」→ 下载行）——代码分支按
+  `online.cpp:105` 已有的 `kind==="uc"` 接上了，但**没在屏上量过**；② 8/16 路会不会像迅雷那样开始拒；
+  ③ 一条分享里多集怎么挑（现在按“最大的 ≤8 GB”，一部剧 14 集时会拿错，需要他定规则：拿最大的一集还是整包）；
+  ④ 设置卡「网盘登录」里**故意没有 UC 行**——它不需要会话，加一行就是他不许的那种占位。

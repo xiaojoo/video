@@ -1765,7 +1765,8 @@ Item {
                                 page.jobsRequested();
                             } else if (modelData.kind === "quark"
                                        || modelData.kind === "baidu"
-                                       || modelData.kind === "xunlei") {
+                                       || modelData.kind === "xunlei"
+                                       || modelData.kind === "uc") {
                                 // All three end in an address the app can use on its own: 夸克
                                 // through the cookies of the browser we drive, 百度 through the
                                 // share page's own tab for the one call its edge refuses to
@@ -1776,7 +1777,9 @@ Item {
                                 magPopup.shareNote = modelData.kind === "quark"
                                         ? "正在问夸克要地址…"
                                         : (modelData.kind === "baidu" ? "正在问百度要地址…"
-                                                                      : "正在问迅雷要地址…");
+                                                                      : (modelData.kind === "uc"
+                                                                         ? "正在问 UC 要地址…"
+                                                                         : "正在问迅雷要地址…"));
                                 magPopup.pendingName = modelData.title || modelData.label;
                                 online.shareUrl(modelData.hop);
                             } else {

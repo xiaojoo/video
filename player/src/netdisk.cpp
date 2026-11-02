@@ -62,6 +62,19 @@ bool sessionMissing(const QJsonObject &r)
     return r.value(QStringLiteral("message")).toString().contains(QStringLiteral("require login"));
 }
 
+// What the row and the timeout call the drive. One place, because three nested ternaries
+// spelled 夸克 in a 迅雷 timeout line is how a wrong name gets shipped.
+QString driveName(const QString &p)
+{
+    if (p == QLatin1String("baidu"))
+        return QStringLiteral("百度");
+    if (p == QLatin1String("xunlei"))
+        return QStringLiteral("迅雷");
+    if (p == QLatin1String("uc"))
+        return QStringLiteral("UC");
+    return QStringLiteral("夸克");
+}
+
 bool looksLikeVideo(const QJsonObject &f)
 {
     if (f.value(QStringLiteral("cat")).toString() == QLatin1String("video"))
@@ -112,12 +125,9 @@ Netdisk::Netdisk(QObject *parent) : QObject(parent)
     m_deadline = new QTimer(this);
     m_deadline->setSingleShot(true);
     connect(m_deadline, &QTimer::timeout, this, [this] {
-        fail(QStringLiteral("%1没有回应，卡在%2").arg(m_job.provider.isEmpty()
-            ? QStringLiteral("网盘") : (m_job.provider == QLatin1String("baidu")
-                                       ? QStringLiteral("百度")
-                                       : (m_job.provider == QLatin1String("xunlei")
-                                          ? QStringLiteral("迅雷") : QStringLiteral("夸克"))),
-            stageText()));
+        fail(QStringLiteral("%1没有回应，卡在%2")
+                 .arg(m_job.provider.isEmpty() ? QStringLiteral("网盘") : driveName(m_job.provider),
+                      stageText()));
     });
     loadCopies();
 }
@@ -135,13 +145,11 @@ void Netdisk::setStage(Stage s)
 
 QString Netdisk::stageText() const
 {
-    const bool bd = m_job.provider == QLatin1String("baidu");
-    const bool xl = m_job.provider == QLatin1String("xunlei");
+    const QString d = driveName(m_job.provider);
     switch (m_stage) {
-    case Connecting: return bd ? QStringLiteral("连百度")
-                               : (xl ? QStringLiteral("连迅雷") : QStringLiteral("连夸克"));
-    case Laddering:  return bd ? QStringLiteral("问百度")
-                               : (xl ? QStringLiteral("问迅雷") : QStringLiteral("问网盘"));
+    case Connecting: return QStringLiteral("连") + d;
+    case Laddering:  return m_job.provider == QLatin1String("quark")
+                              ? QStringLiteral("问网盘") : QStringLiteral("问") + d;
     default:         return QStringLiteral("空闲");
     }
 }
@@ -170,7 +178,8 @@ void Netdisk::download(const QString &shareUrl, const QString &name, const QStri
     j.pwd = c.hasMatch() ? c.captured(1) : QString();
     j.provider = shareUrl.contains(QStringLiteral("pan.baidu.com")) ? QStringLiteral("baidu")
              : isXl ? QStringLiteral("xunlei")
-                    : QStringLiteral("quark");
+             : shareUrl.contains(QStringLiteral("drive.uc.cn")) ? QStringLiteral("uc")
+                                                                : QStringLiteral("quark");
     // Which row was pressed is the first thing a wall of 65 shares asks, and the answer is the
     // surl - the pass code itself stays out of the log.
     qInfo("nd in %s surl=%s pwd=%d q=%d", qPrintable(j.provider), qPrintable(j.surl),
@@ -210,7 +219,18 @@ void Netdisk::runNext()
         xlJar();
         return;
     }
-    qkPage([this](bool ok, const QString &note) {
+    if (m_job.provider == QLatin1String("uc")) {
+        // Two calls and no session: measured 2026-11-03 04:20, an anonymous tab walks the
+        // share, gets `download_url` back, and the store answers 206 for a range read as soon
+        // as the requesting cookies go with it. Nothing is saved to his drive, so nothing is
+        // owed back - which is why this branch has no copy, no task poll and no ledger.
+        setStage(Laddering);
+        m_deadline->start(60000);
+        ucLadder();
+        return;
+    }
+    drivePage(QStringLiteral("quark.cn"), QStringLiteral("https://pan.quark.cn/clouddrive/list"),
+              QStringLiteral("夸克"), [this](bool ok, const QString &note) {
         if (!ok) {
             const QString key = m_job.share;
             setStage(Idle);
@@ -341,40 +361,49 @@ void Netdisk::eval(const QString &expression,
 //
 // `launch` is the difference between a job and a favour: a download he clicked may bring the
 // browser up, but returning a copy he is owed after the fact may not start a process.
-void Netdisk::qkPage(std::function<void(bool, const QString &)> done, bool launch, int tries)
+//
+// The same tab-shape serves 夸克 and UC because both are the same drive family; `domain` and
+// `startUrl` are the only difference, and `label` is what the failure lines call the drive.
+void Netdisk::drivePage(const QString &domain, const QString &startUrl, const QString &label,
+                        std::function<void(bool, const QString &)> done, bool launch, int tries)
 {
     fetchUa();
+    if (m_pageDomain != domain) {
+        // The socket we hold is on the other drive's page; its cookies are no use here.
+        m_pageDomain = domain;
+        m_pageReady = false;
+        m_pageTabId.clear();
+    }
     const int port = PanLogin::debugPort();
     QNetworkReply *rep = m_nam->get(QNetworkRequest(QUrl(
         QStringLiteral("http://127.0.0.1:%1/json/list").arg(port))));
-    connect(rep, &QNetworkReply::finished, this, [this, rep, port, done, launch, tries] {
+    connect(rep, &QNetworkReply::finished, this, [this, rep, port, done, launch, tries, domain, startUrl, label] {
         const QByteArray body = rep->readAll();
         const bool up = rep->error() == QNetworkReply::NoError;
         rep->deleteLater();
         if (!up) {
             if (!launch) {
-                done(false, QStringLiteral("我们的浏览器没开着，夸克那一页起不来"));
+                done(false, QStringLiteral("我们的浏览器没开着，%1那一页起不来").arg(label));
                 return;
             }
             if (tries == 0) {
                 const QString exe = PanLogin::browserExecutable();
                 if (exe.isEmpty()) {
-                    done(false, QStringLiteral("这台机器上没有 Chrome 或 Edge，夸克那一页起不来"));
+                    done(false, QStringLiteral("这台机器上没有 Chrome 或 Edge，%1那一页起不来").arg(label));
                     return;
                 }
                 // Offscreen: the ladder needs a page that behaves like a browser, not a
                 // window he is asked to watch. 设置-网盘登录 is the one place it opens
                 // visibly, and that is PanLogin::login's own call.
-                QProcess::startDetached(exe, PanLogin::browserArgs(
-                    QStringLiteral("https://pan.quark.cn/"), false));
-                qInfo("nd qk browser launched");
+                QProcess::startDetached(exe, PanLogin::browserArgs(startUrl, false));
+                qInfo("nd page browser launched label=%s", qPrintable(label));
             }
             if (tries > 9) {
-                done(false, QStringLiteral("等不到夸克的标签页起来"));
+                done(false, QStringLiteral("等不到%1的标签页起来").arg(label));
                 return;
             }
-            QTimer::singleShot(1500, this, [this, done, launch, tries] {
-                qkPage(done, launch, tries + 1);
+            QTimer::singleShot(1500, this, [this, done, launch, tries, domain, startUrl, label] {
+                drivePage(domain, startUrl, label, done, launch, tries + 1);
             });
             return;
         }
@@ -382,40 +411,40 @@ void Netdisk::qkPage(std::function<void(bool, const QString &)> done, bool launc
         QJsonObject pick;
         for (const QJsonValue &v : arr) {
             const QJsonObject t = v.toObject();
-            // `quark.cn` rather than `pan.quark.cn`: the drive redirects its own page to
-            // /list#/list/all, and a tab left sitting on the sign-in card still carries the
-            // session cookies the ladder needs.
+            // The registrable domain, not the full host: the drive redirects its own page
+            // (/list#/list/all, /s/<id>#/list/share), and a tab left on either of those still
+            // carries the cookies the ladder needs.
             if (t.value(QStringLiteral("type")).toString() == QLatin1String("page")
-                && t.value(QStringLiteral("url")).toString().contains(QStringLiteral("quark.cn"))) {
+                && t.value(QStringLiteral("url")).toString().contains(domain)) {
                 pick = t;
                 break;
             }
         }
         if (pick.isEmpty()) {
-            m_qkReady = false;
+            m_pageReady = false;
             // /json/new ignores its url argument on this Chrome, so the tab comes up blank and
             // gets navigated here. A blank tab is also how a fake "not signed in" is made:
             // from a null origin the SameSite=Lax session cookie is never sent.
             QNetworkReply *n = m_nam->put(
                 QNetworkRequest(QUrl(QStringLiteral("http://127.0.0.1:%1/json/new").arg(port))),
                 QByteArray());
-            connect(n, &QNetworkReply::finished, this, [this, n, done] {
+            connect(n, &QNetworkReply::finished, this, [this, n, done, startUrl, label] {
                 const QJsonObject t = QJsonDocument::fromJson(n->readAll()).object();
                 const QString ws = t.value(QStringLiteral("webSocketDebuggerUrl")).toString();
-                m_qkTabId = t.value(QStringLiteral("id")).toString();
+                m_pageTabId = t.value(QStringLiteral("id")).toString();
                 n->deleteLater();
                 if (ws.isEmpty()) {
-                    done(false, QStringLiteral("开不出夸克的标签页"));
+                    done(false, QStringLiteral("开不出%1的标签页").arg(label));
                     return;
                 }
                 attach({ { QStringLiteral("webSocketDebuggerUrl"), ws } });
                 // attach() only opens the socket; a command sent before it is up is dropped.
-                QTimer::singleShot(700, this, [this, done] {
+                QTimer::singleShot(700, this, [this, done, startUrl] {
                     send(QStringLiteral("Page.enable"), QJsonObject{},
-                         [this, done](const QJsonObject &) {
+                         [this, done, startUrl](const QJsonObject &) {
                         send(QStringLiteral("Page.navigate"),
                              { { QStringLiteral("url"),
-                                 QStringLiteral("https://pan.quark.cn/clouddrive/list") } },
+                                 startUrl } },
                              [this, done](const QJsonObject &) {
                                 QTimer::singleShot(6000, this, [this, done] {
                                     // Which page the ladder is about to run inside: a
@@ -423,9 +452,9 @@ void Netdisk::qkPage(std::function<void(bool, const QString &)> done, bool launc
                                     // reads from here as the drive refusing the share.
                                     eval(QStringLiteral("location.href"),
                                          [this, done](bool, const QJsonValue &v) {
-                                        qInfo("nd qk page=%s", qPrintable(v.toString()
+                                        qInfo("nd page=%s", qPrintable(v.toString()
                                             .toUtf8().toPercentEncoding().left(90).constData()));
-                                        m_qkReady = true;
+                                        m_pageReady = true;
                                         done(true, QString());
                                     });
                                 });
@@ -436,7 +465,7 @@ void Netdisk::qkPage(std::function<void(bool, const QString &)> done, bool launc
             return;
         }
         const QString id = pick.value(QStringLiteral("id")).toString();
-        if (m_qkReady && id == m_qkTabId && m_ws
+        if (m_pageReady && id == m_pageTabId && m_ws
             && m_ws->state() == QAbstractSocket::ConnectedState) {
             done(true, QString());
             return;
@@ -444,16 +473,128 @@ void Netdisk::qkPage(std::function<void(bool, const QString &)> done, bool launc
         // A flag that claims "we hold a tab" without re-checking that the tab is still in the
         // browser's list and the socket still connected sits until the deadline and blames the
         // drive for a silence the browser never caused.
-        m_qkReady = false;
-        m_qkTabId = id;
+        m_pageReady = false;
+        m_pageTabId = id;
         attach(pick);
         QTimer::singleShot(700, this, [this, done] {
             send(QStringLiteral("Page.enable"), QJsonObject{},
                  [this, done](const QJsonObject &) {
-                    m_qkReady = true;
+                    m_pageReady = true;
                     done(true, QString());
                  });
         });
+    });
+}
+
+// ------------------------------------------------------------------ UC
+//
+// UC is the cheapest of the four, and it is cheap because it is anonymous: measured
+// 2026-11-03 04:20 on drive.uc.cn/s/<13 位分享号>, a tab that holds no session walks the
+// share (v2/detail, code=0 at every level), asks `file/download` with the share's own three
+// pieces of context and gets a signed address back, and the store - dl-uf-zb.pds.uc.cn, an
+// Aliyun bucket behind a callback - answers 206 + `bytes 0-63/1338670508` for that address as
+// soon as the requesting tab's cookies go with it. Without them it answers
+// 403 RequestDeniedByCallback. So: no login, no save, no copy, nothing owed back.
+void Netdisk::ucLadder()
+{
+    drivePage(QStringLiteral("drive.uc.cn"), QStringLiteral("https://drive.uc.cn/"),
+              QStringLiteral("UC"), [this](bool ok, const QString &note) {
+        if (!ok) {
+            const QString key = m_job.share;
+            setStage(Idle);
+            emit failed(key, note);
+            runNext();
+            return;
+        }
+        ucWalk();
+    });
+}
+
+void Netdisk::ucWalk()
+{
+    // The walk, the pick and the address in one page call: three round trips through a tab
+    // would each cost a second of the board sitting there, and the share is usually one or
+    // two levels deep.
+    static const QRegularExpression id(QStringLiteral("/s/([A-Za-z0-9]+)"));
+    const auto m = id.match(m_job.share);
+    if (!m.hasMatch()) {
+        fail(QStringLiteral("这不是 UC 的分享地址"));
+        return;
+    }
+    const QString expr = inPage(QStringLiteral(
+        "const P=%1,C=%2;"
+        "const H='https://pc-api.uc.cn/1/clouddrive',Q='?pr=UCBrowser&fr=pc';"
+        "const base={pwd_id:P,passcode:C,force:1,page:1,size:50,fetch_banner:0,fetch_share:1,"
+        "fetch_total:1,sort:'name_asc',web_platform:1,banner_platform:'pc'};"
+        "const files=[];let dirs=[{fid:'0',tk:''}],st='',seen=0,code=-1,msg='';"
+        "for(let d=0;d<3&&dirs.length&&seen<200;d++){"
+        "const nx=[];"
+        "for(const it of dirs){"
+        "const r=await j('POST',H+'/share/sharepage/v2/detail'+Q,"
+        "Object.assign({pdir_fid:it.fid,pdir_fid_token:it.tk,stoken:st},base));"
+        "code=r.code;msg=String(r.message||'').slice(0,40);"
+        "const di=(r.data&&r.data.detail_info)||{};"
+        "if(!st&&r.data&&r.data.token_info)st=r.data.token_info.stoken||'';"
+        "const l=di.list||[];seen+=l.length;"
+        "for(const f of l){if(f.dir)nx.push({fid:f.fid,tk:f.share_fid_token||''});"
+        "else files.push({fid:f.fid,tk:f.share_fid_token||'',size:f.size||0,"
+        "name:f.file_name||'',ext:(f.file_ext||f.format_type||''),cat:f.category,"
+        "obj:f.obj_category||''});}}"
+        "dirs=nx;}"
+        "if(!files.length)return {code:code,msg:msg,files:0,seen:seen};"
+        "files.sort((a,b)=>b.size-a.size);"
+        "const MAX=%3;"
+        "const pick=files.find(f=>f.size<=MAX)||files[files.length-1];"
+        "const dl=await j('POST',H+'/file/download'+Q,{fids:[pick.fid],"
+        "fid_token_list:[pick.tk],pwd_id:P,stoken:st});"
+        "const first=(Array.isArray(dl.data)&&dl.data[0])||{};"
+        "return {code:dl.code,msg:String(dl.message||'').slice(0,40),files:files.length,"
+        "seen:seen,size:pick.size,name:pick.name,ext:pick.ext,cat:pick.cat,obj:pick.obj,"
+        "url:first.download_url||'',urlLen:(first.download_url||'').length};")
+                                    .arg(jsVal(QJsonValue(m.captured(1))),
+                                         jsVal(QJsonValue(m_job.pwd)),
+                                         QString::number(double(kPreferMaxBytes))));
+    eval(expr, [this](bool ok, const QJsonValue &v) {
+        const QJsonObject o = ok ? v.toObject() : QJsonObject{};
+        if (!ok) {
+            fail(QStringLiteral("UC 的页面没回答：%1").arg(v.toString().left(60)));
+            return;
+        }
+        const QString url = o.value(QStringLiteral("url")).toString();
+        qInfo("nd uc walk seen=%d files=%d code=%d size=%lld url=%d msg=%s",
+              o.value(QStringLiteral("seen")).toInt(),
+              o.value(QStringLiteral("files")).toInt(), o.value(QStringLiteral("code")).toInt(),
+              qint64(o.value(QStringLiteral("size")).toDouble()),
+              int(url.size()), qPrintable(o.value(QStringLiteral("msg")).toString().left(30)));
+        if (url.isEmpty()) {
+            const int code = o.value(QStringLiteral("code")).toInt();
+            fail(code == 31001 ? QStringLiteral("UC 要求登录才给地址（实测不该出现）")
+                               : QStringLiteral("UC 不给地址（code=%1）").arg(code));
+            return;
+        }
+        m_job.size = qint64(o.value(QStringLiteral("size")).toDouble());
+        if (m_job.name.isEmpty())
+            m_job.name = o.value(QStringLiteral("name")).toString();
+        ucHandOff(url);
+    });
+}
+
+void Netdisk::ucHandOff(const QString &url)
+{
+    // The address is only readable with the cookies of the tab that asked for it - measured:
+    // the same range read without them is a 403 named RequestDeniedByCallback.
+    grabHeaders(url, [this, url](const QString &headers) {
+        if (headers.isEmpty()) {
+            fail(QStringLiteral("拿不到 UC 的会话 Cookie"));
+            return;
+        }
+        const QString shown = m_job.name.isEmpty() ? QStringLiteral("UC 的一个文件")
+                                                   : m_job.name;
+        qInfo("nd uc ready bytes=%lld headers=%d name_chars=%d", m_job.size, headers.size(),
+              shown.size());
+        setStage(Idle);
+        emit ready(m_job.share, url, headers, shown, m_job.poster);
+        runNext();
     });
 }
 
@@ -756,7 +897,8 @@ void Netdisk::deleteCopy(const QString &fid, qint64 size, std::function<void()> 
     // The page is attached only while a ladder runs, and a copy is usually owed back long
     // after: ask for the tab again, but do not start a browser for it - if everything of
     // ours is closed, the copy waits for the next time one of them is up.
-    qkPage([this, fid, size, after](bool ok, const QString &) {
+    drivePage(QStringLiteral("quark.cn"), QStringLiteral("https://pan.quark.cn/clouddrive/list"),
+              QStringLiteral("夸克"), [this, fid, size, after](bool ok, const QString &) {
         if (!ok) {
             qInfo("nd copy waits: no quark page");
             if (after)
