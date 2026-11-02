@@ -1011,7 +1011,7 @@ Popup {
                                 }
                                 Text {
                                     width: parent.width
-                                    text: "一起拉的连接数。夸克整条链上限 ~2.8 MB/s（两个任务同时下合计 3.06）；只影响新开始的任务"
+                                    text: "同时拉的连接数；只影响新开始的任务"
                                     color: card.textFaint
                                     font.pixelSize: card.labelFs
                                     font.family: Theme.uiFont
@@ -1061,8 +1061,122 @@ Popup {
                         }
                     }
                 }
+
+                // ---- 网盘登录 ----
+                // The three drives whose ladder needs a session he has to type into, and all
+                // three now work the same way: 去登录 brings up a browser of ours in its own
+                // profile, the recorder waits until the drive itself says he is in, and what
+                // lands is a key file this row can clear. 迅雷 signs every request in its page
+                // and 百度's endpoints want BDUSS; 夸克's own api is what answers for it,
+                // because none of its cookie names tells a session from an anonymous jar. UC
+                // stays off the list - no ladder yet, and a row that cannot do anything is a
+                // dead control.
+                Item { width: body.width; height: card.secGap }
+
+                SectionHead {
+                    id: panHead
+                    width: body.width
+                    title: "网盘登录"
+                }
+
+                Rectangle {
+                    id: panCard
+                    width: body.width
+                    height: panRows.count * card.rowH
+                    radius: 6
+                    color: card.plate
+                    border.width: 1
+                    border.color: card.line
+
+                    // One hairline per join, drawn by the card that owns the rows - the rows
+                    // each carrying their own top edge is how two adjacent lines became a fat
+                    // one.
+                    Repeater {
+                        id: panJoins
+                        model: panRows.count - 1
+
+                        Rectangle {
+                            required property int index
+                            y: (index + 1) * card.rowH
+                            width: parent.width
+                            height: 1
+                            color: card.line
+                        }
+                    }
+
+                    Column {
+                        width: parent.width
+
+                        Repeater {
+                            id: panRows
+                            model: ["quark", "xunlei", "baidu"]
+
+                            delegate: Item {
+                                id: prow
+                                required property var modelData
+                                width: parent.width
+                                height: card.rowH
+                                // A property, never a function call: a binding that asks for
+                                // stateText() keeps the answer it got before he signed in.
+                                readonly property string state: modelData === "quark"
+                                        ? panlogin.quarkState
+                                        : (modelData === "baidu" ? panlogin.baiduState
+                                                                  : panlogin.xunleiState)
+                                readonly property bool signedIn: state.indexOf("已登录") === 0
+                                // The recorder holds one busy flag for whichever drive it is waiting
+                                // on, so a row only claims to be waiting when the sentence it was given
+                                // is the waiting sentence.
+                                readonly property bool waiting: state.indexOf("正在等你") === 0
+
+                                Column {
+                                    x: 15
+                                    y: Math.round((parent.height - height) / 2)
+                                    width: 420
+                                    spacing: 4
+
+                                    Text {
+                                        width: parent.width
+                                        text: prow.modelData === "baidu" ? "百度网盘"
+                                            : (prow.modelData === "quark" ? "夸克网盘" : "迅雷网盘")
+                                        color: card.textHi
+                                        font.pixelSize: card.smallFs
+                                        font.family: Theme.uiFont
+                                        font.weight: Font.DemiBold
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: prow.state
+                                        elide: Text.ElideMiddle
+                                        color: card.textFaint
+                                        font.pixelSize: card.labelFs
+                                        font.family: Theme.uiFont
+                                    }
+                                }
+
+                                WashButton {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 12
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    // One shape for all three rows: the recorder answers for
+                                    // every drive now, so the button either forgets his key
+                                    // file or goes and makes one.
+                                    label: prow.waiting ? "等待登录中"
+                                         : (prow.signedIn ? "退出登录" : "去登录")
+                                    glyph: prow.signedIn ? "logout" : "link"
+                                    onClicked: {
+                                        if (prow.signedIn)
+                                            panlogin.logout(prow.modelData);
+                                        else
+                                            panlogin.login(prow.modelData);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+
 
         ThinScrollBar {
             target: page

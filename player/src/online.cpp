@@ -10,11 +10,11 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
 #include <QDesktopServices>
 
@@ -242,6 +242,10 @@ void Online::setBusy(bool b)
     emit busyChanged();
 }
 
+// Defined below with the magnet flow that mostly uses it; a throttled list page needs the
+// same sentence, and the wall must not hand the user Qt's raw transfer text.
+static QString magnetFailure(const QString &err);
+
 void Online::get(const QString &url,
                  const std::function<void(const QString &, const QByteArray &, const QString &)> &then,
                  bool pageLevel)
@@ -265,8 +269,14 @@ void Online::get(const QString &url,
             // that comes back 429 belongs to the dialog that asked for it; writing it
             // here replaced the posters' error line with a transfer message while the
             // dialog was showing a perfectly good list.
+            //
+            // A page-level transfer failure is said the same way now: the site throttling
+            // us is an answer about the site, not about the wall, so it goes to the
+            // dialog's own note line instead of painting an orange strip across the
+            // posters. What stays here is only what the wall itself cannot show (below:
+            // a page that parsed to no posters).
             if (pageLevel)
-                m_error = err;
+                emit shareFailed(magnetFailure(err));
         }
         then(rep->url().toString(), rep->readAll(), err);
         if (!pageLevel) {
@@ -975,22 +985,35 @@ void Online::magnets(const QString &url)
     }, false);
 }
 
-namespace {
-// The 夸克 client - and it is the client that holds the signed-in netdisk session, since
-// the system default browser on this box is not signed in to 夸克. The lookup itself lives
-// with the client driver, which needs the same path to bring the client up with a debug
-// port. It reads the scheme handler rather than StartMenuInternet because on this machine
-// that second entry carries no command line at all: the old walk came back empty and a
-// 夸克 row opened the default browser instead, silently.
-QString quarkExe() { return Netdisk::clientExecutable(); }
+void Online::shareUrl(const QString &hop)
+{
+    shareUrlTry(hop, 0);
 }
 
-void Online::shareUrl(const QString &hop)
+void Online::shareUrlTry(const QString &hop, int tryNo)
 {
     // The hop is fetched rather than opened: it answers with an interstitial that carries
     // the address, and it is that address the netdisk driver needs.
-    get(hop, [this, hop](const QString &, const QByteArray &bytes, const QString &err) {
+    //
+    // A 429 here is the site's own pacing, not a wrong request: measured tonight, the very
+    // same press that was refused went through on its own a minute later. So the press waits
+    // and asks again instead of telling him to click a second time, and the waits are logged
+    // because how long the site actually holds the 429 is the number the retry is built on.
+    static const int kBackoff[] = { 4000, 8000, 16000 };
+    constexpr int kRetries = int(sizeof(kBackoff) / sizeof(kBackoff[0]));
+    get(hop, [this, hop, tryNo](const QString &, const QByteArray &bytes, const QString &err) {
         if (!err.isEmpty()) {
+            const int code = err.section(QLatin1Char('('), -1).remove(QLatin1Char(')')).toInt();
+            if (code == 429 && tryNo < kRetries) {
+                const int waitMs = kBackoff[tryNo];
+                qInfo("hop 429, retry %d in %d ms", tryNo + 1, waitMs);
+                emit shareFailed(QStringLiteral("站点回了 429，%1 秒后自己再试一次")
+                                     .arg(waitMs / 1000));
+                QTimer::singleShot(waitMs, this, [this, hop, tryNo] {
+                    shareUrlTry(hop, tryNo + 1);
+                });
+                return;
+            }
             emit shareFailed(magnetFailure(err));
             return;
         }
@@ -999,6 +1022,8 @@ void Online::shareUrl(const QString &hop)
             emit shareFailed(tr("跳页里没有网盘地址（站点的跳页可能改了）"));
             return;
         }
+        if (tryNo > 0)
+            qInfo("hop 429 recovered on retry %d", tryNo);
         emit shareUrlReady(hop, url);
     }, false);
 }
@@ -1018,10 +1043,10 @@ void Online::openShare(const QString &hop)
             emit shareFailed(tr("跳页里没有网盘地址（站点的跳页可能改了）"));
             return;
         }
-        const QString quark = url.contains(QStringLiteral("pan.quark.cn"))
-                                  ? quarkExe() : QString();
-        if (!quark.isEmpty() && QProcess::startDetached(quark, { url }))
-            return;
+        // Every drive opens in the browser he set as default. 夸克 used to be fetched from
+        // its own client here, because that client held the session; its ladder now runs in
+        // the browser we start, and a row that only wants to SHOW the share has no reason to
+        // name a program either.
         if (!QDesktopServices::openUrl(QUrl(url)))
             emit shareFailed(tr("打不开这个网盘地址"));
     }, false);

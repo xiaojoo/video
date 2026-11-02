@@ -150,7 +150,14 @@ Item {
     // the void he asked against. It is shown and reached with the bar instead.
     readonly property int per: Math.max(page.minPer, wall.columns
                                         * Math.max(1, Math.ceil(wall.height / wall.cellHeight)))
-    readonly property int total: page.siteSize * page.siteLast
+    // `siteSize * siteLast` is what the site's paginator claims, and the claim is a few
+    // posters too many: measured on 电影, the paginator's last number is 1414, pages 1..1413
+    // carry 20 each and page 1414 carries 11 - 28,271 real posters against 28,280 claimed. At
+    // 12 to a screen page that is one page too many, and the last chip then led to a page with
+    // nothing in it. Once the tail has been fetched its own length is the number.
+    readonly property int total: page.lastLen > 0
+            ? (page.siteLast - 1) * page.siteSize + page.lastLen
+            : page.siteSize * page.siteLast
     readonly property int pages: Math.max(1, Math.ceil(page.total / page.per))
     // The poster the wall starts on, as an absolute index into the source's list. Keeping
     // the index rather than the page number is what lets a resize keep the same poster on
@@ -161,6 +168,7 @@ Item {
     property var sitePages: ({})   // site page number -> the items it brought
     property int siteSize: 0       // the site's own page size, read off the first page
     property int siteLast: 0       // the last site page its own paginator admits to
+    property int lastLen: 0        // how many posters that last page really carries
     property string rootUrl: ""    // the url of site page 1 for this list
     // What the search box holds, kept next to the box's own text because the box is a
     // control and this is a fact about the list on screen: it is what turns "no posters
@@ -185,7 +193,12 @@ Item {
             if (p.url.length === 0 || !/^[0-9]+$/.test(p.label))
                 continue;
             page.numUrl[p.label] = p.url;
-            page.siteLast = Math.max(page.siteLast, parseInt(p.label));
+            if (parseInt(p.label) > page.siteLast) {
+                // A longer list than the one already measured: `lastLen` was the tail of the
+                // shorter claim, and keeping it would cut this one short by the same gap.
+                page.siteLast = parseInt(p.label);
+                page.lastLen = 0;
+            }
         }
         // A page with no linked number at all is a list of one: a search answer prints its
         // single page as the active span with no href, and a short category can do the same.
@@ -251,6 +264,7 @@ Item {
         page.sitePages = {};
         page.siteSize = 0;
         page.siteLast = 0;
+        page.lastLen = 0;
         page.pageTpl = "";
         page.numUrl = {};
         page.shown = [];
@@ -306,6 +320,11 @@ Item {
                 const u = page.urlFor(sp);
                 if (u.length === 0 || page.reqUrl[u] !== undefined)
                     break;          // no way to ask, or it is already on its way
+                // Nothing assembled yet and the list has to be asked for: leaving the previous
+                // page on the wall is what made a page click read as "the pager moved, the
+                // posters did not". The wall's own skeleton covers exactly this gap.
+                if (out.length === 0 && page.shown.length > 0)
+                    page.shown = [];
                 page.reqUrl[u] = sp;
                 online.open(u);
                 return;             // fill() runs again when the answer lands
@@ -402,7 +421,29 @@ Item {
                 page.siteSize = items.length;
                 page.rootUrl = url;
             }
+            // The tail has its own length, and it is usually short: 电影's page 1414 carries 11
+            // of the 20 the paginator's arithmetic assumed.
+            if (sp === page.siteLast)
+                page.lastLen = items.length;
             page.notePager();
+            // Ask for the tail as soon as a page says how long the list is - after notePager,
+            // which is what fills siteLast in. Left to itself the last chip is arithmetic over
+            // a page that may hold 11 posters instead of 20, so the number under the wall
+            // changes the moment someone clicks it. One extra request per list, before the click.
+            if (sp === 1 && page.siteLast > 1 && page.lastLen === 0) {
+                const tu = page.urlFor(page.siteLast);
+                if (tu.length > 0 && page.reqUrl[tu] === undefined
+                        && page.sitePages[page.siteLast] === undefined) {
+                    page.reqUrl[tu] = page.siteLast;
+                    online.open(tu);
+                }
+            }
+            if (page.first >= page.total) {
+                // The page he asked for turned out to be past the end of the list. Land on the
+                // real last one rather than on a wall of nothing.
+                page.first = Math.max(0, page.pages - 1) * page.per;
+                page.hopToTop();
+            }
             page.fill();
         }
     }
@@ -637,6 +678,8 @@ Item {
                 // before anything the model has to say.
                 if (page.emptyNote.length > 0)
                     return page.emptyNote;
+                // Only what the wall itself cannot show reaches this any more - a
+                // throttled or broken transfer is said on the detail board, in C++.
                 if (online.error.length > 0)
                     return online.error;
                 if (page.liveSources.length === 0)
@@ -1720,12 +1763,20 @@ Item {
                                               page.detail ? page.detail.poster : "");
                                 page.detail = null;
                                 page.jobsRequested();
-                            } else if (modelData.kind === "quark") {
-                                // 夸克 has a client on this machine that will pull the file
-                                // for us - its own http stack is the only thing its cdn
-                                // answers - so this row hands the address on rather than
-                                // opening a window. Every other netdisk still does that.
-                                magPopup.shareNote = "正在问夸克要地址…";
+                            } else if (modelData.kind === "quark"
+                                       || modelData.kind === "baidu"
+                                       || modelData.kind === "xunlei") {
+                                // All three end in an address the app can use on its own: 夸克
+                                // through the cookies of the browser we drive, 百度 through the
+                                // share page's own tab for the one call its edge refuses to
+                                // answer us, 迅雷 by
+                                // walking the share here and letting its page ask for the address
+                                // (the captcha token is signed per action - measured). The rest
+                                // still just open a browser.
+                                magPopup.shareNote = modelData.kind === "quark"
+                                        ? "正在问夸克要地址…"
+                                        : (modelData.kind === "baidu" ? "正在问百度要地址…"
+                                                                      : "正在问迅雷要地址…");
                                 magPopup.pendingName = modelData.title || modelData.label;
                                 online.shareUrl(modelData.hop);
                             } else {
@@ -1911,7 +1962,14 @@ Item {
         Connections {
             target: netdisk
             function onQueued(key, name, poster) {
-                magPopup.shareNote = "正在转存到网盘…";
+                // 转存 is only part of the 夸克 chain. 百度 is read in place - nothing is
+                // copied to the drive - so the same words would promise a copy that never comes.
+                // 迅雷 walks its share and then asks its own page for the address, so it is
+                // "问地址" too - slower than 百度 by one page visit per folder.
+                magPopup.shareNote = key.indexOf("pan.baidu.com") >= 0
+                        ? "正在问百度要地址…"
+                        : (key.indexOf("pan.xunlei.com") >= 0 ? "正在问迅雷要地址…"
+                                                              : "正在转存到网盘…");
             }
             function onReady(key, url, headers, name, poster) {
                 // Stay on the board: a 网盘 share is the same film in a dozen encodes, and

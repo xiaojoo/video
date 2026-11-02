@@ -104,6 +104,8 @@ private:
     void get(const QString &url,
              const std::function<void(const QString &, const QByteArray &, const QString &)> &then,
              bool pageLevel = true);
+    // The press behind a 429, asked again on a backoff. `tryNo` is 0 for the press itself.
+    void shareUrlTry(const QString &hop, int tryNo);
     void setBusy(bool b);
     QString settingsPath() const;
     // One place writes the file: a row's enabled flag has to survive every other edit, and

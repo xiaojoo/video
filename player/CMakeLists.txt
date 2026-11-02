@@ -23,6 +23,8 @@ qt_add_executable(appPlayerui
     src/online.cpp
     src/netdisk.h
     src/netdisk.cpp
+    src/panlogin.h
+    src/panlogin.cpp
     src/bluray.h
     src/bluray.cpp
     src/duration.h

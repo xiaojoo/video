@@ -3,6 +3,7 @@
 #include "library.h"
 #include "netdisk.h"
 #include "online.h"
+#include "panlogin.h"
 #include "playercore.h"
 #include "singleinstance.h"
 #include "thumbstrip.h"
@@ -127,6 +128,9 @@ int main(int argc, char *argv[])
     QCommandLineOption netdiskLive(u"netdisk-live"_qs,
                                    u"walk a share, then pull it with our own engine and report"_qs,
                                    u"url"_qs);
+    QCommandLineOption panLogin(u"pan-login"_qs,
+                                u"open a drive's login page in our own browser and record the session"_qs,
+                                u"provider"_qs);
     parser.addOption(shot);
     parser.addOption(shotAt);
     parser.addOption(size);
@@ -148,7 +152,34 @@ int main(int argc, char *argv[])
     parser.addOption(onlineMagnets);
     parser.addOption(netdiskProbe);
     parser.addOption(netdiskLive);
+    parser.addOption(panLogin);
     parser.process(app);
+
+    // The session recorder, on its own: the same thing the settings card's 去登录 does, so a
+    // re-login or a re-capture of the signed headers does not need somebody to click through
+    // the sheet. It prints names and counts only - the values are the session.
+    if (parser.isSet(panLogin)) {
+        PanLogin pan;
+        QEventLoop loop;
+        int rc = 1;
+        QObject::connect(&pan, &PanLogin::stateChanged, &loop, [&] {
+            if (pan.busy())
+                return;
+            const QString note = pan.note();
+            if (!note.isEmpty()) {
+                qWarning("pan failed: %s",
+                         qPrintable(note.toUtf8().toPercentEncoding()));
+            } else {
+                qInfo("pan ok: session recorded");
+                rc = 0;
+            }
+            loop.quit();
+        });
+        QTimer::singleShot(700000, &loop, [&] { qWarning("pan timed out"); loop.quit(); });
+        pan.login(parser.value(panLogin));
+        loop.exec();
+        return rc;
+    }
 
     // The 夸克 driver, on its own. Driving it through the wall would mean clicking a
     // poster on a screen that may be covered by something else, and the chain is long
@@ -173,6 +204,15 @@ int main(int argc, char *argv[])
                              o.insert(u"share"_qs, key);
                              o.insert(u"host"_qs, QUrl(url).host());
                              o.insert(u"name"_qs, name);
+                             // A 百度 hand-off is a table on disk, so "is it there" and its
+                             // file name are the two numbers that say the hand-off is the right
+                             // shape; the directory it lives in is not worth repeating.
+                             // `path()` first: a CDN address is `/` plus a query full of tokens,
+                             // and QFileInfo over the whole url printed the last path segment
+                             // *with its query* - which is the signature, into the probe's
+                             // stdout. What is worth naming here is the file the path claims.
+                             o.insert(u"tail"_qs, QFileInfo(QUrl(url).path()).fileName());
+                             o.insert(u"table"_qs, QFileInfo::exists(url));
                              o.insert(u"header_fields"_qs,
                                       headers.split(QChar(u'\r'), Qt::SkipEmptyParts).size());
                              // Length only. The value is his session.
@@ -411,6 +451,10 @@ int main(int argc, char *argv[])
     // answers - a url handed to our own http stack comes back 412.
     Netdisk netdisk;
     Downloads downloads;
+    // The other drives answer 400 to a request their own page did not sign, so their ladder
+    // has to run inside a browser he signs into once. This opens that browser and keeps the
+    // session it lands on.
+    PanLogin panlogin;
     downloads.setDatabase(library.database());
     if (parser.isSet(dlDir))
         downloads.setOverrideDir(QFileInfo(parser.value(dlDir)).absoluteFilePath());
@@ -503,6 +547,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"libraryModel"_qs, &libraryModel);
     engine.rootContext()->setContextProperty(u"online"_qs, &online);
     engine.rootContext()->setContextProperty(u"netdisk"_qs, &netdisk);
+    engine.rootContext()->setContextProperty(u"panlogin"_qs, &panlogin);
     engine.rootContext()->setContextProperty(u"downloads"_qs, &downloads);
     engine.rootContext()->setContextProperty(u"downloadsModel"_qs, &downloadsModel);
     engine.rootContext()->setContextProperty(u"single"_qs, &single);

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -60,6 +61,16 @@ type HttpJob struct {
 	// live counts connections with a request in flight; the shell shows it where the
 	// torrent engine shows peers, and a made-up number there reads as progress.
 	live atomic.Int32
+	// lanes is how many workers may take a block at once. It starts at what the shell asked
+	// for and only goes down: a host that refuses the eleventh road is telling us its ceiling,
+	// and the way to find the number is to keep losing one road until the refusals stop.
+	lanes atomic.Int32
+	// wanted is the concurrency the shell asked for, kept so the floor can be a fraction of it
+	// rather than a magic number that outlives its measurement.
+	wanted int32
+	// back holds blocks handed back by a refused worker, so a refusal costs a detour rather
+	// than the whole job.
+	back []int
 	// views counts /file/0 responses. Exiting the process the instant the last part
 	// lands cuts a reader off mid-body, which looks like a corrupt file to mpv.
 	views atomic.Int32
@@ -97,6 +108,13 @@ func readHeadersFile(p string) (map[string]string, error) {
 }
 
 func nameFromURL(raw string) string {
+	if p := localFileOf(raw); p != "" {
+		base := filepath.Base(p)
+		if base == "." || base == "/" || base == "" {
+			return "download"
+		}
+		return base
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Path == "" {
 		return "download"
@@ -106,6 +124,30 @@ func nameFromURL(raw string) string {
 		return "download"
 	}
 	return base
+}
+
+// localFileOf recognises a source that is a file on this machine rather than a url.
+//
+// A 百度 share's playback table can only be minted by the site's own tab: measured, the same
+// /share/streaming url answers a 10-segment preview to a client that is not a browser and
+// 962 segments to the page. So the table reaches the engine as a path on disk, and only the
+// segments it lists cross the network - those are absolute https and need no cookie.
+func localFileOf(raw string) string {
+	if strings.HasPrefix(strings.ToLower(raw), "file://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		p := u.Path
+		if len(p) > 2 && p[0] == '/' && p[2] == ':' {
+			p = p[1:] // file:///C:/x wants C:/x, not /C:/x
+		}
+		return filepath.FromSlash(p)
+	}
+	if len(raw) >= 3 && raw[1] == ':' && (raw[2] == '\\' || raw[2] == '/') {
+		return raw
+	}
+	return ""
 }
 
 func (j *HttpJob) newReq(raw string) (*http.Request, error) {
@@ -124,6 +166,15 @@ func (j *HttpJob) newReq(raw string) (*http.Request, error) {
 // file": share links answer 403 and expired ones answer 200 with a login page, and
 // treating either as content is how a download ends up being 10 bytes of JSON.
 func (j *HttpJob) probe(raw string) (size int64, accepts bool, ctype string, body []byte, err error) {
+	if p := localFileOf(raw); p != "" {
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return 0, false, "", nil, rerr
+		}
+		// The content-type is what the caller's playlist branch keys off, and a file on
+		// disk has none; ranges are meaningless for a table we are already holding.
+		return int64(len(b)), false, "application/vnd.apple.mpegurl", b, nil
+	}
 	req, err := j.newReq(raw)
 	if err != nil {
 		return 0, false, "", nil, err
@@ -186,9 +237,15 @@ func segmentList(text, base string) ([]string, error) {
 }
 
 // headSweep gets every segment's length up front so total and the prefix are real
-// numbers instead of a running guess. Some CDNs answer 405 to HEAD, so a size is
-// re-asked with a one-byte ranged GET before giving up: the segment headers alone
-// say how long it is, and closing the body keeps the cost at a few hundred bytes.
+// numbers instead of a running guess.
+//
+// The one-byte ranged GET comes FIRST, not as a fallback, because a HEAD's Content-Length is
+// only a claim about the resource and some hosts make the wrong one: measured on a 百度
+// playlist, every segment answered HEAD with 26,677,200 - the same number, which is the
+// `ts_size` query parameter the url carries - while the same segment's `bytes=0-0` answer
+// carried `Content-Range: bytes 0-0/694284`, matching the 694,284 bytes a real GET returns.
+// Trusting the HEAD made the whole film 962 × 26.7 MB = 30,362,863,108 bytes, and would have
+// written every segment at a 26 MB stride into a sparse file.
 func (j *HttpJob) headSweep(segs []string) []int64 {
 	sizes := make([]int64, len(segs))
 	var wg sync.WaitGroup
@@ -203,32 +260,34 @@ func (j *HttpJob) headSweep(segs []string) []int64 {
 			if err != nil {
 				return
 			}
-			req.Method = "HEAD"
+			req.Header.Set("Range", "bytes=0-0")
 			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				if cr := resp.Header.Get("Content-Range"); cr != "" {
+					if _, after, ok := strings.Cut(cr, "/"); ok {
+						sizes[i], _ = strconv.ParseInt(strings.TrimSpace(after), 10, 64)
+					}
+				}
+				if sizes[i] <= 0 && resp.StatusCode == http.StatusOK {
+					sizes[i] = resp.ContentLength
+				}
+			}
+			if sizes[i] > 0 {
+				return
+			}
+			req, err = j.newReq(s)
+			if err != nil {
+				return
+			}
+			req.Method = "HEAD"
+			resp, err = http.DefaultClient.Do(req)
 			if err == nil {
 				resp.Body.Close()
 				if resp.StatusCode == http.StatusOK && resp.ContentLength > 0 {
 					sizes[i] = resp.ContentLength
 					return
 				}
-			}
-			req, err = j.newReq(s)
-			if err != nil {
-				return
-			}
-			req.Header.Set("Range", "bytes=0-0")
-			resp, err = http.DefaultClient.Do(req)
-			if err != nil {
-				return
-			}
-			resp.Body.Close()
-			if cr := resp.Header.Get("Content-Range"); cr != "" {
-				if _, after, ok := strings.Cut(cr, "/"); ok {
-					sizes[i], _ = strconv.ParseInt(strings.TrimSpace(after), 10, 64)
-				}
-			}
-			if sizes[i] <= 0 && resp.StatusCode == http.StatusOK {
-				sizes[i] = resp.ContentLength
 			}
 		}(i, s)
 	}
@@ -374,6 +433,20 @@ func (j *HttpJob) saveState() {
 }
 
 func (j *HttpJob) take() (int, bool) {
+	// A handed-back block goes first: it was refused for how many roads were open, not for
+	// what it asked for, and leaving it at the tail would make the worker that just lost a
+	// race wait behind everything else.
+	j.mu.Lock()
+	if n := len(j.back); n > 0 {
+		i := j.back[n-1]
+		j.back = j.back[:n-1]
+		j.mu.Unlock()
+		if !j.done[i] {
+			return i, true
+		}
+	} else {
+		j.mu.Unlock()
+	}
 	for {
 		i := int(j.next.Add(1)) - 1
 		if i >= len(j.Parts) {
@@ -387,6 +460,40 @@ func (j *HttpJob) take() (int, bool) {
 		}
 		return i, true
 	}
+}
+
+// requeue gives a block back to whoever is next free.
+func (j *HttpJob) requeue(i int) {
+	j.mu.Lock()
+	j.back = append(j.back, i)
+	j.mu.Unlock()
+}
+
+// lower takes one road away and reports how many are left, down to the floor the job set.
+// The floor is not 1 because that is not where the refusals stop: measured on one 迅雷 address,
+// 12 roads walk down through 11/10/9/8/7/6 and keep being refused all the way to 2, while 4
+// roads answer clean for a whole minute. Stopping the walk at 4 leaves the job at the number
+// this kind of host actually serves, and a host that really needs fewer still gets refused
+// loudly rather than silently crawling.
+func (j *HttpJob) lower() int32 {
+	for {
+		n := j.lanes.Load()
+		if n <= j.floor() {
+			return n
+		}
+		if j.lanes.CompareAndSwap(n, n-1) {
+			return n - 1
+		}
+	}
+}
+
+// floor is the smallest number of roads a job will walk down to: the requested concurrency
+// when that is already small, otherwise four.
+func (j *HttpJob) floor() int32 {
+	if j.wanted <= 4 {
+		return j.wanted
+	}
+	return 4
 }
 
 // commit advances the contiguous prefix only when the lowest open part lands, which
@@ -432,7 +539,7 @@ func (j *HttpJob) fetchPart(f *os.File, i int) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 && resp.StatusCode != 206 {
-		return fmt.Errorf("块 %d http %d", i, resp.StatusCode)
+		return &httpRefused{block: i, code: resp.StatusCode}
 	}
 	buf := make([]byte, 256*1024)
 	var off int64
@@ -455,10 +562,37 @@ func (j *HttpJob) fetchPart(f *os.File, i int) error {
 	return j.commit(i, off)
 }
 
-func (j *HttpJob) run(conns int, quit <-chan struct{}) error {
-	if conns <= 0 {
-		conns = 8
+// A refusal is not always a dead address. Measured on 迅雷's CDN with one signed url: 12
+// simultaneous range requests answer 10×206 and 2×503, while 1, 4 and 8 come back clean - the
+// edge caps how many connections one address will serve at a time. Until this type existed any
+// block's error ended the whole job, so a 迅雷 row sat at 「块 10 http 503」 with a byte
+// never written. The code is what the worker loop's one retry decision reads.
+type httpRefused struct {
+	block int
+	code  int
+}
+
+func (e *httpRefused) Error() string { return fmt.Sprintf("块 %d http %d", e.block, e.code) }
+
+// httpConns is how many roads this job opens. Measured on one 迅雷 signed address: 4 roads
+// answer 206 for a whole minute at 1.25 MB/s with zero refusals and zero truncated blocks,
+// while 8 and 12 start refusing immediately - so a job that opens at 12 spends its first
+// minutes losing lanes and backing off to reach the 4 the host was willing to give anyway.
+// 迅雷 therefore starts at the number it serves. Chunk size made no difference (1 MiB and
+// 8 MiB both held 4 roads clean), so this is about roads, not about request length.
+func httpConns(raw string, asked int) int {
+	if asked <= 0 {
+		asked = 8
 	}
+	u, err := url.Parse(raw)
+	if err == nil && strings.HasSuffix(u.Hostname(), "xunlei.com") && asked > 4 {
+		return 4
+	}
+	return asked
+}
+
+func (j *HttpJob) run(conns int, quit <-chan struct{}) error {
+	conns = httpConns(j.URL, conns)
 	if err := os.MkdirAll(filepath.Dir(j.Tmp), 0o755); err != nil {
 		return err
 	}
@@ -471,35 +605,94 @@ func (j *HttpJob) run(conns int, quit <-chan struct{}) error {
 		return err
 	}
 	j.loadState()
+	// The shell asked for this many roads; the host gets the final say, one refusal at a time.
+	j.wanted = int32(conns)
+	j.lanes.Store(int32(conns))
 
 	var wg sync.WaitGroup
 	errc := make(chan error, 1)
 	for w := 0; w < conns; w++ {
 		wg.Add(1)
-		go func() {
+		go func(me int) {
 			defer wg.Done()
+			streak := 0
 			for {
 				select {
 				case <-quit:
 					return
 				default:
 				}
+				if int32(me) >= j.lanes.Load() {
+					// This worker is the price the last refusal was paid with. Exiting here
+					// is what actually lowers the concurrency: nothing else closes the socket.
+					return
+				}
 				i, ok := j.take()
 				if !ok {
 					return
 				}
-				if err := j.fetchPart(f, i); err != nil {
+				err := j.fetchPart(f, i)
+				if err == nil {
+					streak = 0
+					if i%16 == 0 || j.isComplete() {
+						j.saveState()
+					}
+					continue
+				}
+				// One answer ends the job on the spot: a 4xx that is not the host's "too many
+				// at once". That is the 412-with-a-262-byte-page the cookie story reads, and a
+				// row that retried it would look like a drive that is merely slow.
+				var ref *httpRefused
+				if errors.As(err, &ref) && ref.code != http.StatusTooManyRequests &&
+					ref.code != http.StatusRequestedRangeNotSatisfiable && ref.code < 500 {
 					select {
 					case errc <- err:
 					default:
 					}
 					return
 				}
-				if i%16 == 0 || j.isComplete() {
-					j.saveState()
+				// Everything else is the host not serving this many roads right now, in one of
+				// three voices. Measured on 迅雷's CDN with one signed url: 12 roads answer
+				// 10×206 + 2×503 and 16 add a 416; a road closes mid-carry so the block lands
+				// short (块 14 只到 4,568,059/8,374,053 字节); or the read breaks
+				// outright (块 5 读断). Those last two used to get six quick retries and then
+				// kill the job, which is how a row that had already landed 117 MB still died.
+				// So: hand the block back, pay a lane while there are lanes to pay, and wait
+				// the cooldown out at the floor - measured, one address that starts refusing
+				// keeps refusing for tens of seconds even at four roads, then serves again.
+				// 416 is a different animal from a refusal. Measured on 迅雷's free 720P
+				// address for a 461,561,620-byte file: it answers 206 for bytes 0-23,619,000 and
+				// for the last ~21 MB, and 416 for everything between - at 0 s, at 45 s and at
+				// 90 s. That is the transcode being prepared only where a player has looked, not
+				// a cap on roads, so it costs no lane and it does not count toward the death
+				// streak: the block is asked again on a slow clock and the rest of the job keeps
+				// taking what the host is serving.
+				if errors.As(err, &ref) && ref.code == http.StatusRequestedRangeNotSatisfiable {
+					j.requeue(i)
+					time.Sleep(20 * time.Second)
+					continue
 				}
+				j.requeue(i)
+				if j.lanes.Load() > j.floor() {
+					if j.logf != nil {
+						j.logf("并发降到 %d（%s）", j.lower(), err)
+					}
+					time.Sleep(300 * time.Millisecond)
+					continue
+				}
+				// Forty attempts at the floor is close to a minute of nothing but errors: that
+				// is not a ceiling any more, it is the host saying no to the job, and a row
+				// that never moves is worse than a row that says so.
+				if streak++; streak >= 40 {
+					select {
+					case errc <- err:
+					default:
+					}
+					return
+				}
+				time.Sleep(1500 * time.Millisecond)
 			}
-		}()
+		}(w)
 	}
 
 	done := make(chan struct{})

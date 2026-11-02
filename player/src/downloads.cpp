@@ -50,6 +50,17 @@ bool isHttpSource(const QString &src)
         || src.startsWith(u"https://"_qs, Qt::CaseInsensitive);
 }
 
+// A 百度 share's playback table: a `.m3u8` sitting on this machine whose segments are remote.
+// It is pulled by the http engine (the engine reads the table off disk and stitches the
+// segments into one MPEG-TS), and it is *playable as it is* - libmpv opens the same table and
+// fetches the segment it needs, which is why the row's play mark does not wait on the pull.
+bool isTableSource(const QString &src)
+{
+    const QFileInfo fi(src);
+    return !src.isEmpty() && fi.isFile()
+        && fi.suffix().compare(u"m3u8"_qs, Qt::CaseInsensitive) == 0;
+}
+
 // Whether the bytes that exist so far could be demuxed at all. An mp4 that keeps its
 // index (the moov box) at the tail has no sample table anywhere in the prefix, so no
 // fraction short of the last box plays - measured on a 夸克 row at 44.33%: the head is
@@ -118,6 +129,10 @@ QString namedLike(const QString &title, const QString &file)
     if (t.isEmpty())
         return file;
     const QString ext = QFileInfo(file).suffix();
+    // The caller's name may already carry it: 迅雷's hand-off says `.mkv` or `.ts` itself, and
+    // appending it a second time put 「蜘蛛侠：崭新之日.ts.ts」 on the row - measured on screen.
+    if (!ext.isEmpty() && t.endsWith(QLatin1Char('.') + ext, Qt::CaseInsensitive))
+        return t;
     return ext.isEmpty() ? t : t + QLatin1Char('.') + ext;
 }
 
@@ -134,10 +149,13 @@ QString nameFromUrl(const QString &src)
         if (!v.isEmpty())
             return v;
     }
-    QString base = u.fileName();
-    if (base.isEmpty())
-        base = u.host();
-    return base.isEmpty() ? u"下载"_qs : base;
+    const QString base = u.fileName();
+    if (!base.isEmpty())
+        return base;
+    // Empty here means "this url names no file". The host is not a file name: 迅雷's address is
+    // `https://vod…-vip-lixian.xunlei.com/?fid=…&mid=…`, and handing that to namedLike() put the
+    // last label of the domain into the row's extension slot, which read 「片名.com」.
+    return QString();
 }
 }
 
@@ -321,15 +339,28 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
 {
     const QString src = source.trimmed();
     const bool isMagnet = src.startsWith(u"magnet:"_qs);
-    const bool isHttp = isHttpSource(src);
+    const bool isTable = isTableSource(src);
+    const bool isHttp = isHttpSource(src) || isTable;
     const QFileInfo fi(src);
     if (src.isEmpty() || (!isMagnet && !isHttp && !(fi.exists() && fi.isFile())))
         return -1;
 
     const QString kind = isHttp ? u"http"_qs : u"torrent"_qs;
     const QString where = dir.isEmpty() ? defaultDir() : dir;
-    QString initialName = isHttp ? nameFromUrl(src)
-                             : (isMagnet ? tr("正在取种子信息") : fi.completeBaseName());
+    // A table's payload is MPEG-TS no matter what the share called the original, so the row
+    // says `.ts`: naming the stitched stream `4k.mp4` would be the second time this week a
+    // row's extension lied about the container inside it.
+    QString initialName = isTable ? fi.completeBaseName() + u".ts"_qs
+                            : isHttp ? nameFromUrl(src)
+                            : (isMagnet ? tr("正在取种子信息") : fi.completeBaseName());
+    if (initialName.isEmpty())
+        // The url named no file, so the board's title is the name. With no title either - a
+        // paste in 新建下载 - the host is the only thing left to point at, with its dots out so
+        // nothing downstream can read the last label of a domain as a file extension.
+        initialName = name.trimmed().isEmpty()
+            ? QStringLiteral("%1 的下载").arg(QUrl(src).host().replace(QLatin1Char('.'),
+                                                                      QLatin1Char('_')))
+            : name.trimmed();
     // A 网盘 share hands the same film in a dozen encodes, so the board's title arrives more
     // than once; two rows writing one path would make the second read like a finished copy of
     // the first. Only the named path is touched - a magnet's name is the torrent's own.
@@ -576,6 +607,13 @@ void Downloads::setWant(qint64 id, const QString &mode)
 
 QString Downloads::playUrl(qint64 id) const
 {
+    // A table row plays the table: the segments are absolute https that need no cookie, so
+    // libmpv pulls the one it needs and the row never has to wait on the pull. Once the file
+    // is complete the caller loads that instead, and it is seekable from the first byte.
+    for (const DownloadRow &r : m_rows) {
+        if (r.id == id && isTableSource(r.src))
+            return QUrl::fromLocalFile(r.src).toString();
+    }
     auto it = m_children.constFind(id);
     return it == m_children.constEnd() || it.value().base.isEmpty()
         ? QString() : it.value().base + u"/file/0"_qs;
@@ -683,6 +721,9 @@ bool Downloads::isComplete(qint64 id) const
 bool Downloads::rowPlayable(const DownloadRow &row) const
 {
     if (row.complete)
+        return true;
+    // The table itself is the stream: nothing about the pull has to land first.
+    if (isTableSource(row.src))
         return true;
     if (row.name.isEmpty() || row.dir.isEmpty())
         return false;

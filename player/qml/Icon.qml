@@ -103,6 +103,10 @@ Item {
                              + "M12 10.1v4.2M10.2 12.5l1.8 1.8 1.8-1.8", filled: false },
         "link":         { d: "M10.2 13.8a3.7 3.7 0 0 0 5.2 0l2.4-2.4a3.7 3.7 0 0 0-5.2-5.2l-1.2 1.2"
                              + "M13.8 10.2a3.7 3.7 0 0 0-5.2 0l-2.4 2.4a3.7 3.7 0 0 0 5.2 5.2l1.2-1.2", filled: false },
+        // The door stands on the right and the arrow leaves it to the left: an arrow pointing
+        // into the door is 登录, and the two rows would otherwise carry the same picture.
+        "logout":       { d: "M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"
+                             + "M13 12H4M7.5 8.5 4 12l3.5 3.5", filled: false },
         "trash":        { d: "M4.2 7.2h15.6M9.6 7.2V5.4h4.8v1.8M6.6 7.2l.9 11.4h9l.9-11.4M10.2 10.6v5M13.8 10.6v5", filled: false },
         "collapse":     { d: "M9 9L4 4M4 9V4h5M15 9l5-5M20 9V4h-5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5", filled: false },
         "min":          { d: "M4 12h16", filled: false },
