@@ -1479,6 +1479,13 @@ Window {
     //
     // The grab is polled, not event-driven: see VideoHost::startDrag. 0 slides the whole
     // window; a band passes its own bits (1 left, 2 right, 4 top, 8 bottom).
+    // The right-hand board owns the window's right edge, its bottom under the board, and
+    // the corner - so while it is up, the bands that would paint <-> / | / the diagonal
+    // there give those stretches up: the right band is off (its whole 8 px is over the
+    // board), the bottom band stops where the board starts, and the corner band is off
+    // (it sits inside the board). Covering them with a strip on top was the first attempt
+    // and did not change what Windows paints, so the claim itself is withdrawn.
+    readonly property bool dockOwnsEdge: magOpen && magnetRight
     readonly property int edgeGrab: 8
     readonly property int cornerGrab: 20
 
