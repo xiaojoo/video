@@ -2059,9 +2059,10 @@ Item {
                 // on rows nobody is looking at.
                 const k = Object.keys(magPopup.pendingHops);
                 if (k.length > 0) {
-                    const p = magPopup.pendingHops;
-                    delete p[k[0]];
-                    magPopup.pendingHops = p;
+                    // The entry is left where it is: this sentence is also said on every retry
+                    // the hop is about to make, and an answer that lands afterwards must not be
+                    // read as a row he pressed. The half-minute leash releases it if it never
+                    // comes back.
                     magPopup.sweepPauseUntil = Date.now() + 60000;
                     return;
                 }
@@ -2081,9 +2082,14 @@ Item {
                 // The poster's own title, not the download row's label: a site row is named
                 // like a release notice - title, then 【WEB-4K】, then the subtitle and
                 // watermark notes - and only the first part is the film.
-                const hb = magPopup.hopByUrl;
-                hb[url] = hop;
-                magPopup.hopByUrl = hb;
+                //
+                // Only a row he pressed becomes a job. A sweep answer can arrive after its
+                // pending entry was let go - the site paced it and it was retried, or its half
+                // minute ran out - and falling through here starts a 转存 nobody asked for.
+                // Measured: one tab press put 给阿嬷的情书.ts on the download list at 1.3 MiB.
+                if (hop !== magPopup.pendingHop)
+                    return;
+                magPopup.pendingHop = "";
                 netdisk.download(url, magPopup.film.title || magPopup.pendingName,
                                  page.detail ? page.detail.poster : "");
             }
