@@ -647,6 +647,18 @@ void Netdisk::check(const QString &shareUrl)
         const QJsonObject o = QJsonDocument::fromJson(body).object();
         bool dead = false;
         int code = o.value(QStringLiteral("code")).toInt(-1);
+        // A body with neither field is not an answer. Measured: with the recorded 迅雷 session
+        // 54,576 s old (its bearer runs 12.0 h) every ask - live share and impossible share
+        // alike - came back 401 with no `share_status` at all, and the checker read that as
+        // "still alive". Reporting a refusal as alive keeps a dead row on the wall forever,
+        // which is the same failure as reporting it dead, only quieter. Unknown is what
+        // 百度 already gets.
+        if (!o.contains(QStringLiteral("code")) && !o.contains(QStringLiteral("share_status"))) {
+            qInfo("nd check %s no answer http=%d bytes=%d", xl ? "xl" : (uc ? "uc" : "quark"),
+                  http, int(body.size()));
+            emit checked(shareUrl, false, -1);
+            return;
+        }
         if (xl) {
             const QString st = o.value(QStringLiteral("share_status")).toString();
             dead = deadXlStatuses().contains(st);
