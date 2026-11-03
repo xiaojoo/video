@@ -1502,6 +1502,25 @@ Window {
     Band { edges: 8;  cursorShape: Qt.SizeVerCursor;  x: 0; y: win.height - win.edgeGrab; width: win.width; height: win.edgeGrab }
     Band { edges: 10; cursorShape: Qt.SizeFDiagCursor; x: win.width - win.cornerGrab; y: win.height - win.cornerGrab; width: win.cornerGrab; height: win.cornerGrab }
 
+    // The right-hand board is the window's last 333 px, so the strip above runs down the
+    // board's own right edge and paints <-> there. Nothing about the board can be dragged
+    // wider - its width is one number the settings own - so the edge takes that strip
+    // while the board is a right-hand column: the page's own arrow, and the press does not
+    // reach the band under it. Close the board and the window's resize edge comes back.
+    // The board's scrollbar sits 18 px inside the panel, so it is not in this strip's way.
+    MouseArea {
+        id: dockEdge
+        z: 21
+        x: win.width - win.edgeGrab
+        y: 0
+        width: win.edgeGrab
+        height: win.height
+        enabled: win.magOpen && win.magnetRight
+                 && !videoHost.fullscreen && !videoHost.zoomed
+        hoverEnabled: true
+        cursorShape: Qt.ArrowCursor
+    }
+
     MouseArea {
         id: topStrip
         // Under the library page (z 10), not over it. The strip is 34 px tall - the height
