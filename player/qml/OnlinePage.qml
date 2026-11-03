@@ -312,6 +312,14 @@ Item {
         const per = page.per;
         const lastIdx = Math.min(page.first + per, page.total) - 1;
         const out = [];
+        // The site repeats a card across its own page boundary: measured, 魔女嘉莉
+        // Carrie (href .../movies/143622/) is item 19 of site page 2 and item 0 of
+        // site page 3 - one repeat in the 80 posters of pages 1..4. The wall would
+        // otherwise show it side by side, which is what he is pointing at. Skipping it
+        // costs that screen page one poster, because the page is a fixed window of
+        // indices and reaching past its end would hand the same poster to the next one.
+        const seenHref = {};
+        let missing = false;   // a site page this pass wanted and could not get
         let idx = page.first;
         // Both halves matter: the page is full when `out` reaches `per`, and `lastIdx` is
         // what stops a short tail (the last screen page) from running off the list.
@@ -320,8 +328,10 @@ Item {
             const got = page.sitePages[sp];
             if (got === undefined) {
                 const u = page.urlFor(sp);
-                if (u.length === 0 || page.reqUrl[u] !== undefined)
+                if (u.length === 0 || page.reqUrl[u] !== undefined) {
+                    missing = true;
                     break;          // no way to ask, or it is already on its way
+                }
                 // Nothing assembled yet and the list has to be asked for: leaving the previous
                 // page on the wall is what made a page click read as "the pager moved, the
                 // posters did not". The wall's own skeleton covers exactly this gap.
@@ -339,7 +349,11 @@ Item {
             }
             let j = idx - (sp - 1) * page.siteSize;
             while (j < got.length && out.length < per && idx <= lastIdx) {
-                out.push(got[j]);
+                const h = got[j].href;
+                if (seenHref[h] === undefined) {
+                    seenHref[h] = true;
+                    out.push(got[j]);
+                }
                 ++j;
                 ++idx;
             }
@@ -349,7 +363,7 @@ Item {
         page.shown = out;
         if (out.length === per)
             page.fillTries = 0;
-        else
+        else if (missing)
             page.armRetry(out.length);
     }
 
