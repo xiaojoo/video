@@ -569,9 +569,15 @@ bool Netdisk::isDead(const QString &url)
 void Netdisk::noteDead(const QString &url, int code)
 {
     const QString key = shareKeyOf(url);
-    if (key.isEmpty() || g_dead.contains(key))
+    if (key.isEmpty())
         return;
     loadLedger();
+    // Said before the "already written" return, because the ledger's two keys are not the
+    // same row: a share recorded under its share id does not hide the site row that carries
+    // a hop id, and the board only learns the hop one when it is told.
+    emit dead(url, code);
+    if (g_dead.contains(key))
+        return;
     g_dead.insert(key, QJsonObject{ { QStringLiteral("at"),
                                       double(QDateTime::currentSecsSinceEpoch()) },
                                     { QStringLiteral("code"), code } });
@@ -582,6 +588,11 @@ void Netdisk::noteDead(const QString &url, int code)
     }
     f.write(QJsonDocument(g_dead).toJson(QJsonDocument::Compact));
     f.close();
+    // Say it as well as write it: the board knows the row this share came from, and this is
+    // the one door every drive's "gone" answer goes through - the checker's and the ladder's
+    // alike. The board drops the row off this rather than off the wording of a failure, which
+    // is four different sentences for one fact.
+    emit dead(url, code);
     // The key is a row id on a public page and the code is the drive's own; neither is a
     // session, so both are safe to say out loud.
     qInfo("nd dead recorded key=%s code=%d ledger=%d", qPrintable(key), code, g_dead.size());
@@ -599,7 +610,12 @@ void Netdisk::check(const QString &shareUrl)
     const QString id = m.hasMatch() ? m.captured(1) : QString();
     const bool uc = shareUrl.contains(QStringLiteral("drive.uc.cn"));
     const bool xl = shareUrl.contains(QStringLiteral("pan.xunlei.com"));
-    if (id.isEmpty() || shareUrl.contains(QStringLiteral("pan.baidu.com"))) {
+    const bool bd = shareUrl.contains(QStringLiteral("pan.baidu.com"));
+    // The sweep's heartbeat: one line per row it asks, with the row named, so "asked twice"
+    // is something a log can be searched for rather than something I have to believe.
+    qInfo("nd check ask %s key=%s", xl ? "xl" : (uc ? "uc" : (bd ? "bd" : "quark")),
+          qPrintable(shareKeyOf(shareUrl)));
+    if (id.isEmpty() || bd) {
         // 百度's verdict lives in the page's html and the one code I have measured
         // (errno=116) comes from the ladder, not from a check. Saying "unknown" keeps the row;
         // guessing would hide shares that are fine.

@@ -68,7 +68,10 @@ public:
     // the drive's share id, so a verdict learned by either path hides the row the other finds.
     static QString shareKeyOf(const QString &url);
     static bool isDead(const QString &url);
-    static void noteDead(const QString &url, int code);
+    // Not static: every drive's "gone" answer lands here, and the board is told about it on
+    // the way out. The wall's filter (isDead) stays static because it runs while the page is
+    // being parsed, before anything has an instance to ask.
+    void noteDead(const QString &url, int code);
     // For whoever holds the row's hop rather than the share id: the wall filters on the
     // hop, so a verdict learned from a click has to be written under that key too.
     Q_INVOKABLE void markDead(const QString &url, int code);
@@ -97,6 +100,9 @@ signals:
     // The verdict of check(). `dead` is only ever true on the drive's own words; -1 means
     // this drive has no measured answer and the row must stay where it is.
     void checked(const QString &shareUrl, bool dead, int code);
+    // A share has just been written into the dead ledger, from any door: the checker's or a
+    // ladder he started with a click. The board maps the share back to its row and drops it.
+    void dead(const QString &shareUrl, int code);
 
 private:
     enum Stage { Idle, Connecting, Laddering };
