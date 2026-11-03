@@ -1411,25 +1411,30 @@ Item {
         // they landed; the counts give way instead (below), so the line never grows and the
         // wait and the answer take exactly the same room.
         readonly property real tabFlowH: magPopup.tabH
-        // The rule the two invisible rows measure. Read off the same font engine the app
-        // draws with (13 px Segoe UI Variable Text, the column's 301 px of room):
-        //   6 tabs with counts  磁力(33) 百度(76) 夸克(133) 迅雷(79) UC(5) 阿里(0) = 360 px
-        //   6 tabs as 名字(…)                                                   = 345 px
-        //   6 tabs as 名字                                                      = 237 px
-        //   5 tabs with counts                                                  = 294 px
-        // so the digits collapse to "…" the moment they do not fit, and when even that is
-        // too wide the parens go with them; past that each label takes an even share of the
-        // line and elides. A tab cut off at the panel's edge is a source nobody can pick.
+        // The rule the invisible row measures. Read off the same font engine the app draws
+        // with (13 px Segoe UI Variable Text, the column's 301 px of room):
+        //   5 tabs with counts  磁力(4) 百度(123) 夸克(123) 迅雷(123) UC(4) = 313 px
+        //   5 tabs as 名字     磁力 百度 夸克 迅雷 UC                       = 193 px
+        //   6 tabs with counts 磁力(33) 百度(76) 夸克(133) 迅雷(79) UC(5) 阿里(0) = 360 px
+        //   6 tabs as 名字                                                    = 237 px
+        // so when they do not fit the number goes - with its brackets, whole, and never
+        // turned into "…", which read as a label the panel had cut off. The name is what
+        // says which source a tab is; the count is not.
         readonly property bool tabsPrintCounts: tabRowFull.implicitWidth <= tabBar.width
-        readonly property bool tabsPrintDots: !tabsPrintCounts
-                                              && tabRowDots.implicitWidth <= tabBar.width
-        readonly property real tabShare: visTabs.length > 0
-                ? Math.floor((tabBar.width - tabRow.spacing * (visTabs.length - 1))
-                             / visTabs.length)
-                : tabBar.width
+        // What one tab may take. While the counts are printed the whole row already
+        // fits, so nothing is cut: an even share of the line is 45 px and 百度(123) is 53,
+        // which is how a row that fit came to be drawn as 百度(… - the truncation he is
+        // asking against. The share only applies to the names-only form, and there it is a
+        // safety net for a source named long enough that even the bare names overflow.
+        readonly property real tabShare: tabsPrintCounts
+                ? tabBar.width
+                : (visTabs.length > 0
+                   ? Math.floor((tabBar.width - tabRow.spacing * (visTabs.length - 1))
+                                / visTabs.length)
+                   : tabBar.width)
         // The tabs the line has to hold: the site's own nav, minus the ones with no rows
-        // behind them. One reading of it, because the live row and the two measuring rows
-        // have to count the same labels.
+        // behind them. One reading of it, because the live row and the measuring row have
+        // to count the same labels.
         readonly property var visTabs: (filmTabs || []).filter(function (t) {
             return shownCount(t.key) > 0;
         })
@@ -1696,8 +1701,8 @@ Item {
                 // halfway through the wait. The counts are what makes the labels wide, so
                 // they give way before the line does.
                 //
-                // The two invisible rows below are the instrument that decides that. They
-                // print the two short forms and report their natural width; the labels
+                // The invisible row below is the instrument that decides that: it prints
+                // every tab with its count and reports the natural width. The labels
                 // themselves never measure themselves, or the answer would feed its own
                 // question.
                 Row {
@@ -1714,21 +1719,6 @@ Item {
                         }
                     }
                 }
-                Row {
-                    id: tabRowDots
-                    visible: false
-                    spacing: tabRow.spacing
-                    Repeater {
-                        model: magPopup.visTabs
-                        delegate: Text {
-                            required property var modelData
-                            text: modelData.name + "(…)"
-                            font.pixelSize: page.smallFs
-                            font.family: Theme.uiFont
-                        }
-                    }
-                }
-
                 // The tabs are the last thing to land (they come off the film's own page),
                 // so while it is in flight this line is blank and nothing says "wait". The
                 // bars are the shape of the tabs they turn into and breathe on the same
@@ -1799,8 +1789,7 @@ Item {
                                 elide: Text.ElideRight
                                 text: tabItem.modelData.name
                                       + (magPopup.tabsPrintCounts
-                                         ? "(" + magPopup.shownCount(tabItem.modelData.key) + ")"
-                                         : (magPopup.tabsPrintDots ? "(…)" : ""))
+                                         ? "(" + magPopup.shownCount(tabItem.modelData.key) + ")" : "")
                                 color: tabItem.active ? Theme.textPrimary
                                        : (tabItem.live ? Theme.textSecondary : "#55555C")
                                 font.pixelSize: page.smallFs
