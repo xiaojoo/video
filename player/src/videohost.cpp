@@ -46,12 +46,7 @@ QQuickItem *cursorBearing(QQuickItem *parent, const QPointF &p)
     const auto kids = parent->childItems();       // paint order, bottom first
     for (int i = kids.size() - 1; i >= 0; --i) {
         QQuickItem *c = kids.at(i);
-        // A disabled item declares nothing: the chrome turns its marks off rather than
-        // removing them, and until this line a disabled MouseArea still answered
-        // WM_SETCURSOR with its own shape. Measured on the right-hand board's edge - the
-        // band there was disabled, the log said so, and <-> stayed, because this walk only
-        // skipped invisible and transparent.
-        if (!c->isVisible() || !c->isEnabled() || c->opacity() <= 0.0)
+        if (!c->isVisible() || c->opacity() <= 0.0)
             continue;
         const QPointF lp(p.x() - c->x(), p.y() - c->y());
         if (c->width() <= 0.0 || c->height() <= 0.0 || !QRectF(0.0, 0.0, c->width(), c->height()).contains(lp))

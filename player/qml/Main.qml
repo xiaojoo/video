@@ -1479,13 +1479,6 @@ Window {
     //
     // The grab is polled, not event-driven: see VideoHost::startDrag. 0 slides the whole
     // window; a band passes its own bits (1 left, 2 right, 4 top, 8 bottom).
-    // The right-hand board owns the window's right edge, its bottom under the board, and
-    // the corner - so while it is up, the bands that would paint <-> / | / the diagonal
-    // there give those stretches up: the right band is off (its whole 8 px is over the
-    // board), the bottom band stops where the board starts, and the corner band is off
-    // (it sits inside the board). Covering them with a strip on top was the first attempt
-    // and did not change what Windows paints, so the claim itself is withdrawn.
-    readonly property bool dockOwnsEdge: magOpen && magnetRight
     readonly property int edgeGrab: 8
     readonly property int cornerGrab: 20
 
@@ -1495,7 +1488,7 @@ Window {
         z: 20
         // Fullscreen and the maximised state have no edge to grab: the first is the whole
         // screen and the second is the shell's own size.
-        enabled: !videoHost.fullscreen && !videoHost.zoomed && !win.dockOwnsEdge
+        enabled: !videoHost.fullscreen && !videoHost.zoomed
         hoverEnabled: true
         onPressed: { win.frameDrag = true; videoHost.startDrag(edges) }
         onReleased: { win.frameDrag = false; videoHost.endDrag() }
@@ -1506,11 +1499,7 @@ Window {
     // Qt.CursorShape-typed property, and QML rejects that type outright
     // ("Unable to assign int to [unknown property type]").
     Band { edges: 2;  cursorShape: Qt.SizeHorCursor;  x: win.width - win.edgeGrab; y: 0; width: win.edgeGrab; height: win.height }
-    // Its own enabled: the wall keeps its bottom edge, so only the part under the board is
-    // given up (the width above), not the whole band.
-    Band { edges: 8;  cursorShape: Qt.SizeVerCursor;  x: 0; y: win.height - win.edgeGrab
-           width: win.width - (win.dockOwnsEdge ? win.magRight : 0); height: win.edgeGrab
-           enabled: !videoHost.fullscreen && !videoHost.zoomed }
+    Band { edges: 8;  cursorShape: Qt.SizeVerCursor;  x: 0; y: win.height - win.edgeGrab; width: win.width; height: win.edgeGrab }
     Band { edges: 10; cursorShape: Qt.SizeFDiagCursor; x: win.width - win.cornerGrab; y: win.height - win.cornerGrab; width: win.cornerGrab; height: win.cornerGrab }
 
     MouseArea {
