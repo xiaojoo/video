@@ -1502,12 +1502,15 @@ Window {
     Band { edges: 8;  cursorShape: Qt.SizeVerCursor;  x: 0; y: win.height - win.edgeGrab; width: win.width; height: win.edgeGrab }
     Band { edges: 10; cursorShape: Qt.SizeFDiagCursor; x: win.width - win.cornerGrab; y: win.height - win.cornerGrab; width: win.cornerGrab; height: win.cornerGrab }
 
-    // The right-hand board is the window's last 333 px, so the strip above runs down the
-    // board's own right edge and paints <-> there. Nothing about the board can be dragged
-    // wider - its width is one number the settings own - so the edge takes that strip
-    // while the board is a right-hand column: the page's own arrow, and the press does not
-    // reach the band under it. Close the board and the window's resize edge comes back.
-    // The board's scrollbar sits 18 px inside the panel, so it is not in this strip's way.
+    // The right-hand board is the window's last 333 px, so the strips above run down the
+    // board's own right edge, along under it, and over its corner, and paint <-> / | / the
+    // diagonal there. Nothing about the board can be dragged wider - its width is one number
+    // the settings own - so while the board is a right-hand column these take those edges:
+    // the page's own arrow, and the press does not reach the bands under them. Close the
+    // board and the window's resize edges come back. The board's scrollbar sits 18 px inside
+    // the panel, so it is not in any of these strips' way; the bottom one is only as tall as
+    // the band it covers (8 px), which is inside the board's own 16 px padding, and the
+    // corner is square because that band is 20 px and only 20 px wide.
     MouseArea {
         id: dockEdge
         z: 21
@@ -1517,6 +1520,28 @@ Window {
         height: win.height
         enabled: win.magOpen && win.magnetRight
                  && !videoHost.fullscreen && !videoHost.zoomed
+        hoverEnabled: true
+        cursorShape: Qt.ArrowCursor
+    }
+    MouseArea {
+        id: dockBottom
+        z: 21
+        x: win.width - win.magRight
+        y: win.height - win.edgeGrab
+        width: win.magRight
+        height: win.edgeGrab
+        enabled: dockEdge.enabled
+        hoverEnabled: true
+        cursorShape: Qt.ArrowCursor
+    }
+    MouseArea {
+        id: dockCorner
+        z: 21
+        x: win.width - win.cornerGrab
+        y: win.height - win.cornerGrab
+        width: win.cornerGrab
+        height: win.cornerGrab
+        enabled: dockEdge.enabled
         hoverEnabled: true
         cursorShape: Qt.ArrowCursor
     }
