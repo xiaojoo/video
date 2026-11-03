@@ -745,6 +745,11 @@ Item {
                 readonly property real drop: Math.round(Theme.refH * 0.0415)
                 width: wall.width
                 height: pager.visible ? pager.height + 2 * page.inset + pagerFooter.lineRoom : 0
+                // What the grid reserves for the footer. GridView has no `footerHeight`, so it
+                // reads the item's implicitHeight - which an Item does not derive from its own
+                // height, and left at zero the page hop was laid over the last row of posters.
+                // That is the "sometimes it sits on top of the cards" he saw on a short page.
+                implicitHeight: pagerFooter.height
 
                 // The wall scrolls in sub-pixel steps, so while it moves this row sits
                 // between two device rows. The chips' 1 px borders take that as a spread

@@ -81,7 +81,7 @@ public:
     Q_INVOKABLE void stop(qint64 id);
     // Removes the row and its own state folder. The downloaded file is left exactly
     // where it is: this is the library's column, not a file manager.
-    Q_INVOKABLE void remove(qint64 id);
+    Q_INVOKABLE void remove(qint64 id, bool withFile = true);
     Q_INVOKABLE void setWant(qint64 id, const QString &mode);
 
     int count() const { return m_rows.size(); }

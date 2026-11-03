@@ -238,6 +238,7 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
+                    onPressed: panel.pendingRemove = -1
                     onClicked: panel.addRequested()
                 }
             }
@@ -247,7 +248,10 @@ Item {
 
         ListView {
             id: list
-            width: parent.width
+            // The bar lives in the gutter to the right of the cards, so the cards stop where
+            // it starts. It used to run under the bar's own track, which read as a mark
+            // painted on the card's edge.
+            width: parent.width - jobBar.width - panel.gapY
             height: parent.height - bar.height - panel.gapY
             clip: true
             spacing: 9
@@ -388,6 +392,11 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
+                        // Any press that is not the pending row's own cross answers the
+                        // question with "no" - the row's sentence promised that, and until it
+                        // did the only way out was the cross itself, because the flickable
+                        // under the cards eats the press before the panel's catch-all sees it.
+                        onPressed: panel.pendingRemove = -1
                         // The row says whether the bytes on disk could be demuxed yet, because
                         // for a plain mp4 the answer is "not until the last box lands" - its
                         // index sits at the tail. Offering a play that cannot start is what
@@ -405,7 +414,7 @@ Item {
                     x: row.textX
                     y: row.inset
                     width: row.textW
-                    text: row.pending ? "删掉这个任务？已下到的文件不动" : modelData.jobName
+                    text: row.pending ? "删掉这个任务？连本地已下载的文件一起删" : modelData.jobName
                     elide: Text.ElideRight
                     color: row.pending ? Theme.accent : Theme.textPrimary
                     font.pixelSize: panel.titleFs
@@ -441,6 +450,17 @@ Item {
                            ? Theme.accent : Theme.textSecondary
                     font.pixelSize: panel.smallFs
                     font.family: Theme.uiFont
+                }
+
+                // The card's own body: name, progress bar and status line. A press here is
+                // not an action, it is "somewhere else", so it answers the delete question
+                // with no. The marks are declared after this and stay on top of it.
+                MouseArea {
+                    x: row.textX
+                    width: row.textW
+                    height: parent.height
+                    anchors.verticalCenter: parent.verticalCenter
+                    onPressed: panel.pendingRemove = -1
                 }
 
                 // The four marks, all drawn on every row. The pause used to appear only
@@ -484,6 +504,7 @@ Item {
                             hoverEnabled: true
                             enabled: modeChip.live
                             cursorShape: Qt.PointingHandCursor
+                            onPressed: panel.pendingRemove = -1
                             onEntered: panel.tipFor(modeChip,
                                 modelData.jobWant === "all" ? "全下：整片拉完" : "边看：只拉要看的",
                                 "")
@@ -512,6 +533,7 @@ Item {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
+                            onPressed: panel.pendingRemove = -1
                             // On a finished row this mark used to say 开始下载 and do
                             // nothing: start() returns early once a job is complete, so the
                             // only thing a press here could do was nothing. The row is done,
@@ -550,7 +572,7 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onEntered: panel.tipFor(removeBox, row.pending ? "再点一次确认"
-                                                                          : "删掉任务", "")
+                                                                          : "删掉任务，连本地文件", "")
                             onExited: panel.tipOff(removeBox)
                             onClicked: {
                                 if (row.pending) {
@@ -569,6 +591,7 @@ Item {
 
     // The list's bar, outside the Column so the Column does not treat it as a row.
     ThinScrollBar {
+        id: jobBar
         target: list
         x: panel.width - width
         y: bar.height + panel.gapY

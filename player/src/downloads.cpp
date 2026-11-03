@@ -577,17 +577,51 @@ void Downloads::stop(qint64 id)
     m_nam->post(QNetworkRequest(QUrl(it.value().base + u"/quit"_qs)), QByteArray());
 }
 
-void Downloads::remove(qint64 id)
+void Downloads::remove(qint64 id, bool withFile)
 {
     stop(id);
+    // The row is read before it goes, because the file it names is what he is asking for:
+    // a finished film at `path`, and while a job is still filling the bytes live at
+    // `<dir>/<name>.part` with the engine's own `<file>.part.json` beside it.
+    const DownloadRow *r = find(id);
+    const QString finalPath = r ? r->path : QString();
+    const QString dir = r ? r->dir : QString();
+    const QString name = r ? r->name : QString();
     if (m_rows.removeIf([id](const DownloadRow &r) { return r.id == id; })) {
         QDir d(stateDirFor(id));
         if (d.exists())
             d.removeRecursively();
+        int gone = 0;
+        qint64 bytes = 0;
+        if (withFile) {
+            QStringList victims;
+            if (!finalPath.isEmpty())
+                victims << finalPath;
+            if (!dir.isEmpty() && !name.isEmpty()) {
+                const QString part = QDir(dir).filePath(name + u".part"_qs);
+                victims << part << (part + u".json"_qs);
+                // A finished job's `.part.json` is left beside the file it renamed.
+                victims << QDir(dir).filePath(name + u".part.json"_qs);
+            }
+            for (const QString &p : victims) {
+                QFileInfo fi(p);
+                if (!fi.exists())
+                    continue;
+                const qint64 sz = fi.size();
+                if (QFile::remove(p)) {
+                    ++gone;
+                    bytes += sz;
+                } else {
+                    qWarning("dl file kept id=%lld (remove refused)", static_cast<long long>(id));
+                }
+            }
+        }
         QSqlQuery q(m_db);
         q.prepare(u"DELETE FROM downloads WHERE id=?"_qs);
         q.addBindValue(id);
         q.exec();
+        qInfo("dl removed id=%lld files=%d bytes=%lld withFile=%d",
+              static_cast<long long>(id), gone, static_cast<long long>(bytes), int(withFile));
         emit countChanged();
     }
 }
