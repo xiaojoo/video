@@ -1488,7 +1488,7 @@ Window {
         z: 20
         // Fullscreen and the maximised state have no edge to grab: the first is the whole
         // screen and the second is the shell's own size.
-        enabled: !videoHost.fullscreen && !videoHost.zoomed
+        enabled: !videoHost.fullscreen && !videoHost.zoomed && !win.dockOwnsEdge
         hoverEnabled: true
         onPressed: { win.frameDrag = true; videoHost.startDrag(edges) }
         onReleased: { win.frameDrag = false; videoHost.endDrag() }
@@ -1499,52 +1499,12 @@ Window {
     // Qt.CursorShape-typed property, and QML rejects that type outright
     // ("Unable to assign int to [unknown property type]").
     Band { edges: 2;  cursorShape: Qt.SizeHorCursor;  x: win.width - win.edgeGrab; y: 0; width: win.edgeGrab; height: win.height }
-    Band { edges: 8;  cursorShape: Qt.SizeVerCursor;  x: 0; y: win.height - win.edgeGrab; width: win.width; height: win.edgeGrab }
+    // Its own enabled: the wall keeps its bottom edge, so only the part under the board is
+    // given up (the width above), not the whole band.
+    Band { edges: 8;  cursorShape: Qt.SizeVerCursor;  x: 0; y: win.height - win.edgeGrab
+           width: win.width - (win.dockOwnsEdge ? win.magRight : 0); height: win.edgeGrab
+           enabled: !videoHost.fullscreen && !videoHost.zoomed }
     Band { edges: 10; cursorShape: Qt.SizeFDiagCursor; x: win.width - win.cornerGrab; y: win.height - win.cornerGrab; width: win.cornerGrab; height: win.cornerGrab }
-
-    // The right-hand board is the window's last 333 px, so the strips above run down the
-    // board's own right edge, along under it, and over its corner, and paint <-> / | / the
-    // diagonal there. Nothing about the board can be dragged wider - its width is one number
-    // the settings own - so while the board is a right-hand column these take those edges:
-    // the page's own arrow, and the press does not reach the bands under them. Close the
-    // board and the window's resize edges come back. The board's scrollbar sits 18 px inside
-    // the panel, so it is not in any of these strips' way; the bottom one is only as tall as
-    // the band it covers (8 px), which is inside the board's own 16 px padding, and the
-    // corner is square because that band is 20 px and only 20 px wide.
-    MouseArea {
-        id: dockEdge
-        z: 21
-        x: win.width - win.edgeGrab
-        y: 0
-        width: win.edgeGrab
-        height: win.height
-        enabled: win.magOpen && win.magnetRight
-                 && !videoHost.fullscreen && !videoHost.zoomed
-        hoverEnabled: true
-        cursorShape: Qt.ArrowCursor
-    }
-    MouseArea {
-        id: dockBottom
-        z: 21
-        x: win.width - win.magRight
-        y: win.height - win.edgeGrab
-        width: win.magRight
-        height: win.edgeGrab
-        enabled: dockEdge.enabled
-        hoverEnabled: true
-        cursorShape: Qt.ArrowCursor
-    }
-    MouseArea {
-        id: dockCorner
-        z: 21
-        x: win.width - win.cornerGrab
-        y: win.height - win.cornerGrab
-        width: win.cornerGrab
-        height: win.cornerGrab
-        enabled: dockEdge.enabled
-        hoverEnabled: true
-        cursorShape: Qt.ArrowCursor
-    }
 
     MouseArea {
         id: topStrip
