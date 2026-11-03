@@ -33,6 +33,10 @@ class PanLogin : public QObject
     Q_PROPERTY(QString xunleiState READ xunleiState NOTIFY stateChanged)
     Q_PROPERTY(QString baiduState READ baiduState NOTIFY stateChanged)
     Q_PROPERTY(QString quarkState READ quarkState NOTIFY stateChanged)
+    // Re-record a lapsed session by itself, without a window in front of him. Measured: 迅雷's
+    // recorded headers answered 200 for hours and then every call - the checker's and the
+    // ladder's alike - came back 401 at an age of 54,576 s, because its bearer runs 12.0 h.
+    Q_PROPERTY(bool autoRelogin READ autoRelogin WRITE setAutoRelogin NOTIFY autoReloginChanged)
 
 public:
     explicit PanLogin(QObject *parent = nullptr);
@@ -65,6 +69,16 @@ public:
     Q_INVOKABLE void logout(const QString &provider);
     // The line the settings card shows.
     Q_INVOKABLE QString stateText(const QString &provider) const;
+    // Where the flag lives: the same store the download row count uses, so it survives a
+    // rebuild and does not need a second settings object to agree with.
+    bool autoRelogin() const;
+    void setAutoRelogin(bool on);
+    // How old the recorded headers are, in hours, for the card's own line. -1 when the drive
+    // never wrote a timestamp.
+    Q_INVOKABLE double headersAgeH(const QString &provider) const;
+    // The clock this drive has been measured to have, in hours; 0 = no measured clock, so
+    // the auto path leaves it alone rather than guessing at a refresh.
+    Q_INVOKABLE static double ageLimitH(const QString &provider);
     QString xunleiState() const { return stateText(QStringLiteral("xunlei")); }
     QString baiduState() const { return stateText(QStringLiteral("baidu")); }
     QString quarkState() const { return stateText(QStringLiteral("quark")); }
@@ -81,10 +95,17 @@ public:
 signals:
     void busyChanged();
     void stateChanged();
+    void autoReloginChanged();
 
 private:
     QString profileDir() const;
     QString sessionPath(const QString &provider) const;
+    // The watch that asks, every few minutes, whether a drive's recorded headers have run
+    // past the clock it was measured with. Quiet runs never raise the browser: a window that
+    // walks itself into the foreground is the thing he would notice first.
+    void watchSessions();
+    void loginQuiet(const QString &provider);
+    void startLogin(const QString &provider, bool quiet);
     void setBusy(bool on);
     void startPoll();
     void stopPoll();
@@ -160,4 +181,12 @@ private:
     // is not thrown away to go hunting for a fresher one.
     bool m_savedFromTraffic = false;
     int m_ticks = 0;
+    // This wait was started by the watch, not by a click: shorter leash, no window raised,
+    // and a failure that says so on the row instead of a second attempt.
+    bool m_quiet = false;
+    QTimer *m_watch = nullptr;
+    // Not before this epoch, so a drive whose profile really has logged him out is not asked
+    // again every ten minutes.
+    qint64 m_retryAfter = 0;
+    QString m_autoFail;
 };

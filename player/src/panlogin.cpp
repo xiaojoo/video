@@ -101,6 +101,80 @@ PanLogin::PanLogin(QObject *parent) : QObject(parent)
     // Everything here is a loopback call to the browser on this machine; a corporate or
     // system proxy would turn that into a failure that looks like the browser being down.
     m_nam->setProxy(QNetworkProxy::NoProxy);
+    // The watch only reads a timestamp every ten minutes, so it costs nothing while the
+    // switch is off; the first pass comes early because a session that lapsed while the app
+    // was closed should be fixed before he clicks a row, not after.
+    m_watch = new QTimer(this);
+    m_watch->setInterval(600000);
+    connect(m_watch, &QTimer::timeout, this, &PanLogin::watchSessions);
+    m_watch->start();
+    QTimer::singleShot(12000, this, &PanLogin::watchSessions);
+}
+
+bool PanLogin::autoRelogin() const
+{
+    return QSettings().value(QStringLiteral("netdisk/autoRelogin"), false).toBool();
+}
+
+void PanLogin::setAutoRelogin(bool on)
+{
+    QSettings().setValue(QStringLiteral("netdisk/autoRelogin"), on);
+    qInfo("pl auto relogin=%d", int(on));
+    emit autoReloginChanged();
+    // Turning it on is the moment he wants it to take effect, not the next tick.
+    if (on)
+        QTimer::singleShot(1500, this, &PanLogin::watchSessions);
+}
+
+double PanLogin::ageLimitH(const QString &provider)
+{
+    // 迅雷 only, because 迅雷 is the only clock measured: its bearer is a JWT that runs
+    // 12.0 h, and at an age of 54,576 s every call came back 401 - the checker's and the
+    // ladder's. Refreshing at 11 leaves an hour of slack for a job already underway.
+    // 夸克/UC/百度 have no measured number, and guessing one would re-record a session that
+    // is fine, for no reason, in a window he may be looking at.
+    return provider == QLatin1String("xunlei") ? 11.0 : 0.0;
+}
+
+double PanLogin::headersAgeH(const QString &provider) const
+{
+    QFile f(sessionPath(provider));
+    if (!f.open(QIODevice::ReadOnly))
+        return -1.0;
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    const double at = o.value(QStringLiteral("headers_at")).toDouble();
+    if (at <= 0.0)
+        return -1.0;
+    return (double(QDateTime::currentSecsSinceEpoch()) - at) / 3600.0;
+}
+
+void PanLogin::watchSessions()
+{
+    if (!autoRelogin() || busy())
+        return;
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (now < m_retryAfter)
+        return;
+    for (const Provider &p : kProviders) {
+        const QString prov = QString::fromLatin1(p.name);
+        const double limit = ageLimitH(prov);
+        if (limit <= 0.0 || !hasSession(prov))
+            continue;
+        const double age = headersAgeH(prov);
+        if (age < limit)
+            continue;
+        qInfo("pl auto refresh provider=%s age=%.1fh past %.1fh", qPrintable(prov), age, limit);
+        loginQuiet(prov);
+        return;
+    }
+}
+
+void PanLogin::loginQuiet(const QString &provider)
+{
+    // Not `m_quiet = true; login(provider)`: login() is the manual door and it resets the
+    // flag, which would hand a run nobody asked for the ten-minute leash and the right to
+    // raise his browser. Measured the first time this ran: the window came forward.
+    startLogin(provider, true);
 }
 
 QString PanLogin::browserExecutable()
@@ -201,14 +275,21 @@ void PanLogin::setBusy(bool on)
 
 void PanLogin::login(const QString &provider)
 {
+    // A click is never quiet: it is the one time a window is allowed to walk into front of
+    // him, because he asked for it.
+    startLogin(provider, false);
+}
+
+void PanLogin::startLogin(const QString &provider, bool quiet)
+{
     const Provider *p = providerFor(provider);
     if (!p)
         return;
+    m_quiet = quiet;
     const QString exe = browserExecutable();
     m_provider = provider;
     if (exe.isEmpty()) {
-        m_note = tr("这台机器上没有 Chrome 或 Edge，打不开登录页");
-        emit stateChanged();
+        finish(tr("这台机器上没有 Chrome 或 Edge，打不开登录页"));
         return;
     }
     QDir().mkpath(profileDir());
@@ -225,7 +306,7 @@ void PanLogin::login(const QString &provider)
     // So: ask the port first, and wake Chrome only when this drive has no page to show him.
     QNetworkReply *rep = m_nam->get(QNetworkRequest(QUrl(
         QStringLiteral("http://127.0.0.1:%1/json/list").arg(kPort))));
-    connect(rep, &QNetworkReply::finished, this, [this, rep, exe, p, provider] {
+    connect(rep, &QNetworkReply::finished, this, [this, rep, exe, p, provider, quiet] {
         const QByteArray body = rep->readAll();
         const bool portUp = rep->error() == QNetworkReply::NoError;
         rep->deleteLater();
@@ -250,9 +331,14 @@ void PanLogin::login(const QString &provider)
         // startDetached, not start: a detached Chrome hands the url to whatever instance
         // already runs on this profile and exits, so the second drive of one session gets
         // its tab exactly like the first one did.
-        QProcess::startDetached(exe, browserArgs(QString::fromLatin1(p->loginUrl)));
-        qInfo("pl launch provider=%s exe=%s portUp=%d", qPrintable(provider),
-              qPrintable(QFileInfo(exe).fileName()), int(portUp));
+        //
+        // A quiet run asks for the offscreen window. Note what that only holds while *this*
+        // launch decides the window: if his browser is already up, the url goes to that one
+        // and the tab is visible - what quiet guarantees instead is that nothing is raised
+        // and no focus is taken.
+        QProcess::startDetached(exe, browserArgs(QString::fromLatin1(p->loginUrl), !quiet));
+        qInfo("pl launch provider=%s exe=%s portUp=%d quiet=%d", qPrintable(provider),
+              qPrintable(QFileInfo(exe).fileName()), int(portUp), int(quiet));
     });
 
     m_before.clear();
@@ -276,6 +362,7 @@ void PanLogin::login(const QString &provider)
 void PanLogin::cancel()
 {
     stopPoll();
+    m_quiet = false;
     m_note.clear();
     emit stateChanged();
 }
@@ -310,11 +397,21 @@ QString PanLogin::stateText(const QString &provider) const
         return tr("未登录");
     const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
     const int n = o.value(QStringLiteral("cookies")).toArray().size();
-    return tr("已登录 · 记录于 %1 · %2 条")
+    QString line = tr("已登录 · 记录于 %1 · %2 条")
         .arg(QDateTime::fromSecsSinceEpoch(
                  qint64(o.value(QStringLiteral("saved")).toDouble()))
                  .toString(QStringLiteral("MM-dd hh:mm")))
         .arg(n);
+    // The clock, where one has been measured: a session that will lapse in nine hours looks
+    // exactly like one that lapsed two hours ago otherwise, and the second one is the case
+    // he needs to see coming.
+    const double limit = ageLimitH(provider);
+    const double age = headersAgeH(provider);
+    if (limit > 0.0 && age >= 0.0)
+        line += tr(" · 头 %1/%2 h").arg(age, 0, 'f', 1).arg(limit, 0, 'f', 0);
+    if (m_autoFail == provider)
+        line = tr("会话走了 · 自动没记上，点一下重记");
+    return line;
 }
 
 QByteArray PanLogin::session(const QString &provider) const
@@ -353,12 +450,24 @@ void PanLogin::finish(const QString &note)
 {
     stopPoll();
     m_note = note;
+    if (m_quiet) {
+        // One attempt per lapse, and an hour before the next: a profile that has really
+        // logged him out would otherwise be asked again on every tick, forever, in a window
+        // that never answers. The row says it did not land, and the click is his to make.
+        m_autoFail = note.isEmpty() ? QString() : m_provider;
+        if (!note.isEmpty())
+            m_retryAfter = QDateTime::currentSecsSinceEpoch() + 3600;
+        qInfo("pl auto done provider=%s ok=%d", qPrintable(m_provider), int(note.isEmpty()));
+    }
+    m_quiet = false;
     emit stateChanged();
 }
 
 void PanLogin::stepList()
 {
-    if (++m_ticks > 300) {   // ten minutes of waiting is generous for a scan-code login
+    // Two minutes for a run nobody asked for, ten for the one where he is typing into the
+    // window: a scan-code login is only ever slow when somebody is looking at it.
+    if (++m_ticks > (m_quiet ? 60 : 300)) {
         finish(tr("等不到登录，%1那边没有动静").arg(driveName(m_provider)));
         return;
     }
@@ -432,9 +541,11 @@ void PanLogin::readCookies()
     connect(m_ws, &QWebSocket::connected, this, [this] {
         send2(QStringLiteral("Network.enable"));
         m_cookieId = send2(QStringLiteral("Network.getAllCookies"));
-        if (!m_raised) {
+        if (!m_raised && !m_quiet) {
             // The window has to come to him. A 去登录 that records a session in a window
             // behind everything else is exactly the "clicking does nothing" he reported.
+            // The watch's own run is the opposite case: nothing was asked for, so nothing
+            // may steal the foreground.
             m_raised = true;
             send2(QStringLiteral("Page.enable"));
             send2(QStringLiteral("Page.bringToFront"));

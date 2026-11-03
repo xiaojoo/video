@@ -1082,7 +1082,9 @@ Popup {
                 Rectangle {
                     id: panCard
                     width: body.width
-                    height: panRows.count * card.rowH
+                    // The three drives, plus the row that decides what happens when one of
+                    // their sessions runs out.
+                    height: (panRows.count + 1) * card.rowH
                     radius: 6
                     color: card.plate
                     border.width: 1
@@ -1093,7 +1095,7 @@ Popup {
                     // one.
                     Repeater {
                         id: panJoins
-                        model: panRows.count - 1
+                        model: panRows.count
 
                         Rectangle {
                             required property int index
@@ -1168,6 +1170,82 @@ Popup {
                                             panlogin.logout(prow.modelData);
                                         else
                                             panlogin.login(prow.modelData);
+                                    }
+                                }
+                            }
+                        }
+
+                        // The switch that keeps 迅雷's row from going quiet on him. It lives
+                        // in the same card, on the same rhythm, because it is the fourth
+                        // thing about those three logins - and it is the only row here whose
+                        // label is a measured clock rather than a promise.
+                        Item {
+                            id: autoRow
+                            width: parent.width
+                            height: card.rowH
+
+                            Column {
+                                x: 15
+                                y: Math.round((parent.height - height) / 2)
+                                width: 420
+                                spacing: 4
+
+                                Text {
+                                    width: parent.width
+                                    text: "会话到期自动重记"
+                                    color: card.textHi
+                                    font.pixelSize: card.smallFs
+                                    font.family: Theme.uiFont
+                                    font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: "迅雷签的头实测走 12 小时；到 11 小时自己重记一次，不抬窗口"
+                                    elide: Text.ElideMiddle
+                                    color: card.textFaint
+                                    font.pixelSize: card.labelFs
+                                    font.family: Theme.uiFont
+                                }
+                            }
+
+                            Row {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 6
+
+                                Repeater {
+                                    model: [ { on: true, text: "开" }, { on: false, text: "关" } ]
+
+                                    delegate: Rectangle {
+                                        id: autoOpt
+                                        required property var modelData
+                                        readonly property bool picked: panlogin.autoRelogin
+                                            === autoOpt.modelData.on
+                                        width: autoOptText.implicitWidth + 18
+                                        height: card.btnH
+                                        radius: Theme.controlRadius
+                                        color: autoOpt.picked ? Theme.accent
+                                               : (autoOptHit.containsMouse ? card.btnHover
+                                                                          : card.fill)
+                                        border.width: 1
+                                        border.color: autoOpt.picked ? Theme.accent : card.line
+
+                                        Text {
+                                            id: autoOptText
+                                            anchors.centerIn: parent
+                                            text: autoOpt.modelData.text
+                                            color: autoOpt.picked ? "#15151A" : card.textMid
+                                            font.pixelSize: card.bodyFs
+                                            font.family: Theme.uiFont
+                                        }
+                                        MouseArea {
+                                            id: autoOptHit
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: panlogin.autoRelogin = autoOpt.modelData.on
+                                        }
                                     }
                                 }
                             }
