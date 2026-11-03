@@ -75,6 +75,11 @@ public:
     // For whoever holds the row's hop rather than the share id: the wall filters on the
     // hop, so a verdict learned from a click has to be written under that key too.
     Q_INVOKABLE void markDead(const QString &url, int code);
+    // The other verdict. A row that answered reachable is written down so the same row is
+    // never asked twice: without this, opening a 331-row tab means 331 hops to the site every
+    // single time, and the site's pacing is what a background check is not supposed to spend.
+    Q_INVOKABLE void markAlive(const QString &hopUrl, const QString &shareUrl);
+    Q_INVOKABLE bool knownAlive(const QString &url);
     // One call per drive that asks "does this share still exist" without downloading a byte.
     Q_INVOKABLE void check(const QString &shareUrl);
     // Copies left behind by a job that died with the app. Anything whose url is not in

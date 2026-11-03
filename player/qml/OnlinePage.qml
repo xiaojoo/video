@@ -1167,6 +1167,10 @@ Item {
                     continue;
                 if (verifiedHops[r.hop] || pendingHops[r.hop])
                     continue;
+                // Asked once, answered reachable: that is written down, so the row never
+                // costs the site a hop again.
+                if (netdisk.knownAlive(r.hop))
+                    continue;
                 q.push(r.hop);
             }
             queuedHops = q;
@@ -2117,8 +2121,11 @@ Item {
                 if (!hop)
                     return;
                 if (!dead) {
-                    // Alive is remembered for this run, so opening the same film twice does
-                    // not ask the site the same 250 questions again.
+                    // Reachable is remembered in the ledger, not just for this run: the row
+                    // has been asked, the answer is in the book, and the next opening of this
+                    // film asks nothing at all. If it dies later, the click that finds out
+                    // writes the other verdict.
+                    netdisk.markAlive(hop, url);
                     const v = magPopup.verifiedHops;
                     v[hop] = true;
                     magPopup.verifiedHops = v;

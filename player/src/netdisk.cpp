@@ -125,6 +125,25 @@ void loadLedger()
     qInfo("nd ledger loaded=%d", g_dead.size());
 }
 
+// Written through a rename, because the ledger now gains a line for every row that answers -
+// a hundred rows of one film is a hundred writes, and a process killed halfway through a
+// truncate-and-write would erase the whole book.
+void saveLedger()
+{
+    const QString path = ledgerPath();
+    const QString tmp = path + QStringLiteral(".tmp");
+    QFile f(tmp);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning("nd ledger save failed: %s", qPrintable(f.errorString()));
+        return;
+    }
+    f.write(QJsonDocument(g_dead).toJson(QJsonDocument::Compact));
+    f.close();
+    QFile::remove(path);
+    if (!QFile::rename(tmp, path))
+        qWarning("nd ledger rename failed over %s", qPrintable(QFileInfo(path).fileName()));
+}
+
 // A share usually holds the same film in several encodes. The one to take by default is the
 // best that is still sane to pull: 1080p films sit at 2-8 GB, a 4K remux at 15-45 GB, and
 // clicking a row on the board means "watch this", not "give me the archive". If every
@@ -563,7 +582,38 @@ bool Netdisk::isDead(const QString &url)
 {
     loadLedger();
     const QString key = shareKeyOf(url);
-    return !key.isEmpty() && g_dead.contains(key);
+    if (key.isEmpty() || !g_dead.contains(key))
+        return false;
+    // The ledger holds both verdicts now, so "in the book" is not "dead": a row answered
+    // reachable is recorded too, and that record is what keeps it from being asked again.
+    return g_dead.value(key).toObject().value(QStringLiteral("code")).toInt(-1) != 0;
+}
+
+bool Netdisk::knownAlive(const QString &url)
+{
+    loadLedger();
+    const QString key = shareKeyOf(url);
+    return !key.isEmpty()
+           && g_dead.value(key).toObject().value(QStringLiteral("code")).toInt(-1) == 0;
+}
+
+void Netdisk::markAlive(const QString &hopUrl, const QString &shareUrl)
+{
+    const QString key = shareKeyOf(hopUrl);
+    if (key.isEmpty())
+        return;
+    loadLedger();
+    // A recorded death outranks a live answer: the two can only disagree when one of them is
+    // a stale read, and hiding a row the drive has already disowned is the safer wrong.
+    if (g_dead.contains(key)
+        && g_dead.value(key).toObject().value(QStringLiteral("code")).toInt(-1) != 0)
+        return;
+    g_dead.insert(key, QJsonObject{ { QStringLiteral("at"),
+                                      double(QDateTime::currentSecsSinceEpoch()) },
+                                    { QStringLiteral("code"), 0 },
+                                    { QStringLiteral("share"), shareUrl } });
+    saveLedger();
+    qInfo("nd alive recorded key=%s ledger=%d", qPrintable(key), g_dead.size());
 }
 
 void Netdisk::noteDead(const QString &url, int code)
@@ -581,18 +631,7 @@ void Netdisk::noteDead(const QString &url, int code)
     g_dead.insert(key, QJsonObject{ { QStringLiteral("at"),
                                       double(QDateTime::currentSecsSinceEpoch()) },
                                     { QStringLiteral("code"), code } });
-    QFile f(ledgerPath());
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        qWarning("nd ledger save failed: %s", qPrintable(f.errorString()));
-        return;
-    }
-    f.write(QJsonDocument(g_dead).toJson(QJsonDocument::Compact));
-    f.close();
-    // Say it as well as write it: the board knows the row this share came from, and this is
-    // the one door every drive's "gone" answer goes through - the checker's and the ladder's
-    // alike. The board drops the row off this rather than off the wording of a failure, which
-    // is four different sentences for one fact.
-    emit dead(url, code);
+    saveLedger();
     // The key is a row id on a public page and the code is the drive's own; neither is a
     // session, so both are safe to say out loud.
     qInfo("nd dead recorded key=%s code=%d ledger=%d", qPrintable(key), code, g_dead.size());
