@@ -1360,15 +1360,39 @@ Item {
         // padding line, and the bar on the right is what says there is more.
         readonly property real listH: dock ? Math.max(0, Math.min(listAvail, shownRows * rowH))
                                            : Math.floor(listAvail / rowH) * rowH
-        // One row of tabs in the card, two in the column: the flow's own height, held to
-        // at least one tab line so the underline still has something to sit on.
-        // While the links are still coming the tabs are not there to give the row its
-        // height, and in the column six of them never fit on one line - so the row is held
-        // open at the two lines it comes back to. Without this the list sits 48 px higher
-        // while waiting than the rows it is waiting for land at.
-        readonly property real tabFlowH: dock && waiting
-                                         ? Math.round(2 * tabH + tabRow.spacing)
-                                         : Math.max(tabH, tabRow.implicitHeight)
+        // One tab line, in both surfaces and in both states. The flow it replaced folded
+        // the column's six labels onto a second line and the list under it moved 48 px when
+        // they landed; the counts give way instead (below), so the line never grows and the
+        // wait and the answer take exactly the same room.
+        readonly property real tabFlowH: magPopup.tabH
+        // The rule the two invisible rows measure. Read off the same font engine the app
+        // draws with (13 px Segoe UI Variable Text, the column's 301 px of room):
+        //   6 tabs with counts  磁力(33) 百度(76) 夸克(133) 迅雷(79) UC(5) 阿里(0) = 360 px
+        //   6 tabs as 名字(…)                                                   = 345 px
+        //   6 tabs as 名字                                                      = 237 px
+        //   5 tabs with counts                                                  = 294 px
+        // so the digits collapse to "…" the moment they do not fit, and when even that is
+        // too wide the parens go with them; past that each label takes an even share of the
+        // line and elides. A tab cut off at the panel's edge is a source nobody can pick.
+        readonly property bool tabsPrintCounts: tabRowFull.implicitWidth <= tabBar.width
+        readonly property bool tabsPrintDots: !tabsPrintCounts
+                                              && tabRowDots.implicitWidth <= tabBar.width
+        readonly property real tabShare: visTabs.length > 0
+                ? Math.floor((tabBar.width - tabRow.spacing * (visTabs.length - 1))
+                             / visTabs.length)
+                : tabBar.width
+        // The tabs the line has to hold: the site's own nav, minus the ones with no rows
+        // behind them. One reading of it, because the live row and the two measuring rows
+        // have to count the same labels.
+        readonly property var visTabs: (filmTabs || []).filter(function (t) {
+            return shownCount(t.key) > 0;
+        })
+        // The placeholder's own measure: the count form of a two-character name is 48 px
+        // (measured above), and as many of them as the line has room for, at most the six
+        // the site's nav can carry.
+        readonly property real tabSkelW: 48
+        readonly property int tabSkelN: Math.min(6, Math.floor(
+                (tabBar.width + tabRow.spacing) / (tabSkelW + tabRow.spacing)))
 
         background: Rectangle {
             radius: magPopup.dock ? 0 : 6
@@ -1621,10 +1645,87 @@ Item {
                 width: parent.width
                 height: magPopup.tabFlowH
 
-                // A flow, not a row: six of these labels do not fit in 301 px, and the
-                // column has to show all six. In the card the same flow never wraps, so
-                // the line it draws is the line it always drew.
-                Flow {
+                // One line, always: a Row, not a Flow. Six of these labels need 360 px and
+                // the column has 301, so the line used to fold and push the list down 48 px
+                // halfway through the wait. The counts are what makes the labels wide, so
+                // they give way before the line does.
+                //
+                // The two invisible rows below are the instrument that decides that. They
+                // print the two short forms and report their natural width; the labels
+                // themselves never measure themselves, or the answer would feed its own
+                // question.
+                Row {
+                    id: tabRowFull
+                    visible: false
+                    spacing: tabRow.spacing
+                    Repeater {
+                        model: magPopup.visTabs
+                        delegate: Text {
+                            required property var modelData
+                            text: modelData.name + "(" + magPopup.shownCount(modelData.key) + ")"
+                            font.pixelSize: page.smallFs
+                            font.family: Theme.uiFont
+                        }
+                    }
+                }
+                Row {
+                    id: tabRowDots
+                    visible: false
+                    spacing: tabRow.spacing
+                    Repeater {
+                        model: magPopup.visTabs
+                        delegate: Text {
+                            required property var modelData
+                            text: modelData.name + "(…)"
+                            font.pixelSize: page.smallFs
+                            font.family: Theme.uiFont
+                        }
+                    }
+                }
+
+                // The tabs are the last thing to land (they come off the film's own page),
+                // so while it is in flight this line is blank and nothing says "wait". The
+                // bars are the shape of the tabs they turn into and breathe on the same
+                // clock as the cover above and the list below.
+                Row {
+                    id: tabSkel
+                    visible: magPopup.waiting
+                    spacing: tabRow.spacing
+
+                    Repeater {
+                        model: magPopup.tabSkelN
+
+                        delegate: Item {
+                            id: ts
+                            required property int index
+                            width: magPopup.tabSkelW
+                            height: magPopup.tabH
+                            readonly property real phase: index * 90
+
+                            SequentialAnimation on opacity {
+                                running: tabSkel.visible
+                                loops: Animation.Infinite
+                                PauseAnimation { duration: ts.phase }
+                                NumberAnimation { from: 0.45; to: 1; duration: 420
+                                                    easing.type: Easing.InOutQuad }
+                                NumberAnimation { from: 1; to: 0.45; duration: 420
+                                                  easing.type: Easing.InOutQuad }
+                            }
+
+                            // On the line the tab's own glyphs land at, so the bar is not a
+                            // second row above them.
+                            Rectangle {
+                                y: Math.round((parent.height - page.smallFs) / 2)
+                                width: parent.width
+                                height: page.smallFs
+                                radius: 2
+                                color: "#141418"
+                            }
+                        }
+                    }
+                }
+
+                Row {
                     id: tabRow
                     width: parent.width
                     spacing: magPopup.dock ? Math.round(Theme.refH * 0.0249)
@@ -1633,9 +1734,7 @@ Item {
                     Repeater {
                         // A tab with 0 behind it has no rows to show. It used to sit there
                         // greyed out, which was one more thing to look past.
-                        model: (magPopup.filmTabs || []).filter(function (t) {
-                            return magPopup.shownCount(t.key) > 0;
-                        })
+                        model: magPopup.visTabs
 
                         delegate: Item {
                             id: tabItem
@@ -1644,14 +1743,18 @@ Item {
                             // A tab whose count came out 0 has no rows behind it, and the
                             // site greys those for the same reason.
                             readonly property bool live: magPopup.shownCount(modelData.key) > 0
-                            width: tabText.implicitWidth
+                            width: Math.min(tabText.implicitWidth, magPopup.tabShare)
                             height: magPopup.tabH
 
                             Text {
                                 id: tabText
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: tabItem.modelData.name + "("
-                                      + magPopup.shownCount(tabItem.modelData.key) + ")"
+                                width: parent.width
+                                elide: Text.ElideRight
+                                text: tabItem.modelData.name
+                                      + (magPopup.tabsPrintCounts
+                                         ? "(" + magPopup.shownCount(tabItem.modelData.key) + ")"
+                                         : (magPopup.tabsPrintDots ? "(…)" : ""))
                                 color: tabItem.active ? Theme.textPrimary
                                        : (tabItem.live ? Theme.textSecondary : "#55555C")
                                 font.pixelSize: page.smallFs
@@ -1660,7 +1763,7 @@ Item {
                             Rectangle {
                                 visible: tabItem.active
                                 anchors.bottom: parent.bottom
-                                width: tabText.implicitWidth
+                                width: parent.width
                                 height: 2
                                 radius: 1
                                 color: Theme.accent
