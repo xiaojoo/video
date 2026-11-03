@@ -248,10 +248,12 @@ Item {
 
         ListView {
             id: list
-            // The bar lives in the gutter to the right of the cards, so the cards stop where
-            // it starts. It used to run under the bar's own track, which read as a mark
-            // painted on the card's edge.
-            width: parent.width - jobBar.width - panel.gapY
+            // The cards run to the panel's right edge - the line the 新建 button above
+            // ends on - and give way to the bar only when there is something to scroll.
+            // Reserving the bar's 14 px and the 13 px gap at all times put every card 27 px
+            // short of the row above it even with one job on the page (measured on his own
+            // screenshot: card border at 1232 against the button's 1259).
+            width: parent.width - (jobBar.visible ? jobBar.width + panel.gapY : 0)
             height: parent.height - bar.height - panel.gapY
             clip: true
             spacing: 9
