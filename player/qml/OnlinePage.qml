@@ -312,13 +312,11 @@ Item {
         const per = page.per;
         const lastIdx = Math.min(page.first + per, page.total) - 1;
         const out = [];
-        // The site repeats a card across its own page boundary: measured, 魔女嘉莉
-        // Carrie (href .../movies/143622/) is item 19 of site page 2 and item 0 of
-        // site page 3 - one repeat in the 80 posters of pages 1..4. The wall would
-        // otherwise show it side by side, which is what he is pointing at. Skipping it
-        // costs that screen page one poster, because the page is a fixed window of
-        // indices and reaching past its end would hand the same poster to the next one.
-        const seenHref = {};
+        // The site repeats a card across its own page boundary - measured, 魔女嘉莉
+        // Carrie (href .../movies/143622/) is item 19 of site page 2 and item 0 of site
+        // page 3, one repeat in the 80 posters of pages 1..4 - so the wall does show it
+        // twice. Left that way on purpose: dropping it costs the screen one poster (26 of
+        // 27) and a full page is the rule here.
         let missing = false;   // a site page this pass wanted and could not get
         let idx = page.first;
         // Both halves matter: the page is full when `out` reaches `per`, and `lastIdx` is
@@ -349,11 +347,7 @@ Item {
             }
             let j = idx - (sp - 1) * page.siteSize;
             while (j < got.length && out.length < per && idx <= lastIdx) {
-                const h = got[j].href;
-                if (seenHref[h] === undefined) {
-                    seenHref[h] = true;
-                    out.push(got[j]);
-                }
+                out.push(got[j]);
                 ++j;
                 ++idx;
             }
