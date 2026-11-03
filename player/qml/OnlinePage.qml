@@ -697,9 +697,10 @@ Item {
             x: page.pad - page.inset
             y: page.contentTop
             width: parent.width - 2 * (page.pad - page.inset)
-            // The whole height is the wall's: the page hop is no longer a strip held under
-            // it, it is the last thing in the list (see `footer`), so nothing is reserved.
-            height: parent.height - y - page.pad
+            // Everything above the page hop is the wall's; the strip at the bottom is
+            // subtracted here so a partly-visible last row is cut by the wall's own edge,
+            // never by the chips drawn over it.
+            height: parent.height - y - page.pad - pagerStrip.height
             clip: true
             // The grid stays up whenever it has a source to read from. It used to hide
             // itself for the duration of *any* page-level request, which is what the posters
@@ -728,191 +729,6 @@ Item {
             // The screen page, not the site's: `page.shown` holds exactly `per` posters.
             model: page.shown
 
-            // ---- the page hop: this wall's own pages, at the end of the list ----
-            // It used to be a strip pinned to the bottom of the page, which cost the wall a
-            // row of posters and put the chips over the last row's labels. As the grid's
-            // footer it is part of the scrolled content, so it only shows once the list has
-            // been run to its end.
-            footer: Item {
-                id: pagerFooter
-                // The shelf the chips sit on. Measured off his second picture, where the two
-                // ends keep going: over a 41 px chip the flat top runs 60 px past the group,
-                // an S of 32 px drops 34 px, and the low run then runs on to the page edge.
-                // Scaled to this row's 36 px chip: 10 above, 53 past, 28 of curve, 30 down.
-                readonly property real lineRoom: Math.round(Theme.refH * 0.0138)
-                readonly property real overhang: Math.round(Theme.refH * 0.0733)
-                readonly property real run: Math.round(Theme.refH * 0.0387)
-                readonly property real drop: Math.round(Theme.refH * 0.0415)
-                width: wall.width
-                height: pager.visible ? pager.height + 2 * page.inset + pagerFooter.lineRoom : 0
-                // What the grid reserves for the footer. GridView has no `footerHeight`, so it
-                // reads the item's implicitHeight - which an Item does not derive from its own
-                // height, and left at zero the page hop was laid over the last row of posters.
-                // That is the "sometimes it sits on top of the cards" he saw on a short page.
-                implicitHeight: pagerFooter.height
-
-                // The wall scrolls in sub-pixel steps, so while it moves this row sits
-                // between two device rows. The chips' 1 px borders take that as a spread
-                // over both rows, and the line does too - but the line is a Canvas, so it
-                // reaches the screen as a texture, and the second row it grows is a dimmer
-                // copy (measured while scrolling: the line's own row stayed at 38, and the
-                // row under it took 15..21 out of the 10-value page behind it, changing
-                // every frame). The chips are geometry and settle back to one row at rest;
-                // the line's extra row is what reads as the line shivering under them.
-                // Moving both by the same sub-pixel remainder cancels it, so the texture
-                // is blitted row for row and the line is drawn the way it is at rest.
-                readonly property real snapY: {
-                    const dpr = Screen.devicePixelRatio > 0 ? Screen.devicePixelRatio : 1;
-                    const abs = wall.y + pagerFooter.y - wall.contentY;
-                    return Math.round(abs * dpr) / dpr - abs;
-                }
-
-                // ---- the line: flat over the chips, falling away and running out ----
-                Canvas {
-                    id: shelf
-                    x: 0
-                    y: page.inset + pagerFooter.snapY
-                    width: pagerFooter.width
-                    height: pagerFooter.drop
-                    visible: pager.visible
-                    antialiasing: true
-
-                    // The path is laid out around the chip group, and a page-count change
-                    // moves that group without moving this canvas: the canvas is the wall's
-                    // whole width and only repaints on its own size. Reading the group's
-                    // width through a property is what makes the change a repaint trigger -
-                    // without it the drops stayed where the *previous* group ended, which
-                    // put them under the arrows.
-                    property real groupW: pager.width
-                    property real groupX: pager.x
-                    onGroupWChanged: requestPaint()
-                    onGroupXChanged: requestPaint()
-                    onWidthChanged: requestPaint()
-                    onHeightChanged: requestPaint()
-                    onPaint: {
-                        const c = getContext("2d")
-                        c.reset()
-                        // The two ends stop where the poster art stops. This canvas lives in
-                        // the wall's coordinates, and the wall already sits `pad - inset` off
-                        // the page, so the card gutter here is the cell's own inset.
-                        const gap = page.inset
-                        const r = pagerFooter.run
-                        const gl = groupX
-                        const gr = groupX + groupW
-                        // Where the flat top ends and the drop begins, on each side.
-                        const fl = Math.max(gap + r + 1, gl - pagerFooter.overhang)
-                        const fr = Math.min(width - gap - r - 1, gr + pagerFooter.overhang)
-                        const yTop = 0.5
-                        const yLow = height - 0.5
-                        c.lineWidth = 1
-                        c.lineCap = "butt"
-                        c.strokeStyle = "#26262A"
-                        c.beginPath()
-                        c.moveTo(gap, yLow)
-                        c.lineTo(fl - r, yLow)
-                        c.bezierCurveTo(fl - r * 0.45, yLow, fl - r * 0.45, yTop, fl, yTop)
-                        c.lineTo(fr, yTop)
-                        c.bezierCurveTo(fr + r * 0.45, yTop, fr + r * 0.45, yLow, fr + r, yLow)
-                        c.lineTo(width - gap, yLow)
-                        c.stroke()
-                        // The two low runs and their drops carry the accent: dim at the page
-                        // edge, strongest where the drop meets the flat, and gone by the top
-                        // of the drop (measured there: (56,39,32) at the edge, (138,90,2) at
-                        // the junction, (31,31,36) - grey - 2 px above it).
-                        for (const side of [0, 1]) {
-                            const from = side ? width - gap : gap
-                            const to = side ? fr + r : fl - r
-                            const g = c.createLinearGradient(from, 0, to, 0)
-                            g.addColorStop(0, Qt.rgba(1, 0.545, 0, 0.16))
-                            g.addColorStop(0.72, Theme.accent)
-                            g.addColorStop(1, Qt.rgba(1, 0.545, 0, 0))
-                            c.strokeStyle = g
-                            c.beginPath()
-                            if (side === 0) {
-                                c.moveTo(gap, yLow)
-                                c.lineTo(fl - r, yLow)
-                                c.bezierCurveTo(fl - r * 0.45, yLow, fl - r * 0.45, yTop, fl, yTop)
-                            } else {
-                                c.moveTo(width - gap, yLow)
-                                c.lineTo(fr + r, yLow)
-                                c.bezierCurveTo(fr + r * 0.45, yLow, fr + r * 0.45, yTop, fr, yTop)
-                            }
-                            c.stroke()
-                        }
-                    }
-                }
-
-                Row {
-                    id: pager
-                    x: Math.max(0, (parent.width - width) / 2)
-                    y: page.inset + pagerFooter.lineRoom + pagerFooter.snapY
-                    // The reference's gap is 0.39 of a chip's height; at this row's 36 px
-                    // that is 14, not the page's 18 px control gap.
-                    spacing: Math.round(height * 0.39)
-                    height: Math.round(Theme.refH * 0.05)
-                    visible: page.liveSources.length > 0 && page.pages > 1
-
-                    Repeater {
-                        model: page.chips
-
-                        delegate: Rectangle {
-                            id: hop
-                            required property var modelData
-                            // The left arrow on the first page is greyed rather than gone, so
-                            // the row does not shift when a page is clicked.
-                            readonly property bool live: modelData.live === true
-                            readonly property bool arrow: modelData.icon !== undefined
-                            // A square, as the reference's are (44 x 41): the number, the arrow
-                            // and the dots all get the same plate, so the row reads as a strip of
-                            // chips rather than as words of different lengths. Four digits
-                            // (3674) is 28 px of ink in a 36 px plate.
-                            width: height
-                            height: parent.height
-                            radius: Math.round(height * 0.2)
-                            // The current page keeps the amber plate, so hovering it must not
-                            // paint the grey back over it.
-                            color: modelData.on ? "#3A2A0E"
-                                   : (hopMouse.containsMouse && hop.live ? "#2A2A2E" : "#1B1B1F")
-                            border.width: 1
-                            border.color: modelData.on ? Theme.accent : "#3A3A40"
-
-                            Icon {
-                                visible: hop.arrow
-                                anchors.centerIn: parent
-                                // 0.56 of the plate: the glyph's own ink then stands as tall as
-                                // the digits beside it (9 px at this row's 13 px text).
-                                width: Math.round(hop.height * 0.56)
-                                height: width
-                                name: modelData.icon || ""
-                                color: hop.live ? Theme.textPrimary : "#4A4A4E"
-                            }
-                            Text {
-                                visible: !hop.arrow
-                                anchors.centerIn: parent
-                                // Arrow chips carry an icon and no label; binding the
-                                // missing key straight to text warns on every rebuild.
-                                text: modelData.label || ""
-                                color: modelData.on ? Theme.accent
-                                       : (modelData.kind === "gap" ? Theme.textSecondary
-                                          : (hop.live ? Theme.textPrimary : "#4A4A4E"))
-                                font.pixelSize: page.smallFs
-                                font.family: Theme.uiFont
-                            }
-                            MouseArea {
-                                id: hopMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: hop.live ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: {
-                                    searchBox.releaseFocus();
-                                    if (hop.live)
-                                        page.jumpTo(modelData.to);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             // The grid is a Flickable, so a click on the empty part of it is consumed here
             // and never reaches the page behind; a tap still means the same thing.
@@ -1090,6 +906,192 @@ Item {
                         PauseAnimation { duration: index * 180 }
                         NumberAnimation { from: 0.25; to: 1; duration: 300 }
                         NumberAnimation { from: 1; to: 0.25; duration: 300 }
+                    }
+                }
+            }
+        }
+
+            // ---- the page hop: pinned to the bottom of the wall's band ----
+            // It was the grid's footer, and a GridView is a Flickable that adopts its children
+            // into the scrolled content - so the chips were laid at the end of the content and
+            // drew over the last row of posters whenever that row was only partly on screen.
+            // As a sibling it stays at the bottom, and the wall's height gives that strip up,
+            // so nothing it shows can ever sit under the chips. One page: it is not there.
+        Item {
+            id: pagerStrip
+            // The shelf the chips sit on. Measured off his second picture, where the two
+            // ends keep going: over a 41 px chip the flat top runs 60 px past the group,
+            // an S of 32 px drops 34 px, and the low run then runs on to the page edge.
+            // Scaled to this row's 36 px chip: 10 above, 53 past, 28 of curve, 30 down.
+            readonly property real lineRoom: Math.round(Theme.refH * 0.0138)
+            readonly property real overhang: Math.round(Theme.refH * 0.0733)
+            readonly property real run: Math.round(Theme.refH * 0.0387)
+            readonly property real drop: Math.round(Theme.refH * 0.0415)
+            x: wall.x
+            width: wall.width
+            // Pinned to the bottom of the band the wall used to own; the wall subtracts this
+            // strip's height, so what it scrolls can never end up under the chips.
+            y: parent.height - page.pad - height
+            height: pager.visible ? pager.height + 2 * page.inset + pagerStrip.lineRoom : 0
+
+            // The wall scrolls in sub-pixel steps, so while it moves this row sits
+            // between two device rows. The chips' 1 px borders take that as a spread
+            // over both rows, and the line does too - but the line is a Canvas, so it
+            // reaches the screen as a texture, and the second row it grows is a dimmer
+            // copy (measured while scrolling: the line's own row stayed at 38, and the
+            // row under it took 15..21 out of the 10-value page behind it, changing
+            // every frame). The chips are geometry and settle back to one row at rest;
+            // the line's extra row is what reads as the line shivering under them.
+            // Moving both by the same sub-pixel remainder cancels it, so the texture
+            // is blitted row for row and the line is drawn the way it is at rest.
+            readonly property real snapY: {
+                const dpr = Screen.devicePixelRatio > 0 ? Screen.devicePixelRatio : 1;
+                const abs = pagerStrip.y;
+                return Math.round(abs * dpr) / dpr - abs;
+            }
+
+            // ---- the line: flat over the chips, falling away and running out ----
+            Canvas {
+                id: shelf
+                x: 0
+                y: page.inset + pagerStrip.snapY
+                width: pagerStrip.width
+                height: pagerStrip.drop
+                visible: pager.visible
+                antialiasing: true
+
+                // The path is laid out around the chip group, and a page-count change
+                // moves that group without moving this canvas: the canvas is the wall's
+                // whole width and only repaints on its own size. Reading the group's
+                // width through a property is what makes the change a repaint trigger -
+                // without it the drops stayed where the *previous* group ended, which
+                // put them under the arrows.
+                property real groupW: pager.width
+                property real groupX: pager.x
+                onGroupWChanged: requestPaint()
+                onGroupXChanged: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                onPaint: {
+                    const c = getContext("2d")
+                    c.reset()
+                    // The two ends stop where the poster art stops. This canvas lives in
+                    // the wall's coordinates, and the wall already sits `pad - inset` off
+                    // the page, so the card gutter here is the cell's own inset.
+                    const gap = page.inset
+                    const r = pagerStrip.run
+                    const gl = groupX
+                    const gr = groupX + groupW
+                    // Where the flat top ends and the drop begins, on each side.
+                    const fl = Math.max(gap + r + 1, gl - pagerStrip.overhang)
+                    const fr = Math.min(width - gap - r - 1, gr + pagerStrip.overhang)
+                    const yTop = 0.5
+                    const yLow = height - 0.5
+                    c.lineWidth = 1
+                    c.lineCap = "butt"
+                    c.strokeStyle = "#26262A"
+                    c.beginPath()
+                    c.moveTo(gap, yLow)
+                    c.lineTo(fl - r, yLow)
+                    c.bezierCurveTo(fl - r * 0.45, yLow, fl - r * 0.45, yTop, fl, yTop)
+                    c.lineTo(fr, yTop)
+                    c.bezierCurveTo(fr + r * 0.45, yTop, fr + r * 0.45, yLow, fr + r, yLow)
+                    c.lineTo(width - gap, yLow)
+                    c.stroke()
+                    // The two low runs and their drops carry the accent: dim at the page
+                    // edge, strongest where the drop meets the flat, and gone by the top
+                    // of the drop (measured there: (56,39,32) at the edge, (138,90,2) at
+                    // the junction, (31,31,36) - grey - 2 px above it).
+                    for (const side of [0, 1]) {
+                        const from = side ? width - gap : gap
+                        const to = side ? fr + r : fl - r
+                        const g = c.createLinearGradient(from, 0, to, 0)
+                        g.addColorStop(0, Qt.rgba(1, 0.545, 0, 0.16))
+                        g.addColorStop(0.72, Theme.accent)
+                        g.addColorStop(1, Qt.rgba(1, 0.545, 0, 0))
+                        c.strokeStyle = g
+                        c.beginPath()
+                        if (side === 0) {
+                            c.moveTo(gap, yLow)
+                            c.lineTo(fl - r, yLow)
+                            c.bezierCurveTo(fl - r * 0.45, yLow, fl - r * 0.45, yTop, fl, yTop)
+                        } else {
+                            c.moveTo(width - gap, yLow)
+                            c.lineTo(fr + r, yLow)
+                            c.bezierCurveTo(fr + r * 0.45, yLow, fr + r * 0.45, yTop, fr, yTop)
+                        }
+                        c.stroke()
+                    }
+                }
+            }
+
+            Row {
+                id: pager
+                x: Math.max(0, (parent.width - width) / 2)
+                y: page.inset + pagerStrip.lineRoom + pagerStrip.snapY
+                // The reference's gap is 0.39 of a chip's height; at this row's 36 px
+                // that is 14, not the page's 18 px control gap.
+                spacing: Math.round(height * 0.39)
+                height: Math.round(Theme.refH * 0.05)
+                visible: page.liveSources.length > 0 && page.pages > 1
+
+                Repeater {
+                    model: page.chips
+
+                    delegate: Rectangle {
+                        id: hop
+                        required property var modelData
+                        // The left arrow on the first page is greyed rather than gone, so
+                        // the row does not shift when a page is clicked.
+                        readonly property bool live: modelData.live === true
+                        readonly property bool arrow: modelData.icon !== undefined
+                        // A square, as the reference's are (44 x 41): the number, the arrow
+                        // and the dots all get the same plate, so the row reads as a strip of
+                        // chips rather than as words of different lengths. Four digits
+                        // (3674) is 28 px of ink in a 36 px plate.
+                        width: height
+                        height: parent.height
+                        radius: Math.round(height * 0.2)
+                        // The current page keeps the amber plate, so hovering it must not
+                        // paint the grey back over it.
+                        color: modelData.on ? "#3A2A0E"
+                               : (hopMouse.containsMouse && hop.live ? "#2A2A2E" : "#1B1B1F")
+                        border.width: 1
+                        border.color: modelData.on ? Theme.accent : "#3A3A40"
+
+                        Icon {
+                            visible: hop.arrow
+                            anchors.centerIn: parent
+                            // 0.56 of the plate: the glyph's own ink then stands as tall as
+                            // the digits beside it (9 px at this row's 13 px text).
+                            width: Math.round(hop.height * 0.56)
+                            height: width
+                            name: modelData.icon || ""
+                            color: hop.live ? Theme.textPrimary : "#4A4A4E"
+                        }
+                        Text {
+                            visible: !hop.arrow
+                            anchors.centerIn: parent
+                            // Arrow chips carry an icon and no label; binding the
+                            // missing key straight to text warns on every rebuild.
+                            text: modelData.label || ""
+                            color: modelData.on ? Theme.accent
+                                   : (modelData.kind === "gap" ? Theme.textSecondary
+                                      : (hop.live ? Theme.textPrimary : "#4A4A4E"))
+                            font.pixelSize: page.smallFs
+                            font.family: Theme.uiFont
+                        }
+                        MouseArea {
+                            id: hopMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: hop.live ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: {
+                                searchBox.releaseFocus();
+                                if (hop.live)
+                                    page.jumpTo(modelData.to);
+                            }
+                        }
                     }
                 }
             }
