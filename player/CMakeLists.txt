@@ -19,6 +19,8 @@ qt_add_executable(appPlayerui
     src/library.cpp
     src/downloads.h
     src/downloads.cpp
+    src/cast.h
+    src/cast.cpp
     src/online.h
     src/online.cpp
     src/netdisk.h

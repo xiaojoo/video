@@ -225,7 +225,29 @@ Window {
         else if (what === "mute" || what === "volume" || what === "volumeMuted")
             playerCore.cycleProperty("mute");
         else if (what === "playlist") win.setPlaylist(!win.plOpen);
+        else if (what === "cast") win.toggleCast();
         win.touch();
+    }
+
+    // Where the host's play head was the last time the cast was told about it. A jump
+    // away from this is a seek, not the clock ticking.
+    property real lastCastPos: 0
+
+    // One press starts the cast and puts the address on the clipboard, because the
+    // next thing the host does is paste it into the group chat. A second press stops
+    // it. There is deliberately no panel for it: the icon's own bubble already carries
+    // the address and how many are watching, and a surface to copy from would only be
+    // a third place for the same string.
+    function toggleCast() {
+        if (cast.active) {
+            cast.stop();
+            return;
+        }
+        const src = playerCore.mediaUrl;
+        if (!src.length)
+            return;
+        if (cast.start(src, playerCore.position, playerCore.mediaTitle))
+            cast.copyToClipboard();
     }
 
     // --- right-click menu -------------------------------------------------
@@ -242,7 +264,7 @@ Window {
     // is withheld, because there is nothing for it to do.
     function menuLive(name) {
         if (name === "cast")
-            return false;                       // 投屏 is not wired up
+            return cast.active || playerCore.hasMedia;
         if (name === "cc")
             return playerCore.subTracks.length > 0;
         if (name === "audioTrack")
@@ -390,12 +412,17 @@ Window {
     // over it in the same pass - which is why there is no second window any more.
     VideoItem {
         id: video
-        // The film's own column: the full window until the dock opens and takes a
-        // strip off the right - and when it does, the window has already grown by the
-        // same number, so this is the width the picture had before.
-        x: 0
+        // The film's own picture stays inside the page's own column. The right-hand board
+        // takes its strip out of the page (magRight), and the left one out of the window
+        // (magExtra), and both pages stop painting in that strip - so a video that spanned
+        // the whole window showed the last decoded frame through the gap. Measured with the
+        // board docked and one row in the tab: 337x346 px of film under the board, the pixels
+        // equal to the frame the film was left on (mean channel difference 2.09).
+        // On the player page the board is closed, both margins are 0, and this is the full
+        // window it always was.
+        x: win.magExtra
         y: 0
-        width: win.stageW
+        width: win.stageW - win.magExtra - win.magRight
         height: win.height
         core: playerCore
         // Nothing can be loaded before the render context exists; PlayerCore
@@ -416,9 +443,9 @@ Window {
     // without a visible step.
     Image {
         id: resumeCover
-        x: 0
+        x: win.magExtra
         y: 0
-        width: win.stageW
+        width: win.stageW - win.magExtra - win.magRight
         height: win.height
         visible: win.coverOn
         source: shellResumeShot
@@ -1217,11 +1244,45 @@ Window {
             subCount: playerCore.subTracks.length
             hasChapters: win.hasChapters
             muted: playerCore.muted
+            castOn: cast.active
+            castUrl: cast.pageUrl
+            castViewers: {
+                const v = cast.status.viewers || {};
+                return (v.a | 0) + (v.b | 0) + (v.c | 0);
+            }
+            hasMedia: playerCore.hasMedia
             onAction: (what) => win.act(what)
             onVolumePicked: (pct) => playerCore.setVolume(pct)
             onPickFor: (name, item) => win.openPicker(name, item)
             onTipFor: (item, text, keys) => tip.show(item, text, keys, "above")
             onTipOff: (item) => tip.hideFor(item)
+        }
+
+        // The cast reads the same source the player is watching, so the host's own moves
+        // have to reach it. Pause is a property; a seek is recognised as a jump bigger
+        // than the scrub bar's nudges, because PlayerCore reports the position and not
+        // the act of seeking.
+        Connections {
+            target: playerCore
+            function onPausedChanged() {
+                if (cast.active)
+                    cast.setPaused(playerCore.paused);
+            }
+            function onPositionChanged() {
+                if (!cast.active) {
+                    win.lastCastPos = playerCore.position;
+                    return;
+                }
+                if (Math.abs(playerCore.position - win.lastCastPos) > 5)
+                    cast.seekTo(playerCore.position);
+                win.lastCastPos = playerCore.position;
+            }
+            // Loading the next file while casting moves the cast onto it: the room is
+            // watching this machine, not one file. Cast::start stops the old one first.
+            function onMediaUrlChanged() {
+                if (cast.active && playerCore.mediaUrl.length)
+                    cast.start(playerCore.mediaUrl, playerCore.position, playerCore.mediaTitle);
+            }
         }
 
 
@@ -1319,6 +1380,7 @@ Window {
     Shortcut { sequence: "A"; enabled: win.page === "player"; onActivated: win.act("audioTrack") }
     Shortcut { sequence: "P"; enabled: win.page === "player"; onActivated: win.act("playlist") }
     Shortcut { sequence: "M"; enabled: win.page === "player"; onActivated: win.act("mute") }
+    Shortcut { sequence: "T"; enabled: win.page === "player"; onActivated: win.act("cast") }
     // F is the only entry left that goes to true fullscreen (over the task bar);
     // the double-click and the expand cell both hand the window to Windows' own
     // maximise so all of them land on the same rect.

@@ -32,7 +32,56 @@ func main() {
 	headers := flag.String("headers", "", "file of HTTP headers to send, one 'Name: value' per line (keeps cookies out of argv)")
 	conns := flag.Int("conns", 8, "parallel connections for an http job")
 	chunkMB := flag.Float64("chunk", 8, "bytes per part in MiB for an http job")
+	castAt := flag.Float64("cast-at", 0, "start the cast window at N seconds, the host's own position")
+	castFFmpeg := flag.String("cast-ffmpeg", "", "path to ffmpeg (default: beside the exe, then PATH)")
+	castTitle := flag.String("cast-title", "", "name shown to viewers")
+	castSeg := flag.Float64("cast-seg", 2, "HLS segment length in seconds")
+	castList := flag.Int("cast-list", 4, "segments the rolling HLS window keeps; this number is the A-path's lag")
+	castAudio := flag.Int("cast-audio", 192, "audio bitrate in kbit/s; browsers cannot decode DTS")
+	castCap := flag.Float64("cast-cap", 0, "re-encode video to this Mbit/s ceiling (0 sends the source bytes)")
+	castRTC := flag.Float64("cast-rtc-b", 6, "Mbit/s for the WebRTC path, which always re-encodes (no B-frames)")
 	flag.Parse()
+
+	if *mode == "cast" {
+		if *src == "" {
+			die("cast mode needs -src")
+		}
+		dir := *dataDir
+		if dir == "" {
+			dir = filepath.Join(os.TempDir(), "playerui-cast")
+		}
+		c, err := serveCast(CastSpec{
+			Source: *src, At: *castAt, FFmpeg: findFFmpeg(*castFFmpeg), Dir: dir,
+			Title: *castTitle, SegSec: *castSeg, ListSize: *castList,
+			AudioKB: *castAudio, VideoCapMB: *castCap, RTCVideoMB: *castRTC,
+		}, *httpAddr)
+		if err != nil {
+			die("cast: %v", err)
+		}
+		fmt.Printf("LISTEN %s\n", c.URL)
+		os.Stdout.Sync()
+		done := make(chan os.Signal, 1)
+		signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+		tick := time.NewTicker(*interval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				b, _ := json.Marshal(c.status())
+				fmt.Printf("%s\n", b)
+				os.Stdout.Sync()
+			case <-c.Quit:
+				b, _ := json.Marshal(c.status())
+				fmt.Printf("EXIT %s\n", b)
+				os.Stdout.Sync()
+				return
+			case <-c.Stopped:
+				die("cast server stopped")
+			case <-done:
+				c.stop()
+			}
+		}
+	}
 
 	if *mode == "http" {
 		if *rawURL == "" {
@@ -133,6 +182,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  downloader -mode download -data DIR [-state DIR] -src MAGNET|FILE.torrent [-http ADDR] [-limit MiB/s] [-want all|stream] [-peers h:p,h:p] [-isolated] [-seed]")
 		fmt.Fprintln(os.Stderr, "  downloader -mode http -data DIR -url URL [-out-name NAME] [-headers FILE] [-conns N] [-chunk MiB] [-http ADDR]")
 		fmt.Fprintln(os.Stderr, "  downloader -mode seed -file FILE [-port 0]")
+		fmt.Fprintln(os.Stderr, "  downloader -mode cast -data DIR -src FILE|URL [-cast-at S] [-cast-ffmpeg PATH] [-cast-title NAME] [-http ADDR] [-cast-cap Mbit]")
 		os.Exit(2)
 	}
 

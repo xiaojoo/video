@@ -31,6 +31,15 @@ Item {
     property bool hasChapters: true
     // The speaker glyph carries this: muted draws the same speaker with a slash over it.
     property bool muted: false
+    // Casting. `castOn` is the state the shell reports; the cell is never greyed while a
+    // cast is up, because stopping has to be reachable from the same place that started it.
+    property bool castOn: false
+    property int castViewers: 0
+    property string castUrl: ""
+    // Set by the shell: with nothing loaded there is nothing to cast, and the cell goes
+    // grey the same way the chapter jumps do.
+    property bool hasMedia: false
+    readonly property bool castLive: castOn || hasMedia
 
     signal action(string what)
     signal volumePicked(real percent)
@@ -245,8 +254,9 @@ Item {
 
         Cell { name: "menu";   x: row.xOf(row.leftOrder[row.tier], "menu", row.pitchL); tipText: "打开媒体库" }
         Cell { name: "cast";   visible: row.shown(row.leftOrder[row.tier], "cast")
-               x: row.xOf(row.leftOrder[row.tier], "cast", row.pitchL); live: false
-               tipText: "投屏"; tipKeys: "暂未接入" }
+               x: row.xOf(row.leftOrder[row.tier], "cast", row.pitchL); live: row.castLive
+               tipText: row.castOn ? "停止投屏" : "投屏"
+               tipKeys: row.castOn ? (row.castUrl + " · " + row.castViewers + " 人在看") : "T" }
         Cell { name: "cc";     visible: row.shown(row.leftOrder[row.tier], "cc")
                x: row.xOf(row.leftOrder[row.tier], "cc", row.pitchL); hasMenu: true
                live: row.subCount > 0

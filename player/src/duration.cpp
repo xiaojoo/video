@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QFile>
+#include <QRegularExpression>
 #include <QFileInfo>
 
 #include <cmath>
@@ -267,6 +268,25 @@ double flacDuration(const QByteArray &b)
 
 } // namespace
 
+double m3uDuration(const QString &path)
+{
+    // #EXTINF values are the only length a playlist carries, and they are the same numbers
+    // the ladder counted before writing the file (962 segments, 9617 s for the 2.67 h
+    // 百度 transcode). Read whole: a 962-line playlist is a megabyte, and the 64 KB head
+    // the container parsers use would only reach the first tenth of the film.
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return 0.0;
+    const QByteArray text = f.readAll();
+    f.close();
+    double seconds = 0.0;
+    static const QRegularExpression re(QStringLiteral("#EXTINF:([0-9]+(?:\.[0-9]+)?)"));
+    auto it = re.globalMatch(text);
+    while (it.hasNext())
+        seconds += it.next().captured(1).toDouble();
+    return seconds;
+}
+
 double readDuration(const QString &path)
 {
     // A disc folder is deliberately 0: the MPLS TotalPlayTime and the CLPI
@@ -287,6 +307,9 @@ double readDuration(const QString &path)
     f.close();
     if (head.size() < 16)
         return 0.0;
+
+    if (head.startsWith("#EXTM3U"))
+        return m3uDuration(path);
 
     const uchar *p = reinterpret_cast<const uchar *>(head.constData());
     if (be32(p) == 0x1A45DFA3u)

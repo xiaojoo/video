@@ -18,6 +18,9 @@
 namespace {
 
 constexpr int kSettlePolls = 5;         // 250 ms after the load before grabbing
+constexpr int kSeekBudgetPolls = 100;   // 5 s for a remote seek to actually land
+constexpr int kShotRetries = 8;         // a remote playlist has no frame that soon
+constexpr int kShotRetryPolls = 4;      // 200 ms between the retries
 constexpr int kPresentBudgetPolls = 40;   // 40 x 50 ms for a frame to reach the VO
 constexpr int kFileBudgetPolls = 60;      // 60 x 50 ms for the jpg to land
 
@@ -25,6 +28,15 @@ QString slotPath(const QString &dir, int index)
 {
     return dir + QLatin1Char('/') + QString::number(index).rightJustified(2, QLatin1Char('0'))
         + QLatin1String(".jpg");
+}
+
+bool sameBytes(const QString &a, const QString &b)
+{
+    QFile fa(a), fb(b);
+    if (!fa.open(QIODevice::ReadOnly) || !fb.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray ba = fa.readAll();
+    return !ba.isEmpty() && ba == fb.readAll();
 }
 
 // Keyed on the path plus the file's own identity, so a re-encode or a rename
@@ -223,7 +235,8 @@ void ThumbStrip::build(const QString &url, double duration, int count)
         m_stripRunning = true;
         emit buildingChanged();
     }
-    qInfo("THUMB build start cached=%d of %d dir=%s", cached, count, qPrintable(job.dir));
+    qInfo("THUMB build start cached=%d of %d dir=%s duration=%.1f first=%.1f last=%.1f",
+          cached, count, qPrintable(job.dir), duration, job.times.first(), job.times.last());
     startStrip(job);
 }
 
@@ -381,8 +394,10 @@ void ThumbStrip::startFrame()
     }
     const QString file = target();
     QFile::remove(file);
+    const double want = m_active.times.at(m_index);
+    m_seekTo = want;
     mpv_set_property_string(m_mpv, "start",
-                            QByteArray::number(m_active.times.at(m_index), 'f', 3).constData());
+                            QByteArray::number(want, 'f', 3).constData());
     // Events from the previous load can still be sitting in the queue. Dropping
     // them here is what makes the FILE_LOADED below belong to this loadfile.
     while (mpv_wait_event(m_mpv, 0)->event_id != MPV_EVENT_NONE) {}
@@ -396,12 +411,19 @@ void ThumbStrip::startFrame()
     }
     m_stage = WaitingLoad;
     m_polls = 0;
+    m_shots = 0;
     m_poll.start();
 }
 
 void ThumbStrip::takeShot()
 {
     const QString file = target();
+    double at = -1.0;
+    if (mpv_get_property(m_mpv, "playback-time", MPV_FORMAT_DOUBLE, &at) < 0)
+        at = -1.0;
+    // Ten identical jpgs can mean "the seek never landed" or "it landed and the VO kept showing
+    // the old frame", and only the position at the moment of the grab tells them apart.
+    qInfo("THUMB grab %d want=%.1f pos=%.1f", m_index, m_seekTo, at);
     m_poll.stop();
     m_stage = WaitingFile;
     m_polls = 0;
@@ -413,8 +435,20 @@ void ThumbStrip::takeShot()
     // a missing file three seconds later.
     const int rc = mpv_command(m_mpv, args);
     if (rc < 0) {
-        qWarning("THUMB screenshot rc=%d (%s) at %d -> %s", rc, mpv_error_string(rc),
-                 m_index, qPrintable(file));
+        // -12 (no video to copy) is what a remote source answers while it is still
+        // fetching the segment at the seek target: measured, all 10 frames of a 百度
+        // playlist failed at once with the local settle time alone. Retrying the same
+        // grab costs 200 ms each and costs nothing for a local file, which never gets
+        // here because the first attempt already succeeded.
+        if (m_shots < kShotRetries) {
+            ++m_shots;
+            m_stage = WaitingShot;
+            m_polls = 0;
+            m_poll.start();
+            return;
+        }
+        qWarning("THUMB screenshot rc=%d (%s) at %d after %d tries -> %s", rc,
+                 mpv_error_string(rc), m_index, m_shots, qPrintable(file));
         ++m_index;
         startFrame();
         return;
@@ -425,18 +459,45 @@ void ThumbStrip::takeShot()
 void ThumbStrip::pollTick()
 {
     const QString file = target();
-    const int budget = m_stage == WaitingPresent ? kPresentBudgetPolls : kFileBudgetPolls;
+    const int budget = m_stage == WaitingFile ? kFileBudgetPolls
+                     : (m_stage == WaitingPresent ? kSeekBudgetPolls : kPresentBudgetPolls);
     if (++m_polls > budget) {
         qWarning("THUMB stage %d timed out at frame %d", int(m_stage), m_index);
         ++m_index;
         startFrame();
         return;
     }
+    if (m_stage == WaitingShot) {
+        if (m_polls >= kShotRetryPolls)
+            takeShot();
+        return;
+    }
     if (m_stage == WaitingPresent) {
         // This libmpv reports frame-counter as unavailable (-8), so the settle
-        // time is what stands in for "a frame reached the VO"; the jpg landing
-        // (or not) is the real verdict.
-        if (m_polls >= kSettlePolls)
+        // time is what stands in for "a frame reached the VO". It is NOT enough for a
+        // remote playlist: measured, all ten slots of a 百度 stream came out byte-
+        // identical (same md5) because the grab happened while mpv was still showing
+        // the head of the file, long before the 9000 s seek target had been fetched.
+        // So wait for the position to arrive, then settle, then grab.
+        if (m_seekTo > 1.0) {
+            double at = -1.0;
+            if (mpv_get_property(m_mpv, "playback-time", MPV_FORMAT_DOUBLE, &at) < 0)
+                at = -1.0;
+            if (at < m_seekTo * 0.8) {
+                if (m_polls > kSeekBudgetPolls) {
+                    qWarning("THUMB seek stuck: asked %.0f got %.1f at frame %d",
+                             m_seekTo, at, m_index);
+                    ++m_index;
+                    startFrame();
+                }
+                return;
+            }
+        }
+        // m_settleWait marks the poll at which the position finally arrived: the VO
+        // still needs its usual short settle after that, not before.
+        if (m_settleWait == 0)
+            m_settleWait = m_polls;
+        if (m_polls >= m_settleWait + kSettlePolls)
             takeShot();
         return;
     }
@@ -447,6 +508,20 @@ void ThumbStrip::pollTick()
         qInfo("COVER black leader at %.1f s, next candidate", m_active.times.at(m_index));
         ++m_index;
         startFrame();
+        return;
+    }
+    // The grab can land while the VO is still showing the frame before it. Measured on a 百度
+    // playlist: playback-time was already exactly at each target (480.9 / 1442.5 / ... / 9136.1)
+    // and all ten jpgs came out the same bytes. A/B on the settle time - 250 ms gives 1 distinct
+    // frame out of 10, 1500 ms gives 9 - so what is missing is the picture, not the position,
+    // and waiting for it to change is the only wait that does not tax a local file.
+    if (!m_active.cover && m_index > 0 && m_shots < kShotRetries
+        && sameBytes(file, slotPath(m_active.dir, m_index - 1))) {
+        QFile::remove(file);
+        ++m_shots;
+        m_stage = WaitingShot;
+        m_polls = 0;
+        m_poll.start();
         return;
     }
     ++m_index;
@@ -464,6 +539,7 @@ void ThumbStrip::drain()
         if (ev->event_id == MPV_EVENT_FILE_LOADED && m_stage == WaitingLoad) {
             m_stage = WaitingPresent;
             m_polls = 0;
+            m_settleWait = 0;
             m_poll.start();
         }
     }

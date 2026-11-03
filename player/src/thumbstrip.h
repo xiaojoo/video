@@ -45,7 +45,7 @@ signals:
     void coverReady(QString mediaPath, QString file);
 
 private:
-    enum Stage { Idle, WaitingLoad, WaitingPresent, WaitingFile };
+    enum Stage { Idle, WaitingLoad, WaitingPresent, WaitingFile, WaitingShot };
 
     struct Job {
         QString key;          // the library path this still belongs to (empty for the strip)
@@ -77,6 +77,9 @@ private:
     double m_stripDuration = 0.0;
     int m_index = 0;
     int m_polls = 0;
+    int m_shots = 0;
+    double m_seekTo = 0.0;  // the offset this frame asked mpv to reach
+    int m_settleWait = 0;   // screenshot attempts for the frame now being grabbed
     Stage m_stage = Idle;
     bool m_activeLive = false;
     bool m_stripRunning = false;

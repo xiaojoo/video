@@ -9,7 +9,8 @@ Windows 桌面的本地视频播放器。**解码与画面交给 libmpv，窗口
 | 依赖 | 版本 |
 |---|---|
 | 系统 | Windows 10/11 x64 |
-| Qt | 6.11.2，MSVC 2022 64-bit；用到 Quick、QuickControls2、Svg、Sql、QuickDialogs2 |
+| Qt | 6.11.2，MSVC 2022 64-bit；用到 Quick、QuickControls2、Svg、Sql、QuickDialogs2、Network |
+| ffmpeg（投屏用） | 8.0 essentials 在这台机上跑通。它不在构建链里，是投屏的**运行时**外部程序：先找 `Player.exe` 同目录的 `ffmpeg.exe`，再退回 PATH。不投屏就不需要它 |
 | 工具链 | Visual Studio 2022 的 C++ 工具链 + CMake ≥ 3.22 + Ninja |
 | libmpv | mpv `v0.41.0-1186-ga2cd83c56`（render API：client API 2.6），头文件与 `libmpv-2.dll` 放在 `vendor/libmpv/`，地址见下 |
 
@@ -61,6 +62,18 @@ cmake --build player/build-release
 
 把 exe 与 `libmpv-2.dll` 连同 README、LICENSE 放进 `dist\Player-<版本>\`，跑一次 `windeployqt --release --qmldir player\qml`，再补三颗 VC 运行库 DLL，然后用 Inno Setup 编 `player\packaging\playerui.iss` 就出 `Player-Setup-<版本>.exe`。装到 `%LOCALAPPDATA%\Programs\Player`，per-user，不要管理员。
 
+`windeployqt` 只看 Player.exe，另外三颗它不会替你放：
+
+```bat
+rem 下载与投屏的引擎：没有它，磁力、网盘、投屏三块都起不来
+cd downloader && go build -o ..\dist\Player-<版本>\PlayerDown.exe . && cd ..
+rem 海报是 webp：这台机的 Qt 安装里没有 imageformats\qwebp.dll，只有 Qt Creator 那份带它
+copy D:\Program\Qt\Tools\QtCreator\bin\plugins\imageformats\qwebp.dll dist\Player-<版本>\imageformats\
+rem ffmpeg 不进包（它是 GPL 分支的外部程序）：要投屏的人自己把 ffmpeg.exe 放到同一目录
+```
+
+`[Files]` 那行是递归整目录，所以文件放进 `dist\Player-<版本>\` 就进了安装包，`.iss` 不用改。海报那张 webp 靠 Qt 的 imageformats 插件解，插件不在就解不出来——站点的缩略图全是 webp，所以这一颗不能省。
+
 ## 命令行开关
 
 主要给量具和"指哪播哪"用，日常双击启动不需要任何参数。
@@ -94,6 +107,7 @@ cmake --build player/build-release
 - **我的播单**：从媒体库或磁盘加入、排序、改名、删除、播完自动接下一条、片尾再点播放从头播
 - **右键菜单**：与控制条同源（菜单项直接从控制条的分档顺序生成，所以不会出现"菜单里有、控制条这档没有"的命令）
 - **蓝光**：读 `BDMV/PLAYLIST` 的 `.mpls` 配上 `BDMV/STREAM` 的 `.m2ts`，挑出主片段再交给 mpv
+- **投屏**：控制条那颗（快捷键 `T`）把正在播的这部发到局域网，不经任何第三方服务器。一条 ffmpeg 读一遍源、同时出两路：`HLS` 给 iOS Safari 和另一台 Player，`fMP4 分片 + MSE` 给 Chrome / Edge / 安卓浏览器。按下时邀请地址进剪贴板，气泡里显示地址和在看人数（两路都数：低延迟那路按打开的分片连接，HLS 那路按 3 个段长之内回读过播放列表的局域网地址，所以同一台机器开两个 HLS 页签只算一个人）；宿主的暂停、拖动、换片都跟着走
 
 ## 技术栈
 
@@ -117,7 +131,11 @@ vendor/        libmpv（不入库）
 
 ## 已知边界
 
-- **投屏那颗是灰的**：菜单/控制条里有位置，但没接线。
+- **投屏只走局域网，且不发字幕**：视频按源码率 copy、音频一律转 AAC（蓝光那类 DTS / DTS-HD MA 浏览器和 Safari 都不解），内封的 SRT 与 PGS 都不进这条流。
+- **投屏两路的延迟不是一个量级**：低延迟那路受关键帧间隔限制（实测那部 1080p REMUX 的 GOP 中位 0.959 s，端到端落后 0.92 s）；HLS 那路的落后基本等于窗口长度（4 段 × 2 s，实测 Player 收到 7.0 s），因为观众从窗口里最旧的那段起播。这个偏移不随时间涨：宿主自己的边缘在 149.8 s 里按 1.00054 倍实时推进（750 个心跳回归），接收端 179 s 拉了 93 段、每 1.93 s 一段，读端始终咬住边缘 ±1 段。
+- **混着看时慢端的评论对快端必然迟到**：消息锚在内容时间上，快端没法把一条评论显示在"过去"，只能立即显示并标出它来自几秒前；房间语音不做这个对齐。
+- **投屏依赖外部 ffmpeg**：找不到它时那颗芯片会说明原因，其余功能照常。
+- **投屏还有第三条路，但它不是默认**：`?rtc=1` 让观看页先要 WebRTC（宿主里 pion 自研，`POST /whep` 收 offer 回 answer，页面每 5 秒 `GET /keep` 让宿主知道它还开着；不额外装任何服务）。同一条 1080p 源上实测：接收端稳态只攥 **68–71 ms** 的抖动缓冲（音频 ~12 ms，126 秒内零丢包、零 NACK、零 PLI、零丢帧），比 MSE 那路 ~1.0 s 的前向缓冲短一个量级；代价是宿主多花 **0.29–0.47 个核**、码率被 `-cast-rtc-b`（默认 6 M）封顶不像另两路原样搬运，以及起播 648 ms（页开着 33–45 秒后再点也还是这个数；不预热则 1101–1134 ms，因为 ffmpeg 的 `-re` 在第一个包前固定等 ~700 ms——同一条命令去掉 `-re` 是 59–69 ms，两个片源的 `start_time` 都是 0.000000，所以那是定速器自己的冷启动，不是文件的问题）。最关键的一条边界：**这条路不能取字节**——带 B 帧的源按 copy 进 WebRTC 时，Chrome 收了 27 MB 却组出 0 帧、连发 274 个 PLI，因为 RTP 视频载荷没法表达"先解后显"（量具：`has_b_frames=2`，RTP 时间戳在包序上倒退 ±7200/90000 秒），所以这颗编码器必须 `-bf 0` 并重编码。
 - **蓝光只到"找到主片段"**：读目录结构，不解 AACS 加密盘。
 - **画面按 SDR 合成**（`R8G8B8A8`），没有 HDR 直通。
 - **界面文字目前只有中文**，没有语言开关。
@@ -134,9 +152,11 @@ vendor/        libmpv（不入库）
 - **SQLite**：公有领域
 - **Inno Setup**：只用于编安装包（`player/packaging/playerui.iss`），其运行时随安装程序分发，按 Inno Setup 自己的许可（版权声明保留在生成的 setup 里）
 - **简体中文向导文案**：`player/packaging/lang/ChineseSimplified.isl` 是社区翻译，MIT 许可，作者与条款见同目录 `LICENSE-ChineseSimplified.txt`
+- **ffmpeg**：投屏时由 `PlayerDown.exe` 作为外部程序调用，本仓库不含它、也不静态链接它；它内嵌的 FFmpeg 组件按 LGPL/GPL 分支许可，随你用的那颗构建走（本项目测的是 gyan.dev 的 8.0 essentials 版）
 
 ## 声明
 
 - 本项目不带任何媒体文件、字幕、字体或片源，也不提供在线资源。
+- 投屏只在你的局域网里建立连接：画面由本机直接发给同一网段的设备，不经过本项目的任何服务器，也没有云端中转。邀请地址就是本机地址，发给谁、谁能看，由使用者自己决定。
 - 使用者对自己播放、传播的内容自行负责；请只在有权使用的前提下播放影片。
 - 本软件按"现状"提供，作者不承担任何明示或默示的保证。

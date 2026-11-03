@@ -1,3 +1,4 @@
+#include "cast.h"
 #include "downloads.h"
 #include "duration.h"
 #include "library.h"
@@ -177,7 +178,6 @@ int main(int argc, char *argv[])
         loop.exec();
         return rc;
     }
-
     // The session recorder, on its own: the same thing the settings card's 去登录 does, so a
     // re-login or a re-capture of the signed headers does not need somebody to click through
     // the sheet. It prints names and counts only - the values are the session.
@@ -203,7 +203,6 @@ int main(int argc, char *argv[])
         loop.exec();
         return rc;
     }
-
     // The 夸克 driver, on its own. Driving it through the wall would mean clicking a
     // poster on a screen that may be covered by something else, and the chain is long
     // enough (share -> token -> detail -> save -> task -> url -> client -> move) that its
@@ -444,8 +443,7 @@ int main(int argc, char *argv[])
     if (!scratchDb.isEmpty())
         QDir().mkpath(QFileInfo(scratchDb).absolutePath());
     if (!parser.isSet(db) && scratchDb.isEmpty()) {
-        QDir().mkpath(dataDir);
-        const QString legacy = QCoreApplication::applicationDirPath() + u"/library.db"_qs;
+        QDir().mkpath(dataDir);        const QString legacy = QCoreApplication::applicationDirPath() + u"/library.db"_qs;
         if (!QFileInfo::exists(dbPath) && QFileInfo::exists(legacy)) {
             if (QFile::copy(legacy, dbPath))
                 qInfo("LIBRARY migrated %s -> %s", qPrintable(legacy), qPrintable(dbPath));
@@ -484,15 +482,18 @@ int main(int argc, char *argv[])
     // port instead of downloading by itself, because the client is the only thing the CDN
     // answers - a url handed to our own http stack comes back 412.
     Netdisk netdisk;
-    Downloads downloads;
     // The other drives answer 400 to a request their own page did not sign, so their ladder
     // has to run inside a browser he signs into once. This opens that browser and keeps the
     // session it lands on.
     PanLogin panlogin;
+    Downloads downloads;
     downloads.setDatabase(library.database());
     if (parser.isSet(dlDir))
         downloads.setOverrideDir(QFileInfo(parser.value(dlDir)).absoluteFilePath());
     DownloadsModel downloadsModel(&downloads);
+    // The cast reads the same source the player is playing, so it is built next to
+    // the download rows and driven from the shell when the host seeks or pauses.
+    Cast cast;
 
     // Any library-mode start walks the stored roots. Gating this on a
     // command-line root left the page empty for everyone whose roots came from
@@ -584,6 +585,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(u"panlogin"_qs, &panlogin);
     engine.rootContext()->setContextProperty(u"downloads"_qs, &downloads);
     engine.rootContext()->setContextProperty(u"downloadsModel"_qs, &downloadsModel);
+    engine.rootContext()->setContextProperty(u"cast"_qs, &cast);
     engine.rootContext()->setContextProperty(u"single"_qs, &single);
     engine.rootContext()->setContextProperty(u"shellMode"_qs, startMode);
     engine.rootContext()->setContextProperty(u"shellAutoPick"_qs,
