@@ -433,9 +433,17 @@ int main(int argc, char *argv[])
     // it disappears on a rebuild or a moved folder, which reads as "the library
     // forgot everything".
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    // `--dl-dir` is the marker for "this run is a test", and a test that redirects the bytes
+    // must not keep writing into his catalogue. Measured the cost of not having this rule:
+    // probe runs put seven download rows in his real library.db and 6.1 GiB of `.part` files
+    // in his Videos folder, because only the file had been redirected, not the book.
+    const QString scratchDb = parser.isSet(dlDir)
+        ? QFileInfo(parser.value(dlDir)).absoluteFilePath() + u"/live.db"_qs : QString();
     const QString dbPath = parser.isSet(db) ? parser.value(db)
-        : dataDir + u"/library.db"_qs;
-    if (!parser.isSet(db)) {
+        : (!scratchDb.isEmpty() ? scratchDb : dataDir + u"/library.db"_qs);
+    if (!scratchDb.isEmpty())
+        QDir().mkpath(QFileInfo(scratchDb).absolutePath());
+    if (!parser.isSet(db) && scratchDb.isEmpty()) {
         QDir().mkpath(dataDir);
         const QString legacy = QCoreApplication::applicationDirPath() + u"/library.db"_qs;
         if (!QFileInfo::exists(dbPath) && QFileInfo::exists(legacy)) {
