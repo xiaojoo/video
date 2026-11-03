@@ -928,15 +928,30 @@ void Online::magnets(const QString &url)
         // The other tabs' rows are already on this page - the site only hides them until a
         // tab is clicked - so they come along keyed by tab and a click has nothing to fetch.
         auto lists = std::make_shared<QJsonObject>();
+        // A row whose share the drive has already told us does not exist is not shown at all:
+        // the ledger is written by every verdict the app learns, from a click or from 验一遍.
+        int hidden = 0;
+        QJsonObject hiddenBy;
         for (const QJsonValue &v : parsePans(html, finalUrl)) {
-            const QString k = v.toObject().value(QStringLiteral("kind")).toString();
+            const QJsonObject row = v.toObject();
+            if (Netdisk::isDead(row.value(QStringLiteral("hop")).toString())) {
+                ++hidden;
+                const QString hk = row.value(QStringLiteral("kind")).toString();
+                hiddenBy.insert(hk, hiddenBy.value(hk).toInt() + 1);
+                continue;
+            }
+            const QString k = row.value(QStringLiteral("kind")).toString();
             QJsonArray group = lists->value(k).toArray();
             group.append(v);
             lists->insert(k, group);
         }
+        if (hidden > 0)
+            qInfo("nd wall hid %d dead rows", hidden);
         if (seeds.isEmpty()) {
             QJsonObject d = detail;
             d.insert(QStringLiteral("lists"), *lists);
+            d.insert(QStringLiteral("hidden"), hidden);
+            d.insert(QStringLiteral("hiddenBy"), hiddenBy);
             emit magnetsReady(url, QJsonArray{},
                               lists->isEmpty() ? tr("这一页上没有链接") : QString(), d);
             return;
@@ -952,6 +967,8 @@ void Online::magnets(const QString &url)
             QJsonObject d = detail;
             lists->insert(QStringLiteral("seed"), seeds);
             d.insert(QStringLiteral("lists"), *lists);
+            d.insert(QStringLiteral("hidden"), hidden);
+            d.insert(QStringLiteral("hiddenBy"), hiddenBy);
             emit magnetsReady(url, seeds, QString(), d);
             return;
         }
@@ -961,7 +978,7 @@ void Online::magnets(const QString &url)
         for (int i = 0; i < seeds.size(); ++i) {
             const QJsonObject s = seeds.at(i).toObject();
             get(s.value(QStringLiteral("hop")).toString(),
-                [this, url, s, left, got, detail, lists](const QString &,
+                [this, url, s, left, got, detail, lists, hidden, hiddenBy](const QString &,
                                                          const QByteArray &hopBytes,
                                                          const QString &) {
                     QJsonObject o = s;
@@ -976,6 +993,8 @@ void Online::magnets(const QString &url)
                         QJsonObject d = detail;
                         lists->insert(QStringLiteral("seed"), out);
                         d.insert(QStringLiteral("lists"), *lists);
+            d.insert(QStringLiteral("hidden"), hidden);
+            d.insert(QStringLiteral("hiddenBy"), hiddenBy);
                         emit magnetsReady(url, out, out.isEmpty()
                                 ? tr("跳页里解不出磁力（编码方式可能改了）") : QString(), d);
                     }

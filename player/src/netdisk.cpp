@@ -87,6 +87,44 @@ bool looksLikeVideo(const QJsonObject &f)
     return exts.contains(f.value(QStringLiteral("ext")).toString());
 }
 
+// What each drive answers when the share is gone, read off the drive itself on
+// 2026-11-03: 夸克 and UC say `41006 分享不存在` (and 41011/41012 for
+// expired and revoked), 迅雷 answers `share_status: NOT_FOUND` to an id that cannot
+// exist while a live one answers PASS_CODE_EMPTY, 百度 says errno=116. Anything that is
+// not on this list is treated as alive: a row hidden on a guess is a row he cannot get back.
+const QSet<int> kDeadCodes{ 41006, 41011, 41012 };
+
+const QStringList &deadXlStatuses()
+{
+    static const QStringList v{ QStringLiteral("NOT_FOUND"), QStringLiteral("EXPIRED"),
+                                QStringLiteral("DELETED"), QStringLiteral("CANCELED"),
+                                QStringLiteral("ILLEGAL") };
+    return v;
+}
+
+// The ledger. One json file of keys we have been told are gone; see Netdisk::shareKeyOf.
+QJsonObject g_dead;
+bool g_deadLoaded = false;
+
+QString ledgerPath()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+        .filePath(QStringLiteral("share-dead.json"));
+}
+
+void loadLedger()
+{
+    if (g_deadLoaded)
+        return;
+    g_deadLoaded = true;
+    QFile f(ledgerPath());
+    if (f.open(QIODevice::ReadOnly)) {
+        g_dead = QJsonDocument::fromJson(f.readAll()).object();
+        f.close();
+    }
+    qInfo("nd ledger loaded=%d", g_dead.size());
+}
+
 // A share usually holds the same film in several encodes. The one to take by default is the
 // best that is still sane to pull: 1080p films sit at 2-8 GB, a 4K remux at 15-45 GB, and
 // clicking a row on the board means "watch this", not "give me the archive". If every
@@ -495,6 +533,156 @@ void Netdisk::drivePage(const QString &domain, const QString &startUrl, const QS
 // Aliyun bucket behind a callback - answers 206 + `bytes 0-63/1338670508` for that address as
 // soon as the requesting tab's cookies go with it. Without them it answers
 // 403 RequestDeniedByCallback. So: no login, no save, no copy, nothing owed back.
+// ------------------------------------------------------------------ the dead-share ledger
+//
+// A share that answers "there is no such share" is not coming back, and the row that offers
+// it costs a click and 30-90 s of ladder before the drive says so. So every verdict is
+// recorded, and the wall stops listing the row.
+QString Netdisk::shareKeyOf(const QString &url)
+{
+    // Two different names for one share: the site's hop carries its own row id (`pan_id_772674`)
+    // and is what a page lists before anything is resolved; the drive's share id is what the
+    // ladder learns later. Both are recorded, so a verdict from either path hides the row the
+    // other one found.
+    static const QRegularExpression pan(QStringLiteral("pan_id_(\\d+)"));
+    static const QRegularExpression sh(QStringLiteral("/s/([A-Za-z0-9_-]{6,})"));
+    const auto p = pan.match(url);
+    if (p.hasMatch())
+        return QStringLiteral("hop:") + p.captured(1);
+    const auto s = sh.match(url);
+    if (!s.hasMatch())
+        return QString();
+    const QString drive = url.contains(QStringLiteral("pan.baidu.com")) ? QStringLiteral("bd")
+                          : url.contains(QStringLiteral("pan.xunlei.com")) ? QStringLiteral("xl")
+                          : url.contains(QStringLiteral("drive.uc.cn")) ? QStringLiteral("uc")
+                                                                       : QStringLiteral("qk");
+    return QStringLiteral("sh:") + drive + QLatin1Char(':') + s.captured(1);
+}
+
+bool Netdisk::isDead(const QString &url)
+{
+    loadLedger();
+    const QString key = shareKeyOf(url);
+    return !key.isEmpty() && g_dead.contains(key);
+}
+
+void Netdisk::noteDead(const QString &url, int code)
+{
+    const QString key = shareKeyOf(url);
+    if (key.isEmpty() || g_dead.contains(key))
+        return;
+    loadLedger();
+    g_dead.insert(key, QJsonObject{ { QStringLiteral("at"),
+                                      double(QDateTime::currentSecsSinceEpoch()) },
+                                    { QStringLiteral("code"), code } });
+    QFile f(ledgerPath());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning("nd ledger save failed: %s", qPrintable(f.errorString()));
+        return;
+    }
+    f.write(QJsonDocument(g_dead).toJson(QJsonDocument::Compact));
+    f.close();
+    // The key is a row id on a public page and the code is the drive's own; neither is a
+    // session, so both are safe to say out loud.
+    qInfo("nd dead recorded key=%s code=%d ledger=%d", qPrintable(key), code, g_dead.size());
+}
+
+void Netdisk::markDead(const QString &url, int code)
+{
+    noteDead(url, code);
+}
+
+void Netdisk::check(const QString &shareUrl)
+{
+    static const QRegularExpression sh(QStringLiteral("/s/([A-Za-z0-9_-]{6,})"));
+    const auto m = sh.match(shareUrl);
+    const QString id = m.hasMatch() ? m.captured(1) : QString();
+    const bool uc = shareUrl.contains(QStringLiteral("drive.uc.cn"));
+    const bool xl = shareUrl.contains(QStringLiteral("pan.xunlei.com"));
+    if (id.isEmpty() || shareUrl.contains(QStringLiteral("pan.baidu.com"))) {
+        // 百度's verdict lives in the page's html and the one code I have measured
+        // (errno=116) comes from the ladder, not from a check. Saying "unknown" keeps the row;
+        // guessing would hide shares that are fine.
+        emit checked(shareUrl, false, -1);
+        return;
+    }
+
+    QNetworkRequest req{ QUrl(xl
+        ? QStringLiteral("https://api-pan.xunlei.com/drive/v1/share?share_id=%1&pass_code="
+                         "&limit=100&keyword=&pass_code_token=&page_token=&scene=NORMAL"
+                         "&order=DEFAULT_ORDER&thumbnail_size=SIZE_LARGE").arg(id)
+        : uc ? QStringLiteral("https://pc-api.uc.cn/1/clouddrive/share/sharepage/v2/detail"
+                              "?pr=UCBrowser&fr=pc")
+             : QStringLiteral("https://pan.quark.cn/1/clouddrive/share/sharepage/token"
+                              "?pr=ucpro&fr=pc")) };
+    req.setRawHeader("Accept", "application/json");
+    // The body is json and the drive only reads it as json: without this Content-Type Qt's
+    // post is taken as a form, `pwd_id` never arrives, and 夸克 answers 41006 分享不存在 to a
+    // share that is alive. Measured both ways from this machine minutes apart.
+    req.setRawHeader("Content-Type", "application/json");
+    req.setRawHeader("User-Agent", m_ua.isEmpty() ? QByteArray(kWebUa) : m_ua.toUtf8());
+    // UC is asked with no Referer and no Origin at all: measured, the same call with
+    // `Referer: https://drive.uc.cn/` is refused with 403 "Invalid CORS request" while the
+    // bare one answers code=0. The drive's own page sends both, but it is not the page.
+    if (xl) {
+        // 迅雷 signs this call per url, so the recorded header set has to go with it -
+        // and the url must be the one the ladder uses, byte for byte (measured: the same call
+        // with an extra query key answers 400).
+        xlLoadHeaders();
+        for (auto it = m_xlHdr.constBegin(); it != m_xlHdr.constEnd(); ++it)
+            req.setRawHeader(it.key().toUtf8(), it.value().toString().toUtf8());
+        if (m_xlHdr.isEmpty()) {
+            emit checked(shareUrl, false, -1);
+            return;
+        }
+    }
+
+    QNetworkReply *rep = xl ? m_nam->get(req)
+                            : m_nam->post(req, QJsonDocument(xlOrQuarkBody(uc, id, shareUrl))
+                                              .toJson(QJsonDocument::Compact));
+    connect(rep, &QNetworkReply::finished, this, [this, rep, shareUrl, uc, xl] {
+        const QByteArray body = rep->readAll();
+        const int http = int(rep->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());
+        rep->deleteLater();
+        const QJsonObject o = QJsonDocument::fromJson(body).object();
+        bool dead = false;
+        int code = o.value(QStringLiteral("code")).toInt(-1);
+        if (xl) {
+            const QString st = o.value(QStringLiteral("share_status")).toString();
+            dead = deadXlStatuses().contains(st);
+            code = dead ? 1 : 0;
+            qInfo("nd check xl status=%s dead=%d", qPrintable(st), int(dead));
+        } else {
+            dead = kDeadCodes.contains(code);
+            qInfo("nd check %s http=%d code=%d dead=%d", uc ? "uc" : "quark", http, code,
+                  int(dead));
+        }
+        if (dead)
+            noteDead(shareUrl, code);
+        emit checked(shareUrl, dead, code);
+    });
+}
+
+QJsonObject Netdisk::xlOrQuarkBody(bool uc, const QString &id, const QString &shareUrl)
+{
+    // The two json calls want the same three pieces: which share, and no pass code yet.
+    QJsonObject b{ { QStringLiteral("pwd_id"), id }, { QStringLiteral("passcode"), QString() } };
+    if (uc) {
+        b.insert(QStringLiteral("force"), 1);
+        b.insert(QStringLiteral("page"), 1);
+        b.insert(QStringLiteral("size"), 50);
+        b.insert(QStringLiteral("fetch_banner"), 0);
+        b.insert(QStringLiteral("fetch_share"), 1);
+        b.insert(QStringLiteral("fetch_total"), 1);
+        b.insert(QStringLiteral("sort"), QStringLiteral("name_asc"));
+        b.insert(QStringLiteral("pdir_fid"), QStringLiteral("0"));
+        b.insert(QStringLiteral("web_platform"), 1);
+        b.insert(QStringLiteral("banner_platform"), QStringLiteral("pc"));
+    }
+    Q_UNUSED(shareUrl);
+    return b;
+}
+
 void Netdisk::ucLadder()
 {
     drivePage(QStringLiteral("drive.uc.cn"), QStringLiteral("https://drive.uc.cn/"),
@@ -568,6 +756,8 @@ void Netdisk::ucWalk()
               int(url.size()), qPrintable(o.value(QStringLiteral("msg")).toString().left(30)));
         if (url.isEmpty()) {
             const int code = o.value(QStringLiteral("code")).toInt();
+            if (kDeadCodes.contains(code))
+                noteDead(m_job.share, code);
             fail(code == 31001 ? QStringLiteral("UC 要求登录才给地址（实测不该出现）")
                                : QStringLiteral("UC 不给地址（code=%1）").arg(code));
             return;
@@ -650,6 +840,8 @@ void Netdisk::stepToken()
                               .value(QStringLiteral("stoken")).toString();
             if (m_job.stoken.isEmpty()) {
                 const int code = r.value(QStringLiteral("code")).toInt();
+                if (kDeadCodes.contains(code))
+                    noteDead(m_job.share, code);
                 fail(code == 41011 || code == 41012 ? QStringLiteral("这个分享已经失效了")
                                                     : QStringLiteral("分享打不开（%1）").arg(code));
                 return;
@@ -1104,6 +1296,9 @@ QString bdNote(int e)
 // What an answer should be said as. An errno of -1 is what the callers fall back to when the
 // object has no errno in it at all - which is exactly the shape of "the tab did not answer" -
 // so the page's own words win when they are there instead of inventing a baidu number.
+// The one 百度 answer that has been read off the drive as "this share is gone".
+constexpr int kBdDead = 116;
+
 QString bdNote(const QJsonObject &o)
 {
     const QString m = o.value(QStringLiteral("message")).toString();
@@ -1407,6 +1602,8 @@ void Netdisk::bdRisk()
            [this](const QJsonObject &o, const QByteArray &) {
         const int e = o.value(QStringLiteral("errno")).toInt(-1);
         if (e != 0) {
+            if (e == kBdDead)
+                noteDead(m_job.share, e);
             fail(e == 13 ? QStringLiteral("百度的提取码不对") : bdNote(o));
             return;
         }
@@ -1456,6 +1653,8 @@ void Netdisk::bdList(const QString &dir, const QString &parentFid)
                 bdNext([this] { bdRisk(); });   // re-present the pass code, then list again
                 return;
             }
+            if (o.value(QStringLiteral("errno")).toInt(-1) == kBdDead)
+                noteDead(m_job.share, kBdDead);
             fail(bdNote(o));
             return;
         }
@@ -1890,7 +2089,7 @@ QString xlPct(const QString &s)
 
 } // namespace
 
-void Netdisk::xlJar()
+void Netdisk::xlLoadHeaders()
 {
     m_xlHdr = QJsonObject();
     QFile f(QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
@@ -1922,6 +2121,11 @@ void Netdisk::xlJar()
         return;
     }
     xlShare();
+}
+
+void Netdisk::xlJar()
+{
+    xlLoadHeaders();
 }
 
 void Netdisk::xlForm(const QString &tag, const QString &url,
@@ -1967,6 +2171,8 @@ void Netdisk::xlShare()
         }
         const QString st = o.value(QStringLiteral("share_status")).toString();
         const QJsonArray files = o.value(QStringLiteral("files")).toArray();
+        if (deadXlStatuses().contains(st))
+            noteDead(m_job.share, 1);
         qInfo("nd xl share %s status=%s num=%d files=%d token_len=%d", qPrintable(m_job.surl),
               qPrintable(st), o.value(QStringLiteral("file_num")).toInt(), int(files.size()),
               o.value(QStringLiteral("pass_code_token")).toString().size());

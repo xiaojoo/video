@@ -986,6 +986,15 @@ Item {
                         magPopup.info = {};
                         magPopup.tab = "seed";
                         magPopup.waiting = true;
+                        // The verdicts belong to the rows on screen, and the wall has already
+                        // dropped the dead ones out of those rows. Carrying them into the next
+                        // poster would subtract the same rows from its counts a second time.
+                        magPopup.deadHops = [];
+                        magPopup.pendingHops = ({});
+                        magPopup.droppedByKind = ({});
+                        magPopup.hopByUrl = ({});
+                        magPopup.pendingHop = "";
+                        magPopup.checking = false;
                         page.detail = modelData;
                         magPopup.open();
                     }
@@ -1118,7 +1127,57 @@ Item {
         // then the click that asked for it is nowhere to be found.
         property string pendingName: ""
         readonly property var lists: info.lists || ({})
-        readonly property var links: lists[tab] || []
+        // Rows the drive has said are gone. The list is filtered rather than edited:
+        // the page's own answer stays whole, so a row comes back the moment we stop
+        // holding the verdict.
+        property var deadHops: []
+        readonly property var links: (lists[tab] || []).filter(function (r) {
+            return magPopup.deadHops.indexOf(r.hop) < 0;
+        })
+        // A press asks a handful of rows, because every row costs one hop to the site
+        // and one call to the drive - and the site paces anyone who asks for a page.
+        property bool checking: false
+        property var pendingHops: ({})   // hop: "wait" (hop out) | "ask" (drive out)
+        property var hopByUrl: ({})      // the drive's share url -> the row it came from
+        property var droppedByKind: ({}) // tab key -> rows this dialog has hidden
+        property string pendingHop: ""  // the row whose hop is being resolved
+
+        // The rows this drive has ever said are gone: the ones the wall hid before the page
+        // was listed, and the ones this dialog has just hidden. The tab's own count is the
+        // site's, so both have to come off it or the number above the list is a lie.
+        function droppedOf(key) {
+            const by = (info.hiddenBy || {})[key] || 0;
+            return by + (droppedByKind[key] || 0);
+        }
+
+        function noteDone() {
+            if (Object.keys(pendingHops).length > 0)
+                return;
+            checking = false;
+            shareNote = "验完了，收起 " + droppedOf(tab) + " 条失效";
+        }
+
+        function checkSome() {
+            if (checking)
+                return;
+            const rows = (lists[tab] || []).filter(function (r) {
+                return magPopup.deadHops.indexOf(r.hop) < 0 && !magPopup.pendingHops[r.hop];
+            });
+            if (!rows.length) {
+                shareNote = "这一页没有还没验过的行";
+                return;
+            }
+            const n = Math.min(8, rows.length);
+            const ph = {};
+            for (let i = 0; i < n; ++i)
+                ph[rows[i].hop] = "wait";
+            pendingHops = ph;
+            checking = true;
+            shareNote = "在验这 " + n + " 条…";
+            // The hops answer asynchronously and in any order; each answer asks the drive.
+            for (let i = 0; i < n; ++i)
+                online.shareUrl(rows[i].hop);
+        }
         // Why the list is empty, in the dialog's own words. It used to be written into
         // online.error, which is the posters' line: the 429 showed up across the page
         // while this dialog was already listing seeds.
@@ -1542,7 +1601,13 @@ Item {
                                 id: tabText
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: tabItem.modelData.name + "("
-                                      + tabItem.modelData.count + ")"
+                                      + Math.max(0, tabItem.modelData.count
+                                                    - magPopup.droppedOf(
+                                                        tabItem.modelData.key))
+                                      + (magPopup.droppedOf(tabItem.modelData.key) > 0
+                                         ? " 已收 " + magPopup.droppedOf(
+                                               tabItem.modelData.key)
+                                         : "") + ")"
                                 color: tabItem.active ? Theme.textPrimary
                                        : (tabItem.live ? Theme.textSecondary : "#55555C")
                                 font.pixelSize: page.smallFs
@@ -1573,6 +1638,36 @@ Item {
                                     magPopup.shareNote = "";
                                 }
                             }
+                        }
+                    }
+
+                    // 验一遍 sits at the end of the tab line, next to the counts it
+                    // is the only thing that changes.
+                    Rectangle {
+                        id: checkPill
+                        visible: (magPopup.lists[magPopup.tab] || []).length > 0
+                        width: checkText.implicitWidth + 14
+                        height: magPopup.tabH
+                        radius: 2
+                        color: "transparent"
+                        border.width: 1
+                        border.color: checkHit.containsMouse ? "#FFA733" : "#3F6FA8"
+
+                        Text {
+                            id: checkText
+                            anchors.centerIn: parent
+                            text: magPopup.checking ? "验中…" : "验一遍"
+                            color: Theme.accent
+                            font.pixelSize: page.smallFs
+                            font.family: Theme.uiFont
+                        }
+                        MouseArea {
+                            id: checkHit
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: !magPopup.checking
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: magPopup.checkSome()
                         }
                     }
                 }
@@ -1781,6 +1876,9 @@ Item {
                                                                          ? "正在问 UC 要地址…"
                                                                          : "正在问迅雷要地址…"));
                                 magPopup.pendingName = modelData.title || modelData.label;
+                                // The row's own id, kept so the verdict can be written under
+                                // the key the wall filters on, not only the share's.
+                                magPopup.pendingHop = modelData.hop;
                                 online.shareUrl(modelData.hop);
                             } else {
                                 // A netdisk row: its share address only exists on the hop
@@ -1947,9 +2045,31 @@ Item {
                 }
             }
             function onShareFailed(note) {
+                // A refused hop in the middle of a check is not a failure worth a
+                // line of its own: the row simply stays, and the site's pacing is
+                // not the share's fault.
+                if (magPopup.checking) {
+                    const p = magPopup.pendingHops;
+                    for (const k of Object.keys(p))
+                        if (p[k] === "wait")
+                            delete p[k];
+                    magPopup.pendingHops = p;
+                    magPopup.noteDone();
+                    return;
+                }
                 magPopup.shareNote = note;
             }
             function onShareUrlReady(hop, url) {
+                if (magPopup.pendingHops[hop] === "wait") {
+                    const hb = magPopup.hopByUrl;
+                    hb[url] = hop;
+                    magPopup.hopByUrl = hb;
+                    const p = magPopup.pendingHops;
+                    p[hop] = "ask";
+                    magPopup.pendingHops = p;
+                    netdisk.check(url);
+                    return;
+                }
                 // The poster's own title, not the download row's label: a site row is named
                 // like a release notice - title, then 【WEB-4K】, then the subtitle and
                 // watermark notes - and only the first part is the film.
@@ -1981,7 +2101,40 @@ Item {
                 magPopup.shareNote = "";
                 page.jobsRequested();
             }
+            function onChecked(url, dead, code) {
+                const hop = magPopup.hopByUrl[url] || "";
+                const p = magPopup.pendingHops;
+                if (hop)
+                    delete p[hop];
+                magPopup.pendingHops = p;
+                if (dead) {
+                    // Both keys: the share's, which the drive answered, and the row's, which
+                    // is what the wall has to filter on before anything is resolved.
+                    netdisk.markDead(hop, code);
+                    magPopup.deadHops = magPopup.deadHops.concat([hop]);
+                    // A fresh object, not the same one edited in place: a binding only
+                    // re-evaluates when the property's value actually changes, and an
+                    // object reassigned to itself is no change at all. Measured - the note
+                    // said 收起 4 条 while the tab went on saying 114.
+                    const gone = (magPopup.droppedByKind[magPopup.tab] || 0) + 1;
+                    const dk = {};
+                    for (const k of Object.keys(magPopup.droppedByKind))
+                        dk[k] = magPopup.droppedByKind[k];
+                    dk[magPopup.tab] = gone;
+                    magPopup.droppedByKind = dk;
+                }
+                magPopup.noteDone();
+            }
             function onFailed(key, note) {
+                // The ladder's own verdict on a row he clicked: the drive said there is no
+                // such share, so the row goes the same way as one 验一遍 found.
+                if (note.indexOf("分享已经失效") >= 0
+                        || note.indexOf("分享不存在") >= 0
+                        || note.indexOf("这个分享已经失效") >= 0) {
+                    if (magPopup.pendingHop.length)
+                        netdisk.markDead(magPopup.pendingHop, 0);
+                    magPopup.deadHops = magPopup.deadHops.concat([magPopup.pendingHop]);
+                }
                 magPopup.shareNote = note;
             }
         }

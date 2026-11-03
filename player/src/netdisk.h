@@ -60,6 +60,20 @@ public:
     // the bytes are on our disk. Keyed by the handed-over url, because that is what the row
     // knows.
     Q_INVOKABLE void dropCopy(const QString &url);
+
+    // ---- the dead-share ledger ----
+    // A share the drive says does not exist is not coming back, and finding that out by
+    // clicking costs a whole ladder. Every verdict - ours or the ladder's - is recorded, and
+    // the wall stops listing the row. Keys are the site's own row id (`pan_id_772674`) and
+    // the drive's share id, so a verdict learned by either path hides the row the other finds.
+    static QString shareKeyOf(const QString &url);
+    static bool isDead(const QString &url);
+    static void noteDead(const QString &url, int code);
+    // For whoever holds the row's hop rather than the share id: the wall filters on the
+    // hop, so a verdict learned from a click has to be written under that key too.
+    Q_INVOKABLE void markDead(const QString &url, int code);
+    // One call per drive that asks "does this share still exist" without downloading a byte.
+    Q_INVOKABLE void check(const QString &shareUrl);
     // Copies left behind by a job that died with the app. Anything whose url is not in
     // `liveUrls` is stale and goes.
     Q_INVOKABLE void reconcile(const QStringList &liveUrls);
@@ -80,6 +94,9 @@ signals:
     void ready(const QString &key, const QString &url, const QString &headers,
                const QString &name, const QString &poster);
     void failed(const QString &key, const QString &note);
+    // The verdict of check(). `dead` is only ever true on the drive's own words; -1 means
+    // this drive has no measured answer and the row must stay where it is.
+    void checked(const QString &shareUrl, bool dead, int code);
 
 private:
     enum Stage { Idle, Connecting, Laddering };
@@ -144,6 +161,7 @@ private:
     void grabHeaders(const QString &url, std::function<void(const QString &)> done);
 
     // ---- the ladder ----
+    static QJsonObject xlOrQuarkBody(bool uc, const QString &id, const QString &shareUrl);
     void ucLadder();
     void ucWalk();
     void ucHandOff(const QString &url);
@@ -199,6 +217,9 @@ private:
     // a request with nothing but `Range: bytes=0-31` answers 206 with a correct Content-Range -
     // which is what lets this end in the same `ready` handoff 百度 uses.
     void xlJar();
+    // The recorded signature, without the job's failure path: a check needs the same headers
+    // and must not end a download when they are missing.
+    void xlLoadHeaders();
     void xlShare();
     // The share's root listing, however it was unlocked - our own call or the page's answer.
     void xlGotRoot(const QJsonObject &o);

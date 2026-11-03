@@ -574,25 +574,10 @@ type httpRefused struct {
 
 func (e *httpRefused) Error() string { return fmt.Sprintf("块 %d http %d", e.block, e.code) }
 
-// httpConns is how many roads this job opens. Measured on one 迅雷 signed address: 4 roads
-// answer 206 for a whole minute at 1.25 MB/s with zero refusals and zero truncated blocks,
-// while 8 and 12 start refusing immediately - so a job that opens at 12 spends its first
-// minutes losing lanes and backing off to reach the 4 the host was willing to give anyway.
-// 迅雷 therefore starts at the number it serves. Chunk size made no difference (1 MiB and
-// 8 MiB both held 4 roads clean), so this is about roads, not about request length.
-func httpConns(raw string, asked int) int {
-	if asked <= 0 {
-		asked = 8
-	}
-	u, err := url.Parse(raw)
-	if err == nil && strings.HasSuffix(u.Hostname(), "xunlei.com") && asked > 4 {
-		return 4
-	}
-	return asked
-}
-
 func (j *HttpJob) run(conns int, quit <-chan struct{}) error {
-	conns = httpConns(j.URL, conns)
+	if conns <= 0 {
+		conns = 8
+	}
 	if err := os.MkdirAll(filepath.Dir(j.Tmp), 0o755); err != nil {
 		return err
 	}
@@ -606,6 +591,14 @@ func (j *HttpJob) run(conns int, quit <-chan struct{}) error {
 	}
 	j.loadState()
 	// The shell asked for this many roads; the host gets the final say, one refusal at a time.
+	//
+	// There used to be a hardcoded 4 here for *.xunlei.com, from a measurement that read 8 and 12
+	// roads as refusing immediately. Measured again 2026-11-03 on a live 迅雷 address: one road
+	// delivers 0.11 MB/s and an 8,360,585-byte range lands complete in 73 s with no truncation -
+	// so a job at 4 roads is capped at ~0.44 MB/s by the clamp, not by the host. The clamp is gone
+	// and the adaptive lane below is the whole answer: open at what he set, lose a road per
+	// refusal, floor at min(4, asked). If a host really caps roads the row settles there on its
+	// own and says so in the log.
 	j.wanted = int32(conns)
 	j.lanes.Store(int32(conns))
 

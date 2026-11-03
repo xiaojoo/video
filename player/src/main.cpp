@@ -26,6 +26,7 @@
 
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QFile>
 #include <QTextStream>
@@ -128,6 +129,9 @@ int main(int argc, char *argv[])
     QCommandLineOption netdiskLive(u"netdisk-live"_qs,
                                    u"walk a share, then pull it with our own engine and report"_qs,
                                    u"url"_qs);
+    QCommandLineOption shareCheck(u"share-check"_qs,
+                                  u"ask one drive whether its share still exists, then exit"_qs,
+                                  u"url"_qs);
     QCommandLineOption panLogin(u"pan-login"_qs,
                                 u"open a drive's login page in our own browser and record the session"_qs,
                                 u"provider"_qs);
@@ -153,7 +157,26 @@ int main(int argc, char *argv[])
     parser.addOption(netdiskProbe);
     parser.addOption(netdiskLive);
     parser.addOption(panLogin);
+    parser.addOption(shareCheck);
     parser.process(app);
+
+    // One share link, one question: does the drive still know it. This is the same call the
+    // dialog's 验一遍 makes, so a number taken here is the number the row uses.
+    if (parser.isSet(shareCheck)) {
+        Netdisk netdisk;
+        QEventLoop loop;
+        int rc = 2;
+        QObject::connect(&netdisk, &Netdisk::checked, &loop,
+                         [&](const QString &, bool dead, int code) {
+                             qInfo("share check dead=%d code=%d", int(dead), code);
+                             rc = dead ? 1 : 0;
+                             loop.quit();
+                         });
+        QTimer::singleShot(30000, &loop, [&] { qWarning("share check timed out"); loop.quit(); });
+        netdisk.check(parser.value(shareCheck));
+        loop.exec();
+        return rc;
+    }
 
     // The session recorder, on its own: the same thing the settings card's 去登录 does, so a
     // re-login or a re-capture of the signed headers does not need somebody to click through
@@ -257,7 +280,10 @@ int main(int argc, char *argv[])
         library.open(parser.isSet(db) ? parser.value(db) : outDir + u"/live.db"_qs);
         downloads.setDatabase(library.database());
         downloads.setOverrideDir(outDir);
-        downloads.setConns(4);
+        // The number the settings card actually stores. A harness that pins its own
+        // connection count measures a download the app can no longer produce - which is
+        // how a 4-road clamp survived as long as it did.
+        downloads.setConns(QSettings().value(QStringLiteral("downloads/conns"), 8).toInt());
         QEventLoop loop;
         int rc = 1;
         QString handed;
