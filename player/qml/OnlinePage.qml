@@ -181,6 +181,7 @@ Item {
     // words rather than something guessed from a pattern.
     property var numUrl: ({})
     property var shown: []         // the posters of the current screen page
+    property int fillTries: 0      // asks made for the short tail of this page
     // Which url was asked for on behalf of which site page. Keying the answer by the url,
     // not by "the last thing I asked for", is what keeps two fetches in flight from filing
     // one page's posters under another's number.
@@ -269,6 +270,7 @@ Item {
         page.numUrl = {};
         page.shown = [];
         page.first = 0;
+        page.fillTries = 0;
         page.reqUrl = {};
         page.reqUrl[url] = 1;
         page.hopToTop();
@@ -327,6 +329,12 @@ Item {
                     page.shown = [];
                 page.reqUrl[u] = sp;
                 online.open(u);
+                // The answer usually lands and runs this again from its own
+                // handler. When the site refuses it, nothing does - and the wall
+                // keeps the page it was showing, or the four posters the cached
+                // site page had left. Arm the same retry before asking, and the
+                // handler cancels it the moment an answer arrives.
+                page.armRetry(out.length);
                 return;             // fill() runs again when the answer lands
             }
             let j = idx - (sp - 1) * page.siteSize;
@@ -339,12 +347,40 @@ Item {
                 idx = (sp) * page.siteSize;   // step to the first poster of the next site page
         }
         page.shown = out;
+        if (out.length === per)
+            page.fillTries = 0;
+        else
+            page.armRetry(out.length);
+    }
+
+    // The page is not on screen yet, and the list has more posters in it, so the
+    // assembly gets another run. Three tries, doubling (1.2 / 2.4 / 4.8 s): the site
+    // answers a list page in about 2.1 s when it answers at all, and a loop against a
+    // site that is refusing is the thing the hop retry already learned not to do.
+    function armRetry(got) {
+        if (page.first + got >= page.total)
+            return;                 // the real tail: there is nothing left to fetch
+        if (page.fillTries >= 3)
+            return;
+        ++page.fillTries;
+        fillRetry.interval = 1200 * (1 << (page.fillTries - 1));
+        fillRetry.restart();
     }
 
     function jumpTo(k) {
         page.first = Math.max(0, Math.min(k, page.pages - 1)) * page.per;
+        page.fillTries = 0;     // a click is a new ask, not the third retry of the last one
         page.hopToTop();
         page.fill();
+    }
+
+    // The second half of a straddling page, asked for again. fill() is what reads the
+    // cache, so the retry is the whole mechanism: the same assembly, run again, and a page
+    // that arrives late simply lands in it.
+    Timer {
+        id: fillRetry
+        interval: 1200
+        onTriggered: page.fill()
     }
 
     // The chips: the two ends as arrows, then the pages that matter - the first, the
@@ -416,7 +452,9 @@ Item {
                     page.emptyNote = "站点没有搜到「" + page.word + "」，换个词试试。";
                 return;
             }
+            fillRetry.stop();     // the answer is the reason the watchdog was armed
             page.sitePages[sp] = items;
+            page.fillTries = 0;   // an answer in hand: the short page gets its own budget again
             if (page.siteSize === 0) {
                 page.siteSize = items.length;
                 page.rootUrl = url;
