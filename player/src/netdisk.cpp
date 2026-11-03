@@ -2183,16 +2183,21 @@ void Netdisk::xlLoadHeaders()
               qint64(QDateTime::currentSecsSinceEpoch()
                      - d.value(QStringLiteral("headers_at")).toDouble()));
     }
+}
+
+// The ladder's door. Loading the headers is not the same as starting a job: `check()` reads
+// the header set to sign one question, and when that read also called xlShare() every 迅雷 row
+// the sweep asked started a ladder with no job behind it - `share_id=` empty, the drive's
+// answer 400, and its words landed on the board as 「迅雷回：share_id can not be empty」
+// for a row nobody clicked.
+void Netdisk::xlJar()
+{
+    xlLoadHeaders();
     if (m_xlHdr.isEmpty()) {
         fail(QStringLiteral("还没有迅雷的登录记录，去设置-网盘登录里点「去登录」"));
         return;
     }
     xlShare();
-}
-
-void Netdisk::xlJar()
-{
-    xlLoadHeaders();
 }
 
 void Netdisk::xlForm(const QString &tag, const QString &url,
