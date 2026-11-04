@@ -65,12 +65,20 @@ type PieceRun struct {
 }
 
 type Status struct {
-	Hash        string       `json:"hash"`
-	Name        string       `json:"name"`
-	Total       int64        `json:"total"`
-	Completed   int64        `json:"completed"`
-	Missing     int64        `json:"missing"`
-	Pct         float64      `json:"pct"`
+	Hash      string `json:"hash"`
+	Name      string `json:"name"`
+	Total     int64  `json:"total"`
+	Completed int64  `json:"completed"`
+	// The contiguous prefix: the byte the reader can reach without meeting a hole. On a
+	// free-tier drive the tail lands beside a middle that is refused forever, so completed
+	// is larger than what is playable and only this number says where the film stops.
+	Prefix  int64   `json:"prefix"`
+	Missing int64   `json:"missing"`
+	Pct     float64 `json:"pct"`
+	// The length the file itself carries, when the engine can read it off the bytes it has.
+	// 迅雷's own field for this is the string "0", so this is the only number that says how
+	// long the film is on a drive that will not hand over the middle.
+	Duration    float64      `json:"duration"`
 	Rate        float64      `json:"rate"`
 	Peers       int          `json:"peers"`
 	ActivePeers int          `json:"activePeers"`

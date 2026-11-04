@@ -211,6 +211,63 @@ QString Netdisk::stageText() const
     }
 }
 
+namespace {
+
+// The drive quotes a length without saying which unit it used, so the file's own bytes
+// decide what is possible: at 50 Mbps those bytes are the shortest film they could be, at
+// 0.1 Mbps the longest. A number outside that band is a unit that was not guessed right,
+// and 0 is the honest answer - the player then shows what mpv measured off what is on disk
+// instead of putting a wrong total on screen.
+double quoteDuration(double raw, qint64 bytes)
+{
+    if (raw <= 0.0 || bytes <= 0)
+        return 0.0;
+    const double lo = bytes * 8.0 / 50e6;
+    const double hi = bytes * 8.0 / 0.1e6;
+    if (raw >= lo && raw <= hi)
+        return raw;
+    const double asMs = raw / 1000.0;
+    if (asMs >= lo && asMs <= hi)
+        return asMs;
+    return 0.0;
+}
+
+// 迅雷 answers its numbers as strings (measured: `"duration":"0"`), so
+// QJsonValue::toDouble alone would read every one of them as missing.
+double jsonNum(const QJsonObject &o, const QString &key)
+{
+    const QJsonValue v = o.value(key);
+    if (v.isDouble())
+        return v.toDouble();
+    bool ok = false;
+    const double d = v.toString().toDouble(&ok);
+    return ok ? d : 0.0;
+}
+
+}
+
+double Netdisk::durationFor(const QString &shareUrl) const
+{
+    return m_durations.value(shareUrl, 0.0);
+}
+
+QString Netdisk::providerOf(const QString &url) const
+{
+    // Every one of the four puts its share behind /s/<id>; without that the line is some
+    // other page on a host we also happen to know, and the honest answer is not a share.
+    if (!url.contains(QStringLiteral("/s/")))
+        return QString();
+    if (url.contains(QStringLiteral("pan.baidu.com")))
+        return QStringLiteral("baidu");
+    if (url.contains(QStringLiteral("pan.xunlei.com")))
+        return QStringLiteral("xunlei");
+    if (url.contains(QStringLiteral("drive.uc.cn")) || url.contains(QStringLiteral("pc-api.uc.cn")))
+        return QStringLiteral("uc");
+    if (url.contains(QStringLiteral("pan.quark.cn")) || url.contains(QStringLiteral("drive.quark.cn")))
+        return QStringLiteral("quark");
+    return QString();
+}
+
 void Netdisk::download(const QString &shareUrl, const QString &name, const QString &poster)
 {
     static const QRegularExpression pwd(QStringLiteral("/s/([A-Za-z0-9]+)"));
@@ -233,10 +290,11 @@ void Netdisk::download(const QString &shareUrl, const QString &name, const QStri
     static const QRegularExpression code(QStringLiteral("[?&](?:pwd|pass_code)=([A-Za-z0-9]{4,8})"));
     const auto c = code.match(shareUrl);
     j.pwd = c.hasMatch() ? c.captured(1) : QString();
-    j.provider = shareUrl.contains(QStringLiteral("pan.baidu.com")) ? QStringLiteral("baidu")
-             : isXl ? QStringLiteral("xunlei")
-             : shareUrl.contains(QStringLiteral("drive.uc.cn")) ? QStringLiteral("uc")
-                                                                : QStringLiteral("quark");
+    j.provider = providerOf(shareUrl);
+    if (j.provider.isEmpty()) {
+        emit failed(shareUrl, QStringLiteral("这个网盘还没接：只认 夸克 / 百度 / 迅雷 / UC"));
+        return;
+    }
     // Which row was pressed is the first thing a wall of 65 shares asks, and the answer is the
     // surl - the pass code itself stays out of the log.
     qInfo("nd in %s surl=%s pwd=%d q=%d", qPrintable(j.provider), qPrintable(j.surl),
@@ -852,6 +910,8 @@ void Netdisk::ucHandOff(const QString &url)
         setStage(Idle);
         emit ready(m_job.share, url, headers, shown, m_job.poster);
         runNext();
+        if (m_queue.isEmpty())
+            closeBrowser(QStringLiteral("uc hand-off"));
     });
 }
 
@@ -1096,6 +1156,8 @@ void Netdisk::stepHandoff(const QString &url, const QString &serverName)
         setStage(Idle);
         emit ready(m_job.share, url, headers, shown, m_job.poster);
         runNext();
+        if (m_queue.isEmpty())
+            closeBrowser(QStringLiteral("quark hand-off"));
     });
 }
 
@@ -1280,6 +1342,30 @@ void Netdisk::fail(const QString &note)
         deleteCopy(fid, size);
     }
     runNext();
+}
+
+void Netdisk::closeBrowser(const QString &why)
+{
+    const bool up = m_ws && m_ws->state() == QAbstractSocket::ConnectedState;
+    qInfo("nd browser close %s attached=%d", qPrintable(why), int(up));
+    if (up)
+        send(QStringLiteral("Browser.close"), QJsonObject{}, [](const QJsonObject &) {});
+    // The flags go whether the answer came back or not: Browser.close takes the socket with
+    // it, and every page path re-checks them against /json/list before it uses them. Leaving
+    // them set is how a job ends up sending commands to a browser that no longer exists.
+    if (m_ws) {
+        m_ws->deleteLater();
+        m_ws = nullptr;
+    }
+    m_rpc.clear();
+    m_pageReady = false;
+    m_pageTabId.clear();
+    m_bdPageReady = false;
+    m_bdTabId.clear();
+    m_xlPageReady = false;
+    m_xlTabId.clear();
+    m_xlListening = false;
+    m_xlEntered.clear();
 }
 
 void Netdisk::cancel(const QString &key)
@@ -1833,6 +1919,8 @@ void Netdisk::bdStream()
     // baidupcs.com urls that need no cookie, so writing what the tab fetched to a local
     // .m3u8 gives mpv the whole film and nothing else has to be proxied.
     const auto handOff = [this](const QString &file, int segs, double dur) {
+        // The playlist's own EXTINF sum is the length of the film, not of what has arrived.
+        m_durations.insert(m_job.share, dur);
         qInfo("nd bd table segs=%d hours=%.2f original=%lld ms=%lld", segs, dur / 3600.0,
               m_job.size, m_bdClock.isValid() ? qint64(m_bdClock.elapsed()) : -1LL);
         setStage(Idle);
@@ -1842,6 +1930,8 @@ void Netdisk::bdStream()
         emit ready(m_job.share, file, QString(),
                    m_job.name.isEmpty() ? m_job.fname : m_job.name, m_job.poster);
         runNext();
+        if (m_queue.isEmpty())
+            closeBrowser(QStringLiteral("baidu playlist"));
     };
     bdPageText(api, [this, handOff](bool okp, const QString &text, int segs, double dur) {
         if (!okp || !text.startsWith("#EXTM3U") || segs < 2) {
@@ -2396,9 +2486,10 @@ void Netdisk::xlFile(int i, const QStringList &chain)
                 fail(QStringLiteral("迅雷那一页没打开「%1」").arg(chain[i].left(28)));
                 return;
             }
-            // Measured on his share: the folder's own listing arrives ~4 s after the double
-            // click and the row under it cannot be clicked before it is in the document.
-            QTimer::singleShot(6000, this, [this, i, chain] { xlFile(i + 1, chain); });
+            // No sleep here at all: the next level's own xlOpen waits for its row to be in the
+            // document. This used to be a flat 6000 ms per level, and 6000 ms was the slowest
+            // folder ever measured rather than the one in front of us.
+            xlFile(i + 1, chain);
         });
         return;
     }
@@ -2458,37 +2549,84 @@ void Netdisk::xlHandOff(const QJsonObject &info)
         fail(QStringLiteral("迅雷回的清晰度里没有地址"));
         return;
     }
-    qInfo("nd xl handoff medias=%d free=%d paid=%d res=%s origin_bytes=%lld ms=%lld",
-          int(medias.size()), int(free.size()), paid,
-          qPrintable(m.value(QStringLiteral("resolution_name")).toString()), m_job.size,
-          m_bdClock.isValid() ? qint64(m_bdClock.elapsed()) : -1LL);
-    setStage(Idle);
-    // No headers, and that is measured rather than assumed: the address answers 206 with a
-    // correct Content-Range to a request that carries nothing but `Range: bytes=0-31`. So this
-    // is the same hand-off 百度 and 夸克 make and the row gets 下载列表, 并发数, the resume and
-    // its play mark for free.
-    //
-    // The extension comes from what the drive actually handed, not from a guess: a rendition
-    // with no `resolution_name` is the original file (measured: the first 32 bytes are
-    // `1a 45 df a3`, Matroska, and the size is the share's own 17.9 GiB), while the transcoded
-    // ones begin `47 40 11 10` - MPEG-TS - whatever the share called the original. Naming a
-    // stream after the mkv, or an mkv after the stream, is the same lie twice this week.
-    const bool transcode = !m.value(QStringLiteral("resolution_name")).toString().isEmpty()
-        || m.value(QStringLiteral("category")).toString().contains(QStringLiteral("transcode"));
-    const QString suffix = transcode ? QStringLiteral("ts")
-                                     : QFileInfo(m_job.fname).suffix();
-    const QString film = m_job.name.isEmpty() ? QFileInfo(m_job.fname).completeBaseName()
-                                              : m_job.name;
-    emit ready(m_job.share, url, QString(),
-               suffix.isEmpty() ? film : QStringLiteral("%1.%2").arg(film, suffix),
-               m_job.poster);
-    runNext();
+    // The rendition's own length if it quoted one, else the file entry's. Both are the
+    // drive's number, so neither depends on how much of the film has reached this machine.
+    double quoted = jsonNum(m, QStringLiteral("duration"));
+    if (quoted <= 0.0)
+        quoted = jsonNum(m_xlBest, QStringLiteral("duration"));
+
+    // Everything after the length, as far as the two paths below can hand it over. It is a
+    // lambda rather than a method because the async path has to carry it into a callback.
+    auto finish = [this, m, url, mediasN = int(medias.size()), freeN = int(free.size()), paid]() {
+        qInfo("nd xl handoff medias=%d free=%d paid=%d res=%s origin_bytes=%lld ms=%lld dur=%.0f",
+              mediasN, freeN, paid,
+              qPrintable(m.value(QStringLiteral("resolution_name")).toString()), m_job.size,
+              m_bdClock.isValid() ? qint64(m_bdClock.elapsed()) : -1LL,
+              m_durations.value(m_job.share));
+        setStage(Idle);
+        // No headers, and that is measured rather than assumed: the address answers 206 with a
+        // correct Content-Range to a request that carries nothing but `Range: bytes=0-31`. So
+        // this is the same hand-off 百度 and 夸克 make and the row gets 下载列表, 并发数, the
+        // resume and its play mark for free.
+        //
+        // The extension comes from what the drive actually handed, not from a guess: a rendition
+        // with no `resolution_name` is the original file (measured: the first 32 bytes are
+        // `1a 45 df a3`, Matroska, and the size is the share's own 17.9 GiB), while the
+        // transcoded ones begin `47 40 11 10` - MPEG-TS - whatever the share called the
+        // original. Naming a stream after the mkv, or an mkv after the stream, is the same lie
+        // twice this week.
+        const bool transcode = !m.value(QStringLiteral("resolution_name")).toString().isEmpty()
+            || m.value(QStringLiteral("category")).toString().contains(QStringLiteral("transcode"));
+        const QString suffix = transcode ? QStringLiteral("ts")
+                                         : QFileInfo(m_job.fname).suffix();
+        const QString film = m_job.name.isEmpty() ? QFileInfo(m_job.fname).completeBaseName()
+                                                  : m_job.name;
+        emit ready(m_job.share, url, QString(),
+                   suffix.isEmpty() ? film : QStringLiteral("%1.%2").arg(film, suffix),
+                   m_job.poster);
+        runNext();
+        if (m_queue.isEmpty())
+            closeBrowser(QStringLiteral("xl file_info"));
+    };
+
+    if (quoted > 0.0) {
+        m_durations.insert(m_job.share, quoteDuration(quoted, m_job.size));
+        finish();
+        return;
+    }
+    // Both of those fields are 0 on a transcode - measured, the key is there and its value is
+    // the string "0" - and the engine's own ruler cannot answer until the *last* block lands,
+    // which on a 370 MiB free-tier job is minutes after the row is already playing. The player
+    // that just signed this address already knows the length: it is sitting in its own
+    // <video>. Asking it costs one round trip; the cap keeps a silent page from holding the
+    // hand-off, and the row then simply waits for the engine's number as before.
+    auto once = std::make_shared<bool>(false);
+    auto settle = [this, once, finish](double d) {
+        if (*once)
+            return;
+        *once = true;
+        m_durations.insert(m_job.share, quoteDuration(d, m_job.size));
+        qInfo("nd xl page duration %.0f s", d);
+        finish();
+    };
+    eval(QStringLiteral("(() => {const v=document.querySelector('video');"
+                       "return v&&isFinite(v.duration)&&v.duration>0?String(v.duration):'';})()"),
+         [settle](bool ok, const QJsonValue &v) {
+             settle(ok ? v.toString().toDouble() : 0.0);
+         });
+    QTimer::singleShot(1500, this, [settle] { settle(0.0); });
 }
 
 void Netdisk::onEvent(const QJsonObject &o)
 {
     const QString method = o.value(QStringLiteral("method")).toString();
     const QJsonObject p = o.value(QStringLiteral("params")).toObject();
+    // The load event carries no requestId, so it has to be read before the network plumbing
+    // below throws the message away for not having one.
+    if (method == QStringLiteral("Page.loadEventFired")) {
+        xlFireLoad();
+        return;
+    }
     const QString rid = p.value(QStringLiteral("requestId")).toString();
     if (rid.isEmpty())
         return;
@@ -2553,25 +2691,55 @@ void Netdisk::xlOpen(const QString &name, std::function<void(bool)> done)
         done(false);
         return;
     }
+    // Wait for the row to be in the document before clicking it. The nuxt page paints its list
+    // after the load event, so an open fired the moment Page.loadEventFired lands - measured on
+    // this run - answers `not found` for a folder that appears a second later.
     // The leaf text element is not the row: 迅雷's list binds its handlers on an ancestor, and
     // a synthetic click on the name alone selects without opening. Measured with both.
+    auto click = [this, name, done] {
+        const QString expr = QStringLiteral(
+            "(() => { const want=%1;"
+            "const els=[...document.querySelectorAll('*')].filter(e=>!e.children.length"
+            "&&(e.innerText||'').trim().startsWith(want)&&e.offsetWidth>0);"
+            "if(!els.length)return 'not found';"
+            "let row=els[0];for(let i=0;i<6&&row.parentElement;i++){row=row.parentElement;"
+            "if(/row|item|cell|file|list/i.test(String(row.className)))break;}"
+            "for(const t of ['click','dblclick'])row.dispatchEvent(new MouseEvent(t,"
+            "{bubbles:true,cancelable:true,view:window}));"
+            "return 'sent '+row.tagName+'.'+String(row.className).slice(0,40);})()")
+                                 .arg(jsVal(QJsonValue(name)));
+        eval(expr, [name, done](bool ok, const QJsonValue &v) {
+            const QString s = ok ? v.toString() : QString();
+            qInfo("nd xl open %s -> %s",
+                  qPrintable(name.left(24).toUtf8().toPercentEncoding()),
+                  qPrintable(s.left(60).toUtf8().toPercentEncoding()));
+            done(ok && s.startsWith(QStringLiteral("sent")));
+        });
+    };
+    xlWaitRow(name, 6000, std::function<void()>(click));
+}
+
+void Netdisk::xlWaitRow(const QString &name, int capMs, std::function<void()> then, int waited)
+{
+    if (waited >= capMs) {
+        qInfo("nd xl row %s not in document after %d ms",
+              qPrintable(name.left(24).toUtf8().toPercentEncoding()), waited);
+        then();
+        return;
+    }
     const QString expr = QStringLiteral(
         "(() => { const want=%1;"
-        "const els=[...document.querySelectorAll('*')].filter(e=>!e.children.length"
-        "&&(e.innerText||'').trim().startsWith(want)&&e.offsetWidth>0);"
-        "if(!els.length)return 'not found';"
-        "let row=els[0];for(let i=0;i<6&&row.parentElement;i++){row=row.parentElement;"
-        "if(/row|item|cell|file|list/i.test(String(row.className)))break;}"
-        "for(const t of ['click','dblclick'])row.dispatchEvent(new MouseEvent(t,"
-        "{bubbles:true,cancelable:true,view:window}));"
-        "return 'sent '+row.tagName+'.'+String(row.className).slice(0,40);})()")
-                             .arg(jsVal(QJsonValue(name)));
-    eval(expr, [name, done](bool ok, const QJsonValue &v) {
-        const QString s = ok ? v.toString() : QString();
-        qInfo("nd xl open %s -> %s",
-              qPrintable(name.left(24).toUtf8().toPercentEncoding()),
-              qPrintable(s.left(60).toUtf8().toPercentEncoding()));
-        done(ok && s.startsWith(QStringLiteral("sent")));
+        "return [...document.querySelectorAll('*')].some(e=>!e.children.length"
+        "&&(e.innerText||'').trim().startsWith(want)&&e.offsetWidth>0)"
+        "?1:0;})()").arg(jsVal(QJsonValue(name)));
+    eval(expr, [this, name, capMs, then, waited](bool ok, const QJsonValue &v) {
+        if (ok && v.toInt() == 1) {
+            then();
+            return;
+        }
+        QTimer::singleShot(250, this, [this, name, capMs, then, waited] {
+            xlWaitRow(name, capMs, then, waited + 250);
+        });
     });
 }
 
@@ -2582,6 +2750,16 @@ void Netdisk::xlListen()
     send(QStringLiteral("Runtime.enable"), QJsonObject{}, [](const QJsonObject &) {});
     send(QStringLiteral("Network.enable"), QJsonObject{}, [](const QJsonObject &) {});
 }
+void Netdisk::xlWaitLoad(std::function<void()> done, int capMs)
+{
+    // Whoever is waiting gets exactly one answer: the event or the cap, whichever comes first.
+    // A second hop taking over while an older one is still armed would otherwise strand the
+    // older callback, so the pending one is released first.
+    xlFireLoad();
+    m_xlLoadDone = std::move(done);
+    QTimer::singleShot(capMs, this, [this] { xlFireLoad(); });
+}
+
 void Netdisk::xlNav(const QString &url, std::function<void()> done)
 {
     // The share page is a nuxt app whose own `?path=` is client state: measured, a cold
@@ -2595,11 +2773,15 @@ void Netdisk::xlNav(const QString &url, std::function<void()> done)
     m_xlEntered = url;
     send(QStringLiteral("Page.navigate"), { { QStringLiteral("url"), url } },
          [](const QJsonObject &) {});
-    QTimer::singleShot(9000, this, [this, done] {
+    // Was a flat 9000 ms. Measured with his profile and the app's own headless browser:
+    // Page.loadEventFired lands 455 ms after navigate cold, 388 ms warm, and the browser
+    // itself answers CDP 282 ms after CreateProcess - so the sleep was paying 20x the bill.
+    // The cap stays, because a page that never fires the event must not strand the chain.
+    xlWaitLoad([this, done] {
         if (m_stage != Idle)
             m_deadline->start(90000);
         done();
-    });
+    }, 9000);
 }
 
 void Netdisk::xlPage(std::function<void(bool, const QString &)> done, int tries)

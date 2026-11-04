@@ -57,14 +57,68 @@ Popup {
     readonly property real titleFs: Math.round(0.0194 * Theme.refH)
     readonly property real fieldH: Math.round(Theme.refH * 0.05)
 
-    function links() {
+    // What a pasted line is. Decided by the same two questions the engines ask: is this a
+    // share page of a drive this app can walk (netdisk), or is it bytes the engine can pull
+    // directly? A 夸克 share pulled as an http link would save the HTML of a login wall and
+    // call it a film, so the share question comes first.
+    //
+    // Which drive it is stays out of the box: all four walks answer as 网盘. The ladder reads
+    // the host itself, so naming it here would only be a second place for that to be wrong.
+    readonly property string provKind: "网盘"
+
+    // The code a share carries as separate text after the link ("提取码: abcd") is put onto
+    // the url, because `pwd=` / `pass_code=` is the only place the ladder looks for it.
+    function withCode(line, link) {
+        if (/[?&](pwd|pass_code)=/.test(link))
+            return link;
+        const m = /(提取码|访问码|密码|passcode|pwd)\s*[:：=]?\s*([A-Za-z0-9]{4,8})/.exec(line);
+        if (!m)
+            return link;
+        return link + (link.indexOf("?") >= 0 ? "&" : "?") + "pwd=" + m[2];
+    }
+
+    // { kind, url } when the line can be started, { kind: "", url, why } when it cannot.
+    //
+    // What is handed over is the link found in the line, not the line: measured on screen,
+    // a paste of a share link with its 「提取码: xxxx」 behind it put the whole line - the
+    // words and all - into the url, so a 直链 with a note after it ("…/film.mkv 4K 压制")
+    // was started as an address with a space in it.
+    function classify(s) {
+        if (s.startsWith("magnet:"))
+            return { kind: "磁力", url: s };
+        if (/\.torrent($|\?)/i.test(s))
+            return { kind: "种子", url: s };
+        const found = /https?:\/\/\S+/i.exec(s);
+        if (!found)
+            return { kind: "", url: s, why: "不是链接" };
+        const link = found[0];
+        const prov = netdisk.providerOf(link);
+        if (prov.length > 0)
+            return { kind: provKind, url: withCode(s, link) };
+        if (link.indexOf("/s/") >= 0)
+            return { kind: "", url: link, why: "这个网盘还没接" };
+        return { kind: "直链", url: link };
+    }
+
+    // Every non-empty line, classified, in the order pasted. Recomputed as the box is typed
+    // into - the recognition is what he asked to happen on its own, not after a press.
+    readonly property var picked: {
         const out = [];
         for (const raw of editor.text.split("\n")) {
             const s = raw.trim();
             if (s.length > 0)
-                out.push(s);
+                out.push(classify(s));
         }
         return out;
+    }
+    readonly property int goodCount: picked.filter(function (p) { return p.kind.length > 0; }).length
+    readonly property int badCount: picked.length - goodCount
+
+    // The urls the host should start: recognised lines only, with the code folded into the
+    // share addresses so the ladder finds it where it looks.
+    function links() {
+        return picked.filter(function (p) { return p.kind.length > 0; })
+                     .map(function (p) { return p.url; });
     }
 
     function reset() {
@@ -79,7 +133,7 @@ Popup {
         editor.text = lines.join("\n");
         const n = lines.length;
         sheet.problem = (added > 0 ? "已加入 " + added + " 个；" : "")
-                        + n + " 行没加入：只认 magnet: 链接、.torrent 文件和 http(s) 直链。";
+                        + n + " 行没加入：只认 magnet: 链接、.torrent 文件、网盘分享和 http(s) 直链。";
         editor.forceActiveFocus();
     }
 
@@ -187,6 +241,41 @@ Popup {
             }
         }
 
+        // What the box made of the paste, as one line - 识别 happens on its own, before any
+        // press. The kinds are named because a magnet and a 夸克 share are two different
+        // journeys and the row that appears says which one was started.
+        //
+        // The line's height is reserved from the start, not taken when it first has words:
+        // measured, the card grew 24 px on the first keystroke and the whole box moved 12 px
+        // up as it re-centred - the same jump the magnet sheet was called out for.
+        Text {
+            width: parent.width
+            height: Math.round(sheet.pad * 0.35) + Math.round(sheet.smallFs * 1.3)
+            verticalAlignment: Text.AlignBottom
+            text: {
+                if (picked.length === 0)
+                    return "";
+                const seen = {};
+                const order = [];
+                for (const p of picked) {
+                    if (p.kind.length === 0)
+                        continue;
+                    if (seen[p.kind] === undefined) { seen[p.kind] = 0; order.push(p.kind); }
+                    ++seen[p.kind];
+                }
+                let t = "识别到 " + sheet.goodCount + " 个：" + order.map(function (k) {
+                    return k + " " + seen[k];
+                }).join(" · ");
+                if (sheet.badCount > 0)
+                    t += "；" + sheet.badCount + " 行不认";
+                return t;
+            }
+            wrapMode: Text.WordWrap
+            color: sheet.badCount > 0 ? Theme.accent : Theme.textSecondary
+            font.pixelSize: sheet.smallFs
+            font.family: Theme.uiFont
+        }
+
         // What the host refused, in the accent the job rows use for their own errors. It
         // only exists while there is something to say, so a clean paste keeps the height
         // it had.
@@ -283,7 +372,9 @@ Popup {
         // keeps the contrast (about 7:1).
         Rectangle {
             id: goBtn
-            readonly property bool dead: editor.text.trim().length === 0
+            // Dead when nothing in the box was recognised, not when the box is empty: a
+            // paste of one unusable line used to look pressable and do nothing at all.
+            readonly property bool dead: sheet.goodCount === 0
             width: parent.width
             height: Math.round(Theme.refH * 0.064)
             radius: Theme.controlRadius

@@ -1151,6 +1151,26 @@ Window {
     Item {
         id: ui
         visible: page !== "library" && !videoHost.transitioning
+        // The length of what is playing as the film's own, not as the bytes on this machine.
+        // A 网盘 job that is still filling has a timeline mpv cannot see yet - it can only
+        // measure what it has read - and the drive quoted the real one, so the bar, the total
+        // and the hover time all use that and fall back to mpv's when nobody quoted.
+        readonly property real showDur: {
+            // The revision is read for its value as a dependency: these two questions are
+            // answered by functions, and a binding on a function call only re-runs when
+            // something it *reads* changes. Without it the bar keeps the answer from the
+            // moment the film was opened - which on a job whose tail had not landed yet is
+            // "nobody quoted a length", and that stayed true for the whole film.
+            const tick = downloads.revision;
+            const d = downloads.durationForUrl(playerCore.mediaUrl);
+            return tick >= 0 ? (d > 0 ? d : playerCore.duration) : 0.0;
+        }
+        // How far in the bytes have actually come, on that same timeline. 1.0 for anything
+        // the shell cannot place, which is the same as saying it is all here.
+        readonly property real buffered: {
+            const tick = downloads.revision;
+            return tick >= 0 ? downloads.bufferedForUrl(playerCore.mediaUrl) : 1.0;
+        }
         // Everything the film carries lives in here, so it all follows the film's
         // column rather than the window's.
         x: 0
@@ -1174,9 +1194,16 @@ Window {
 
         Text {
             id: durText
-            x: win.stageW - win.inset - width
+            // Both boxes already end on the same inset (13 px at 1282 wide), but the ink
+            // does not: measured on his own frame, the digits stopped 1.9 px inside their
+            // box while the fullscreen mark stops 3.9 px inside its own, so the number sat
+            // 2 px closer to the edge than the row under it. The left pair happens to agree
+            // (both inks start at 16 px), so only this side needs the optical step.
+            x: win.stageW - win.inset - width - Math.round(Theme.refH * 0.0028)
             anchors.verticalCenter: bar.verticalCenter
-            text: win.fmt(playerCore.duration)
+            // Nobody has said how long this is: not the drive, not the file. 0:00 reads as
+            // "the film is empty"; a dash reads as the number that is missing.
+            text: ui.showDur > 0 ? win.fmt(ui.showDur) : "—"
             color: Theme.glyph
             font.pixelSize: Math.round(Theme.subtitleFontRatio * Theme.refH)
             font.family: Theme.uiFont
@@ -1191,10 +1218,29 @@ Window {
             // gap to the buttons under it at any window size.
             height: Theme.refH * 0.030
             y: Theme.barCenterRatio * Theme.refH - height / 2 + (win.vh - Theme.refH)
-            progress: playerCore.duration > 0 ? playerCore.position / playerCore.duration : 0.0
+            progress: ui.showDur > 0 ? playerCore.position / ui.showDur : 0.0
+            buffered: ui.buffered
             onScrubbed: (frac) => {
-                if (playerCore.duration > 0)
-                    playerCore.seekTo(frac * playerCore.duration);
+                if (ui.showDur <= 0)
+                    return;
+                // Nothing readable yet - a jump has no picture to land on, so it does not
+                // happen at all rather than parking the page on a still frame.
+                if (ui.buffered <= 0.0)
+                    return;
+                const want = frac * ui.showDur;
+                // Past the bytes that exist there is nothing to decode: stop at the last
+                // watchable moment and pause there instead of handing mpv a seek the view
+                // will answer 416 for, which is what left the page sitting on a still frame.
+                // The 2 s back is the margin for the block still landing under the head.
+                const edge = ui.buffered > 0.0 && ui.buffered < 1.0
+                             ? ui.showDur * ui.buffered - 2.0 : ui.showDur;
+                if (want > edge) {
+                    playerCore.seekTo(Math.max(0.0, edge));
+                    if (!playerCore.paused)
+                        playerCore.setPropertyString("pause", "yes");
+                    return;
+                }
+                playerCore.seekTo(want);
             }
         }
 
@@ -1207,7 +1253,7 @@ Window {
             y: bar.y - height - Theme.refH * 0.020
             visible: bar.hovering && bar.hoverPos >= 0
             chapterLabel: win.hasChapters ? win.chapterName(win.chapterAt(bar.hoverPos)) : ""
-            timeLabel: win.fmt(bar.hoverPos * playerCore.duration)
+            timeLabel: win.fmt(bar.hoverPos * ui.showDur)
             thumb: {
                 const n = thumbs.frames.length
                 if (n === 0)
@@ -1628,7 +1674,12 @@ Window {
         target: netdisk
         function onReady(key, url, headers, name, poster)
         {
-            const id = downloads.add(url, win.dlDir, poster, headers, name);
+            // The length the drive quoted for this share, handed over in the same breath as
+            // the address. Without it the row has no length until the engine's own ruler can
+            // read one off the tail - minutes of a job at the free tier's speed - and a row
+            // with no length shows "—" and lets every jump land in bytes that do not exist.
+            const id = downloads.add(url, win.dlDir, poster, headers, name,
+                                     netdisk.durationFor(key));
             if (id > 0)
                 downloads.start(id);
         }

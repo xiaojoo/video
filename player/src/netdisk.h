@@ -50,8 +50,14 @@ public:
     // One share link -> one handed-over download. `name` and `poster` are the board's own.
     // Where it lands is Downloads' business (its own folder, or the harness's override), so
     // there is no directory in this call.
+    // Which drive a pasted address belongs to, or "" when it is not a share page of one
+    // this app can walk. 新建下载 asks this before it decides whether a line goes to the
+    // ladder or straight to the byte engine - an http(s) share page pulled as a direct
+    // link would save the HTML of a login wall and call it a film.
+    Q_INVOKABLE QString providerOf(const QString &url) const;
     Q_INVOKABLE void download(const QString &shareUrl, const QString &name,
                               const QString &poster);
+    Q_INVOKABLE double durationFor(const QString &shareUrl) const;
     // Drop a job that has not been handed over yet. Once it has, the row is Downloads' and
     // its own stop is what stops it.
     Q_INVOKABLE void cancel(const QString &key);
@@ -248,6 +254,11 @@ private:
     // the share root.
     void xlPage(std::function<void(bool, const QString &)> done, int tries = 0);
     void xlNav(const QString &url, std::function<void()> done);
+    // Waits for the page's own load event and calls done once, with a cap. The ladder used to
+    // sleep a flat 9 s after every navigation; measured against his profile, the event arrives
+    // 0.4 s after Page.navigate, so eight and a half seconds of every hop were pure waiting.
+    void xlWaitLoad(std::function<void()> done, int capMs);
+    void xlFireLoad() { if (m_xlLoadDone) { const auto f = std::move(m_xlLoadDone); m_xlLoadDone = nullptr; f(); } }
     void xlPress(int x, int y);
     void xlListen();
     // Present a 提取码 the way he would: ride it in the url first (the page submits what it is
@@ -258,6 +269,11 @@ private:
     // Double-click one row's name in the file list - a single click only selects, and the
     // route's own `?path=` is client state that a cold navigate drops.
     void xlOpen(const QString &name, std::function<void(bool)> done);
+    // Asks the document, every 250 ms up to a cap, whether a row with this name is there yet.
+    // A folder's listing is rendered client-side, so there is no load event to wait on - but
+    // the row is in the document as soon as it is, and the flat 6 s sleep was paying for the
+    // slowest folder measured instead of the one in front of us.
+    void xlWaitRow(const QString &name, int capMs, std::function<void()> then, int waited = 0);
     // The last 200 answer the page itself got for `pathPart` of its api, read off the wire.
     void xlBody(const QString &pathPart, std::function<void(const QJsonObject &)> then,
                 int polls = 0);
@@ -273,6 +289,7 @@ private:
     QJsonObject m_xlBest;
     QString m_xlToken;        // the pass_code_token, once the share is unlocked
     QString m_xlEntered;      // the share url the tab is already sitting on
+    std::function<void()> m_xlLoadDone;   // the one hop currently waiting on loadEventFired
     QString m_xlTabId;        // the DevTools tab the socket is on
     bool m_xlPageReady = false;
     bool m_xlListening = false;   // Network.enable has been sent on this socket
@@ -294,6 +311,11 @@ private:
     int m_bdDelay = 150;   // ms between the share calls; 0 paced the -9 away (see bdNext)
 
     void fail(const QString &note);
+    // Quit the browser we started once the address is handed over and nothing is queued:
+    // a browser that stays up is the browser the next launch opens its tab into, and that
+    // is the window he sees. Only the hand-off calls this - a failed job may still owe a
+    // 转存 copy back, and that is a page call.
+    void closeBrowser(const QString &why);
     // Which step a timeout tripped on: "夸克没有回应" alone cannot tell a dead tab from
     // a call the page is sitting on.
     QString stageText() const;
@@ -303,6 +325,9 @@ private:
     void saveCopies() const;
 
     QNetworkAccessManager *m_nam = nullptr;
+    // What the drive quoted for the length of the file behind a share, in seconds, kept
+    // against the share url so the caller of ready() can ask for the one it just got.
+    QHash<QString, double> m_durations;
     QWebSocket *m_ws = nullptr;
     QTimer *m_deadline = nullptr;
     int m_rpcId = 0;

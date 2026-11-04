@@ -224,6 +224,11 @@ void Downloads::ensureSchema()
     if (!q.exec(u"ALTER TABLE downloads ADD COLUMN kind TEXT"_qs)
         && !q.lastError().text().contains(u"duplicate column name"_qs, Qt::CaseInsensitive))
         qWarning("downloads kind migration failed: %s", qPrintable(q.lastError().text()));
+    // The length the drive quoted. A row written before this column simply has no length to
+    // offer, and the player then shows mpv's own number instead of guessing one.
+    if (!q.exec(u"ALTER TABLE downloads ADD COLUMN dur REAL"_qs)
+        && !q.lastError().text().contains(u"duplicate column name"_qs, Qt::CaseInsensitive))
+        qWarning("downloads dur migration failed: %s", qPrintable(q.lastError().text()));
 }
 
 void Downloads::setDatabase(const QSqlDatabase &db)
@@ -274,7 +279,7 @@ void Downloads::load()
     m_rows.clear();
     QSqlQuery q(m_db);
     if (!q.exec(u"SELECT id, src, name, dir, total, completed, want, state, path, err,"
-                " poster, kind FROM downloads ORDER BY added DESC, id DESC"_qs)) {
+                " poster, kind, dur FROM downloads ORDER BY added DESC, id DESC"_qs)) {
         qWarning("downloads select failed: %s", qPrintable(q.lastError().text()));
         return;
     }
@@ -293,6 +298,7 @@ void Downloads::load()
         r.poster = q.value(10).toString();
         const QString kind = q.value(11).toString();
         r.kind = kind.isEmpty() ? u"torrent"_qs : kind;
+        r.duration = q.value(12).toDouble();
         m_rows.append(r);
     }
     emit countChanged();
@@ -302,7 +308,7 @@ void Downloads::persist(const DownloadRow &row)
 {
     QSqlQuery q(m_db);
     q.prepare(u"UPDATE downloads SET name=?, dir=?, total=?, completed=?, want=?,"
-              " state=?, path=?, err=?, poster=?, kind=? WHERE id=?"_qs);
+              " state=?, path=?, err=?, poster=?, kind=?, dur=? WHERE id=?"_qs);
     q.addBindValue(row.name);
     q.addBindValue(row.dir);
     q.addBindValue(row.total);
@@ -313,6 +319,7 @@ void Downloads::persist(const DownloadRow &row)
     q.addBindValue(row.error);
     q.addBindValue(row.poster);
     q.addBindValue(row.kind);
+    q.addBindValue(row.duration);
     q.addBindValue(row.id);
     if (!q.exec())
         qWarning("downloads update failed: %s", qPrintable(q.lastError().text()));
@@ -335,7 +342,7 @@ bool Downloads::nameTaken(const QString &dir, const QString &name) const
 }
 
 qint64 Downloads::add(const QString &source, const QString &dir, const QString &poster,
-                      const QString &headers, const QString &name)
+                      const QString &headers, const QString &name, double duration)
 {
     const QString src = source.trimmed();
     const bool isMagnet = src.startsWith(u"magnet:"_qs);
@@ -375,7 +382,8 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
 
     QSqlQuery q(m_db);
     q.prepare(u"INSERT OR IGNORE INTO downloads(src, name, dir, total, completed, want,"
-              " state, added, poster, kind) VALUES(?,?,?,?,?,?,?,strftime('%s','now'),?,?)"_qs);
+              " state, added, poster, kind, dur)"
+              " VALUES(?,?,?,?,?,?,?,strftime('%s','now'),?,?,?)"_qs);
     q.addBindValue(src);
     q.addBindValue(initialName);
     q.addBindValue(where);
@@ -385,6 +393,7 @@ qint64 Downloads::add(const QString &source, const QString &dir, const QString &
     q.addBindValue(u"stopped"_qs);
     q.addBindValue(poster.trimmed());
     q.addBindValue(kind);
+    q.addBindValue(duration);
     if (!q.exec()) {
         qWarning("downloads insert failed: %s", qPrintable(q.lastError().text()));
         return -1;
@@ -524,7 +533,7 @@ void Downloads::spawn(DownloadRow &row)
     if (row.kind == u"http"_qs) {
         args << u"-mode"_qs << u"http"_qs << u"-data"_qs << row.dir
              << u"-url"_qs << row.src << u"-out-name"_qs << row.name
-             << u"-conns"_qs << QString::number(m_conns) << u"-chunk"_qs << u"8"_qs
+             << u"-conns"_qs << QString::number(m_conns) << u"-chunk"_qs << u"2"_qs
              << u"-http"_qs << u"127.0.0.1:0"_qs << u"-interval"_qs << u"1s"_qs;
         // The path, not the text: a process list is readable by anything on the box.
         if (QFileInfo::exists(headersPathFor(row.id)))
@@ -556,8 +565,14 @@ void Downloads::ingestLine(qint64 id, const QString &line)
 {
     if (line.startsWith(u"LISTEN "_qs)) {
         auto it = m_children.find(id);
-        if (it != m_children.end())
-            it.value().base = line.mid(7).trimmed();
+        if (it == m_children.end())
+            return;
+        it.value().base = line.mid(7).trimmed();
+        // And on the row, where it survives the child. A free-tier job runs out of fetchable
+        // blocks and exits; the film it handed to mpv keeps playing, and the bar still has to
+        // know which row that url belongs to.
+        if (DownloadRow *r = find(id))
+            r->base = it.value().base;
         return;
     }
     if (!line.startsWith(u"DONE "_qs))
@@ -653,6 +668,58 @@ QString Downloads::playUrl(qint64 id) const
         ? QString() : it.value().base + u"/file/0"_qs;
 }
 
+// The row a player url belongs to, by the only two shapes the shell ever loads: the child's
+// loopback view (http://127.0.0.1:port/file/0) while a job is running, and the finished file
+// once it is not. Everything else answers "1.0 / 0.0" - a file the shell cannot place is a
+// file it has all of, as far as a progress bar is concerned.
+const DownloadRow *Downloads::rowForPlayUrl(const QString &url) const
+{
+    for (const DownloadRow &r : m_rows) {
+        const auto it = m_children.constFind(r.id);
+        if (it != m_children.constEnd() && !it.value().base.isEmpty()
+            && url.startsWith(it.value().base))
+            return &r;
+        // The child is gone but its url is still the one mpv is holding.
+        if (!r.base.isEmpty() && url.startsWith(r.base))
+            return &r;
+        if (!r.path.isEmpty() && url == r.path)
+            return &r;
+    }
+    return nullptr;
+}
+
+double Downloads::durationForUrl(const QString &url) const
+{
+    const DownloadRow *r = rowForPlayUrl(url);
+    return r ? r->duration : 0.0;
+}
+
+qreal Downloads::bufferedForUrl(const QString &url) const
+{
+    const DownloadRow *r = rowForPlayUrl(url);
+    if (!r || r->complete)
+        return 1.0;
+    // Nothing is known to be here yet: the child has not answered its first /status. A full
+    // bar here would be a promise that every point is playable, which is the one thing this
+    // bar must not promise.
+    if (r->total <= 0)
+        return 0.0;
+    // The byte fraction is only honest on a timeline that is the whole film. Without a
+    // The byte fraction is honest on either axis. mpv maps a seek to a byte offset by the same
+    // linear rule it uses to estimate its own length, so a point at fraction f of the bar lands
+    // at f of the declared size whether the axis is the drive's number or mpv's guess - and the
+    // clamp has to be able to say "not past here" even in the first minute of a job, when nobody
+    // has quoted anything. This used to return 1.0 whenever the drive had not spoken, which is
+    // exactly how a fresh row let a click land in bytes that do not exist and paint a black
+    // screen.
+    // completed counts the tail the drive does hand over, and a reader cannot reach across
+    // the middle that it refuses. The prefix is where the bytes stop being contiguous, and
+    // that is the edge the bar and the clamp have to speak of. A job that is simply whole
+    // (a torrent, or a drive that gives everything) has no such hole and lands on completed.
+    const qint64 reachable = r->prefix > 0 ? r->prefix : r->completed;
+    return qreal(reachable) / qreal(r->total);
+}
+
 QString Downloads::playTitle(qint64 id) const
 {
     // The header for a streamed job: the row's own file name, which is what playing
@@ -697,11 +764,21 @@ void Downloads::applyStatus(qint64 id, const QVariantMap &o)
     DownloadRow *row = find(id);
     if (!row || o.isEmpty())
         return;
+    const qint64 wasTotal = row->total;
+    const qint64 wasCompleted = row->completed;
+    const qint64 wasPrefix = row->prefix;
+    const double wasDuration = row->duration;
     const QString name = o.value(u"name"_qs).toString();
     if (!name.isEmpty() && name != row->name)
         row->name = name;
     row->total = o.value(u"total"_qs).toLongLong();
     row->completed = o.value(u"completed"_qs).toLongLong();
+    row->prefix = o.value(u"prefix"_qs).toLongLong();
+    // The length read off the file's own timestamps. The drive's number wins when it gave
+    // one; 迅雷's field is there and says "0", so for those jobs this is all there is.
+    const double measured = o.value(u"duration"_qs).toDouble();
+    if (measured > 0.0 && row->duration <= 0.0)
+        row->duration = measured;
     row->rate = o.value(u"rate"_qs).toDouble();
     row->piecesDone = o.value(u"piecesDone"_qs).toInt();
     row->numPieces = o.value(u"numPieces"_qs).toInt();
@@ -718,6 +795,11 @@ void Downloads::applyStatus(qint64 id, const QVariantMap &o)
         row->complete = true;
         row->error.clear();
         row->path = QDir(row->dir).filePath(row->name);
+    }
+    if (wasTotal != row->total || wasCompleted != row->completed || wasPrefix != row->prefix
+        || wasDuration != row->duration) {
+        ++m_revision;
+        emit revisionChanged();
     }
     persist(*row);
     emit rowChanged(id);
@@ -761,6 +843,15 @@ bool Downloads::rowPlayable(const DownloadRow &row) const
         return true;
     if (row.name.isEmpty() || row.dir.isEmpty())
         return false;
+    // An http row is a film only once its own bar has moved. The engine counts the block
+    // still being written into `prefix`, so `prefix > 0` was already true while the row read
+    // 0.0% - and pressing it opened a page that sat black until a block landed. `completed`
+    // is the number the row's bar is drawn from, so the mark and the bar answer to one fact:
+    // bytes have arrived. `prefix > 0` is kept beside it because a holed job counts its tail
+    // in `completed` too, and a tail with no head has nothing to start from.
+    // Torrent rows do not answer the prefix field at all, so they are left to the sniff below.
+    if (row.kind == u"http"_qs && (row.completed <= 0 || row.prefix <= 0))
+        return false;
     // While a job fills, the http engine writes beside the final name with a `.part`
     // suffix; the name the row carries only exists after the rename.
     const QString part = QDir(row.dir).filePath(row.name + u".part"_qs);
@@ -782,6 +873,7 @@ QVariantList Downloads::jobs() const
         m.insert(u"jobDir"_qs, r.dir);
         m.insert(u"jobPoster"_qs, r.poster);
         m.insert(u"jobTotal"_qs, r.total);
+        m.insert(u"jobDuration"_qs, r.duration);
         m.insert(u"jobCompleted"_qs, r.completed);
         m.insert(u"jobPct"_qs, r.total > 0 ? 100.0 * double(r.completed) / double(r.total) : 0.0);
         m.insert(u"jobRate"_qs, r.rate);

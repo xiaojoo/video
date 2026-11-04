@@ -22,7 +22,14 @@ struct DownloadRow {
     QString dir;        // where the finished file lands
     QString poster;     // the site's card picture, carried so the row can show it
     qint64 total = 0;
+    // What the drive quoted for the length of this file, in seconds. 0 = it did not say,
+    // and the player then shows what mpv measured off the bytes that exist.
+    double duration = 0.0;
     qint64 completed = 0;
+    // The contiguous prefix the engine's own view can serve, in bytes. On a free-tier drive
+    // this is smaller than completed: the tail lands next to a middle that answers 416
+    // forever, and a reader sent past the prefix meets nothing.
+    qint64 prefix = 0;
     double rate = 0.0;
     int piecesDone = 0;
     int numPieces = 0;
@@ -34,6 +41,11 @@ struct DownloadRow {
     bool complete = false;
     bool running = false;
     QString path;       // the file, once it is finished
+    // The loopback base its last child reported, kept after that child exits. The player page
+    // only knows the url it was handed, and a free-tier job whose engine has nothing left to
+    // fetch exits on its own - dropping the child alone made the row unmatchable from the url,
+    // which turned the bar blind: no length, a full-width band and a seek into 416.
+    QString base;
     QString error;
 };
 
@@ -47,6 +59,13 @@ class Downloads final : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    // Bumped whenever a row's numbers move. The player page asks for a length and a byte
+    // fraction through functions, and a QML binding on a function result has nothing to
+    // listen to: it is evaluated once and then sits there. Without this the bar kept the
+    // answer from the moment the film was opened - which, on a job whose tail had not
+    // landed yet, is "no length quoted", i.e. mpv's estimate and a full bar that lets him
+    // seek into bytes that do not exist.
+    Q_PROPERTY(int revision READ revision NOTIFY revisionChanged)
 
 public:
     explicit Downloads(QObject *parent = nullptr);
@@ -76,7 +95,8 @@ public:
     Q_INVOKABLE qint64 add(const QString &source, const QString &dir = QString(),
                            const QString &poster = QString(),
                            const QString &headers = QString(),
-                           const QString &name = QString());
+                           const QString &name = QString(),
+                           double duration = 0.0);
     Q_INVOKABLE void start(qint64 id);
     Q_INVOKABLE void stop(qint64 id);
     // Removes the row and its own state folder. The downloaded file is left exactly
@@ -85,6 +105,7 @@ public:
     Q_INVOKABLE void setWant(qint64 id, const QString &mode);
 
     int count() const { return m_rows.size(); }
+    int revision() const { return m_revision; }
     // Q_INVOKABLE, not just a getter: the 在线媒体 page reads the rows straight from
     // here (downloads.jobs()) instead of through a list model, and QML answers a plain
     // C++ getter with "Property 'jobs' of object Downloads is not a function".
@@ -98,6 +119,11 @@ public:
     // A finished job has no child left to ask, so the shell needs to know that
     // before it decides between the http view and the file itself.
     Q_INVOKABLE bool isComplete(qint64 id) const;
+    // The two numbers a file that is still arriving needs to be shown honestly: how long it
+    // is going to be, and how far in its bytes have actually come. Both are asked with the
+    // url the player is holding, because that is all the player page has.
+    Q_INVOKABLE double durationForUrl(const QString &url) const;
+    Q_INVOKABLE qreal bufferedForUrl(const QString &url) const;
     // True while `path` is the file of a job that has not reached 100%: what is on
     // disk is a fragment. The library scans the download folder like any other root,
     // so such a fragment can be clicked, remembered as last played, and resumed on
@@ -109,6 +135,7 @@ public:
 
 signals:
     void countChanged();
+    void revisionChanged();
     void rowChanged(qint64 id);
     // A job reached 100%. The shell can now offer the file wherever films live.
     void finished(qint64 id, const QString &path);
@@ -123,6 +150,9 @@ private:
     void load();
     void persist(const DownloadRow &row);
     DownloadRow *find(qint64 id);
+    // The row a player url was made from, or null. Private because it reads the child map,
+    // which holds the loopback address only while that job's process is alive.
+    const DownloadRow *rowForPlayUrl(const QString &url) const;
     // A name the row would write to that another row or the disk already has.
     bool nameTaken(const QString &dir, const QString &name) const;
     // The same question playable() answers, on a row already in hand.
@@ -140,6 +170,7 @@ private:
     int m_conns = 8;
     QSqlDatabase m_db;
     QList<DownloadRow> m_rows;
+    int m_revision = 0;
     QHash<qint64, Child> m_children;
     QNetworkAccessManager *m_nam = nullptr;
     QTimer *m_tick = nullptr;

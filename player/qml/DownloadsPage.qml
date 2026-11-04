@@ -178,10 +178,17 @@ Item {
         // go back into the box with a sentence instead of being dropped on the floor.
         // Only a clean paste closes the dialog.
         onSubmitted: (links) => {
+            // Two engines, one box. A share address of a drive this app can walk goes to
+            // the ladder (转存 / 直链 / 回收副本 are its business, not the byte engine's);
+            // everything else the engine pulls itself. The box already sorted the two and
+            // only hands over lines it recognised, so nothing here has to guess.
             const bad = [];
-            for (const l of links)
-                if (downloads.add(l, page.saveDir) < 0)
+            for (const l of links) {
+                if (netdisk.providerOf(l).length > 0)
+                    netdisk.download(l, "", "");
+                else if (downloads.add(l, page.saveDir) < 0)
                     bad.push(l);
+            }
             page.refreshJobs();
             if (bad.length > 0) {
                 addSheet.rejectSome(bad, links.length - bad.length);

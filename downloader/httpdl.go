@@ -43,10 +43,19 @@ type HttpJob struct {
 	Parts   []part
 	m3u8    bool // segments are whole files, fetched without Range
 
-	mu        sync.Mutex
-	total     int64
-	name      string
-	done      []bool
+	mu    sync.Mutex
+	total int64
+	name  string
+	done  []bool
+	// refused records the blocks the host answered 416 for: not "still coming", but "this
+	// address will not give these bytes". The view reads it so a reader asking for one of
+	// those offsets is told so, instead of waiting on bytes that never arrive.
+	refused []bool
+	// How far each in-flight block has actually been written. The file is written as the
+	// bytes stream in (`WriteAt` at the block's offset), so the block the reader is waiting
+	// on is readable long before it is *done* - and a block is 8.3 MiB, which at the free
+	// tier's ~0.13 MB/s per road is 64 s of a black screen for the very first one.
+	progress  []int64
 	prefixIdx int
 	prefix    int64
 	completed int64
@@ -54,8 +63,10 @@ type HttpJob struct {
 	rate      float64
 	complete  bool // every part landed
 	finalized bool // renamed into place; only then is the file at Out playable
-	started   time.Time
-	resume    string
+	// The length the file's own timestamps carry, once the tail has landed.
+	durSec  float64
+	started time.Time
+	resume  string
 
 	next atomic.Int64
 	// live counts connections with a request in flight; the shell shows it where the
@@ -71,6 +82,10 @@ type HttpJob struct {
 	// back holds blocks handed back by a refused worker, so a refusal costs a detour rather
 	// than the whole job.
 	back []int
+	// parked / parkUntil hold the blocks the host answered 416 for, with the time each may
+	// be asked again. See park().
+	parked    []int
+	parkUntil []time.Time
 	// views counts /file/0 responses. Exiting the process the instant the last part
 	// lands cuts a reader off mid-body, which looks like a corrupt file to mpv.
 	views atomic.Int32
@@ -365,6 +380,9 @@ func newHttpJob(rawURL, out string, hdr map[string]string, chunkMiB float64, log
 		logf("单文件 字节=%d 分块=%d range=%v", j.total, len(j.Parts), accepts)
 	}
 	j.done = make([]bool, len(j.Parts))
+	j.refused = make([]bool, len(j.Parts))
+	j.progress = make([]int64, len(j.Parts))
+	j.parkUntil = make([]time.Time, len(j.Parts))
 	return j, nil
 }
 
@@ -432,7 +450,7 @@ func (j *HttpJob) saveState() {
 	_ = os.WriteFile(j.statePath(), b, 0o600)
 }
 
-func (j *HttpJob) take() (int, bool) {
+func (j *HttpJob) take(quit <-chan struct{}) (int, bool) {
 	// A handed-back block goes first: it was refused for how many roads were open, not for
 	// what it asked for, and leaving it at the tail would make the worker that just lost a
 	// race wait behind everything else.
@@ -450,7 +468,7 @@ func (j *HttpJob) take() (int, bool) {
 	for {
 		i := int(j.next.Add(1)) - 1
 		if i >= len(j.Parts) {
-			return 0, false
+			return j.takeParked(quit)
 		}
 		j.mu.Lock()
 		already := j.done[i]
@@ -467,6 +485,77 @@ func (j *HttpJob) requeue(i int) {
 	j.mu.Lock()
 	j.back = append(j.back, i)
 	j.mu.Unlock()
+}
+
+// park holds a block the host refused with a 416 out of the working queue until a clock
+// says it may be asked again.
+//
+// It used to be requeue()d, and that is what froze his live 迅雷 row: take() prefers the
+// back list, so every worker kept picking the same refused block, and measured over 35 s
+// the job sat at 49,895,100 of 207,896,228 bytes with no block landing (rate 19-147 KB/s
+// was bytes arriving inside a block that never completed) - while the last ~21 MB, which
+// this very address does serve, was never asked for because the queue never got past the
+// refused one. A parked block is retried only once nothing else is left to pull.
+func (j *HttpJob) park(i int) {
+	j.mu.Lock()
+	if j.parkUntil[i].IsZero() {
+		j.parked = append(j.parked, i)
+	}
+	// Staggered, not one shared clock: measured, when every refused block became due in the
+	// same second the workers sat in takeParked and only one road was ever in flight
+	// (peers 1, 96 KB/s). Each block gets its own moment inside the same minute.
+	j.parkUntil[i] = time.Now().Add(60*time.Second + time.Duration(i%8)*7*time.Second)
+	j.mu.Unlock()
+}
+
+// takeParked is the second pass: the earliest block whose wait is over. Nothing is left
+// in order, so this is either a retry or the end of the job.
+func (j *HttpJob) takeParked(quit <-chan struct{}) (int, bool) {
+	for {
+		j.mu.Lock()
+		if len(j.parked) == 0 {
+			j.mu.Unlock()
+			return 0, false
+		}
+		best, bestUntil := -1, time.Time{}
+		for _, i := range j.parked {
+			if best < 0 || j.parkUntil[i].Before(bestUntil) {
+				best, bestUntil = i, j.parkUntil[i]
+			}
+		}
+		wait := time.Until(bestUntil)
+		if wait > 0 {
+			j.mu.Unlock()
+			// Bounded slices so a stop is not kept waiting by a retry clock.
+			for wait > 0 {
+				select {
+				case <-quit:
+					return 0, false
+				default:
+				}
+				if wait > 2*time.Second {
+					time.Sleep(2 * time.Second)
+					wait -= 2 * time.Second
+				} else {
+					time.Sleep(wait)
+					wait = 0
+				}
+			}
+			continue
+		}
+		out := make([]int, 0, len(j.parked)-1)
+		for _, i := range j.parked {
+			if i != best {
+				out = append(out, i)
+			}
+		}
+		j.parked = out
+		j.parkUntil[best] = time.Time{}
+		j.mu.Unlock()
+		if !j.done[best] {
+			return best, true
+		}
+	}
 }
 
 // lower takes one road away and reports how many are left, down to the floor the job set.
@@ -526,6 +615,13 @@ func (j *HttpJob) fetchPart(f *os.File, i int) error {
 	j.live.Add(1)
 	defer j.live.Add(-1)
 	p := j.Parts[i]
+	// A retry starts the block over at its own offset, so nothing written before this
+	// attempt may be handed to a reader.
+	j.mu.Lock()
+	if i < len(j.progress) {
+		j.progress[i] = 0
+	}
+	j.mu.Unlock()
 	req, err := j.newReq(p.url)
 	if err != nil {
 		return err
@@ -550,6 +646,11 @@ func (j *HttpJob) fetchPart(f *os.File, i int) error {
 				return werr
 			}
 			off += int64(n)
+			j.mu.Lock()
+			if i < len(j.progress) {
+				j.progress[i] = off
+			}
+			j.mu.Unlock()
 			j.addWritten(int64(n))
 		}
 		if rerr == io.EOF {
@@ -620,16 +721,20 @@ func (j *HttpJob) run(conns int, quit <-chan struct{}) error {
 					// is what actually lowers the concurrency: nothing else closes the socket.
 					return
 				}
-				i, ok := j.take()
+				i, ok := j.take(quit)
 				if !ok {
 					return
 				}
 				err := j.fetchPart(f, i)
 				if err == nil {
 					streak = 0
-					if i%16 == 0 || j.isComplete() {
-						j.saveState()
-					}
+					// Every block, not every sixteenth. Measured on his 迅雷 row: with the
+					// old cadence a 25-block job wrote the state at block 0 and at the end,
+					// so the file on disk still said done=[1,0,...] prefix=8,315,850 while
+					// /status said 58,210,928 - and every restart re-pulled the ~50 MB that
+					// had already landed. The file is about a kilobyte; writing it per block
+					// is nothing next to one re-pull.
+					j.saveState()
 					continue
 				}
 				// One answer ends the job on the spot: a 4xx that is not the host's "too many
@@ -661,8 +766,10 @@ func (j *HttpJob) run(conns int, quit <-chan struct{}) error {
 				// streak: the block is asked again on a slow clock and the rest of the job keeps
 				// taking what the host is serving.
 				if errors.As(err, &ref) && ref.code == http.StatusRequestedRangeNotSatisfiable {
-					j.requeue(i)
-					time.Sleep(20 * time.Second)
+					j.mu.Lock()
+					j.refused[i] = true
+					j.mu.Unlock()
+					j.park(i)
 					continue
 				}
 				j.requeue(i)
@@ -758,10 +865,72 @@ func (j *HttpJob) waitViews(d time.Duration) {
 	}
 }
 
+// unreachable reports that the bytes at pos are not going to arrive. Two ways that is true:
+// the block holding them was refused by the host with a 416 and has not landed since; or the
+// block at the front of the queue is refused, because the view only ever hands out the
+// contiguous prefix and a refused front is the prefix never moving again.
+//
+// The second case is the one that left a player looking at a black screen. Measured with his
+// 迅雷 row: libmpv opens a seekable stream by asking for its last 250 KB (Range:
+// bytes=207646228- on a 207,896,228-byte job = total minus 250,000 exactly) to look for an
+// index at the end. Those tail blocks had never been reached - the workers were spending
+// every retry on the refused middle - so only the first test would have said "wait", and the
+// request answered nothing at all for its full deadline.
+func (j *HttpJob) unreachable(pos int64) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.complete || pos < j.prefix {
+		return false
+	}
+	for i, p := range j.Parts {
+		if pos >= p.start && pos < p.start+p.size {
+			if j.refused[i] && !j.done[i] {
+				return true
+			}
+			break
+		}
+	}
+	return j.prefixIdx < len(j.Parts) && j.refused[j.prefixIdx]
+}
+
+// reachableSoon says the bytes at pos are the block the pull is working on right now, so
+// waiting for them is waiting for something that is actually coming. Everything else - a
+// seek far ahead, or libmpv's probe of the end - is answered as it is.
+func (j *HttpJob) reachableSoon(pos int64) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.complete || pos < j.prefix {
+		return true
+	}
+	i := j.prefixIdx
+	if i >= len(j.Parts) || j.refused[i] || j.done[i] {
+		return false
+	}
+	p := j.Parts[i]
+	return pos >= p.start && pos < p.start+p.size
+}
+
+// readableLocked is prefixBytes without the lock, for callers that already hold j.mu.
+func (j *HttpJob) readableLocked() int64 {
+	r := j.prefix
+	if j.prefixIdx < len(j.progress) && j.prefixIdx < len(j.Parts) {
+		r += j.progress[j.prefixIdx]
+	}
+	return r
+}
+
 func (j *HttpJob) prefixBytes() int64 {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return j.prefix
+	// The bytes a reader can actually get: every block that has landed, plus however far the
+	// block right behind them has been written. The file is filled as the bytes arrive, so
+	// waiting for the block to be *done* would make the first 8.3 MiB of a film take a minute
+	// of a black screen before mpv can demux anything.
+	r := j.prefix
+	if j.prefixIdx < len(j.progress) && j.prefixIdx < len(j.Parts) {
+		r += j.progress[j.prefixIdx]
+	}
+	return r
 }
 
 func (j *HttpJob) totalBytes() int64 {
@@ -779,6 +948,7 @@ func (j *HttpJob) status() Status {
 		// segment is a 40-character object id - the row then points at a path that was
 		// never written while the real file sits beside it under the name it was given.
 		Name: filepath.Base(j.Out), Total: j.total, Completed: j.completed, Missing: j.total - j.completed,
+		Prefix: j.readableLocked(), Duration: j.tsDuration(),
 		Rate: j.rate, NumPieces: len(j.Parts), Complete: j.finalized, Want: "all",
 		DataDir: filepath.Dir(j.Out), ElapsedMs: time.Since(j.started).Milliseconds(),
 		Resume: j.resume,
@@ -836,8 +1006,53 @@ func (j *HttpJob) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		start, end = int64(s), int64(e)
+		if j.unreachable(start) {
+			// Answer this before the 206 goes out. libmpv opens a seekable stream by
+			// reading its last 250 KB first (measured: `Range: bytes=207646228-` on a
+			// 207,896,228-byte job, total minus 250,000 exactly) to look for an index that
+			// lives at the end. When those bytes are ones the host refused, waiting for them
+			// made the request answer nothing at all - no status line for 120 s - so the
+			// probe never finished, the track list stayed empty and the page was black with
+			// 0:00 on both ends. A 416 here is the honest answer and the player falls back
+			// to reading forward, which plays everything that is there.
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", total))
+			http.Error(w, "the host refuses these bytes", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		// A request that starts past what is on disk is a seek (or that same tail probe),
+		// not the play head following the download.
+		//
+		// Waiting for it is only ever right for the one block the pull is working on now.
+		// Measured with a logging forwarder: libmpv opens a seekable stream by walking
+		// backwards from the end in doubling steps - bytes=207646228-, 207396228-,
+		// 206896228-, 205896228-, 203896228-, 199896228-, 191896228- (250 KB, 500 KB, 1 MB,
+		// 2, 4, 8, 16 MB) - and every one of those is far behind the prefix, so a 3 s wait
+		// on each was the 10.2 s this app made a user sit through before a picture. Answer
+		// those now, and wait only for the block immediately behind the prefix.
+		if !j.isComplete() && start >= j.prefixBytes() {
+			if !j.reachableSoon(start) {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", total))
+				http.Error(w, "not downloaded yet", http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			until := time.Now().Add(3 * time.Second)
+			for start >= j.prefixBytes() && time.Now().Before(until) {
+				time.Sleep(100 * time.Millisecond)
+			}
+			if start >= j.prefixBytes() && !j.isComplete() {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", total))
+				http.Error(w, "not downloaded yet", http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
 		w.WriteHeader(http.StatusPartialContent)
+		// Push the header out now. Go keeps it in the connection's buffer until the first
+		// body byte, which is what turned "answer nothing" into "no status line at all":
+		// measured, a curl of the refused range saw http=000 - not a 416, not a 206, nothing.
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
 	}
 	if r.Method == "HEAD" {
 		// A probe must answer now: waiting on the prefix here would make every
@@ -848,6 +1063,8 @@ func (j *HttpJob) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	buf := make([]byte, 256*1024)
+	// A read that got here started inside the contiguous prefix, so it is the play head
+	// following the download: waiting is right, because those bytes are on their way.
 	deadline := time.Now().Add(120 * time.Second)
 	for pos := start; pos <= end; {
 		want := min(int64(len(buf)), end-pos+1)
@@ -856,6 +1073,12 @@ func (j *HttpJob) serve(w http.ResponseWriter, r *http.Request) {
 			avail = end - pos + 1
 		}
 		if avail <= 0 {
+			if j.unreachable(pos) {
+				// The rest of this range is bytes the host said it will not give. Close the
+				// body here: a reader that gets a clean end can play what exists, while one
+				// that is held open for the deadline gets a truncated answer it cannot use.
+				return
+			}
 			if time.Now().After(deadline) {
 				return
 			}

@@ -176,6 +176,17 @@ void PlayerCore::onPropertyChange(void *propPtr)
     }
     if (p->format == MPV_FORMAT_NONE) {
         // Property currently unavailable (e.g. time-pos before the first frame).
+        // mpv does raise this on a file switch, and the values it leaves behind belong to
+        // the film that is gone: holding them made the bar and the total read the previous
+        // title's numbers for as long as the new one took to open - minutes on a drive that
+        // has to fetch the head first, and forever when the open fails.
+        if (!std::strcmp(n, "time-pos") && m_position != 0.0) {
+            m_position = 0.0;
+            emit positionChanged();
+        } else if (!std::strcmp(n, "duration") && m_duration != 0.0) {
+            m_duration = 0.0;
+            emit durationChanged();
+        }
         return;
     }
     if (!std::strcmp(n, "time-pos") && p->format == MPV_FORMAT_DOUBLE) {
@@ -404,6 +415,14 @@ void PlayerCore::loadTitled(const QString &url, const QString &title)
     const QString local = QFileInfo::exists(url) ? url : QUrl(url).toLocalFile();
     const QString key = local.isEmpty() ? url : local;
     if (m_mediaUrl != key) {
+        // A different film: the numbers on the bar belong to the one that is going away.
+        // Clearing here rather than waiting on mpv is the only way that is sure to happen -
+        // measured, a switch to a stream that has to fetch its head left the previous
+        // title's total on screen for the whole open, and a failed open left it forever.
+        m_position = 0.0;
+        m_duration = 0.0;
+        emit positionChanged();
+        emit durationChanged();
         m_mediaUrl = key;
         emit mediaUrlChanged();
     }

@@ -5,6 +5,11 @@ Item {
     id: bar
 
     property real progress: 0.0
+    // The part of the timeline whose bytes are already on this machine. Drawn between the
+    // unplayed track and the played portion, so a file that is still arriving shows how much
+    // of it can actually be watched - which is the difference between a bar that lies and a
+    // bar that says "the rest is coming".
+    property real buffered: 1.0
     property real hoverPos: -1.0
     property bool hovering: false
     property bool scrubbing: false
@@ -85,6 +90,17 @@ Item {
         height: bar.lineH
         radius: height / 2
         color: Theme.trackFlat
+    }
+
+    // Bytes that are here. Sits under the played portion, so what has been watched still
+    // reads as the brightest thing on the line.
+    Rectangle {
+        x: 0
+        y: bar.lineY - bar.lineH / 2
+        width: bar.width * Math.max(0.0, Math.min(1.0, bar.buffered))
+        height: bar.lineH
+        radius: height / 2
+        color: Theme.textSecondary
     }
 
     // Played portion: the same colour as the icons, per his ask.

@@ -370,7 +370,10 @@ Item {
                             width: Math.round(parent.width * 0.62)
                             height: width
                             name: "watchNow"
-                            color: Theme.glyph
+                            // Dimmed, not removed: the mark is the row's answer to "can I
+                            // watch this yet", and a mark that vanishes reads as a control
+                            // that broke. The bubble and the click both say 暂不能播放 here.
+                            color: modelData.jobPlayable ? Theme.glyph : Theme.textSecondary
                         }
                     }
                     Rectangle {

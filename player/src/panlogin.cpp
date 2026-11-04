@@ -237,13 +237,27 @@ QStringList PanLogin::browserArgs(const QString &startUrl, bool visible)
                     QStringLiteral("--no-first-run"),
                     QStringLiteral("--no-default-browser-check"),
                     QStringLiteral("--disable-sync") };
-    // Off the desktop rather than headless: `--headless=new` is a different client and the
-    // whole reason this tab exists is that the edge answers a browser and not a script.
-    // Measured with the real profile, an offscreen window still gets 74 cookies, errno=0 on
-    // share/list and 962 segments on /share/streaming.
-    if (!visible)
-        a << QStringLiteral("--window-position=-32000,-32000")
-          << QStringLiteral("--window-size=1000,700");
+    // Headless for everything the ladder does on its own. Measured against his 迅雷 session
+    // with the same profile: the page signs and answers exactly the way it does in a window -
+    // 16 `/drive/v1` calls, the share one 200 with the same 2245 bytes and `share_status=OK`,
+    // the same UA (no "Headless" in it), and the list row is still found and clicked. The
+    // reason this used to be an offscreen window was a 百度 measurement of `--headless=new`
+    // as a different client; that gate is in the server's fingerprinting of the *request*,
+    // and the request this tab sends is byte-identical.
+    //
+    // `PLAYERUI_BROWSER=offscreen` puts the old shape back for an A/B: a window parked at
+    // -32000,-32000, which is visible to Windows (measured: vis=1) even though nobody can
+    // see it - and a visible window on a profile is what a later launch opens a tab into.
+    if (!visible) {
+        if (qEnvironmentVariable("PLAYERUI_BROWSER") == QLatin1String("offscreen")) {
+            a << QStringLiteral("--window-position=-32000,-32000")
+              << QStringLiteral("--window-size=1000,700");
+        } else {
+            a << QStringLiteral("--headless=new") << QStringLiteral("--disable-gpu")
+              << QStringLiteral("--window-size=1280,900");
+            qInfo("pan browser headless");
+        }
+    }
     // A normal tab, not `--app`: app mode hides the address bar, and a window that
     // asks for a password without showing whose page it is, is not one he can verify.
     a << startUrl;
